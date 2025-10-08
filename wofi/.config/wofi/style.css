@@ -1,0 +1,55 @@
+@define-color base       #1e1e2e;
+@define-color background #14161B;
+@define-color foreground #E0E2EA;
+@define-color border     #4F5258;
+@define-color blue       #A6DBFF;
+@define-color green      #B4F6C0;
+@define-color yellow     #FCE094;
+@define-color red        #FFC0B9;
+@define-color magenta    #FFCAFF;
+@define-color cyan       #8CF8F7;
+
+* {
+  font-family: 'Agave Nerd Font Mono', monospace;
+  font-size: 18px;
+}
+
+/* Window container */
+window {
+  margin: 0;
+  padding: 0px;
+  border: 2px solid @border;
+  border-radius: 8px;
+  background-color: @base;
+}
+
+/* Inner areas */
+#inner-box, #outer-box, #scroll, #input, #entry {
+  margin: 3px;
+  padding: 5px;
+  background-color: @background;
+}
+
+/* Text styling */
+#text, #input {
+  color: @foreground;
+}
+
+#input {
+  border: none;
+  border-radius: 0.1em;
+}
+
+/* Selection and highlighting */
+#entry:selected {
+  background-color: @blue;
+}
+
+#entry:selected #text {
+  color: @background;
+}
+
+/* Focused input indicator */
+#input * {
+  outline: 2px solid @blue !important;
+}
