@@ -1,0 +1,33 @@
+* {
+  font-family: "Agave Nerd Font";
+  font-weight: bolder;
+  font-size: 12px;
+  color: #dcdfe1;
+}
+
+#waybar {
+  background-color: rgba(0, 0, 0, 0);
+}
+
+#network,
+#bluetooth,
+#pulseaudio,
+#battery {
+  margin: 0px 10px;
+}
+
+#custpm-temperature.critical,
+#pulseaudio.muted {
+  color: #FF0000;
+}
+
+#workspaces button.active {
+  color: #61afef;
+}
+
+#workspaces button {
+  background: transparent;
+  border: none;
+  color: #888888;
+  font-weight: bold;
+}
