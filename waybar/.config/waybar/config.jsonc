@@ -16,15 +16,16 @@
     // "backlight"
     // "custom/browser-video",
   ],
-  "modules-center": ["clock"],
+  "modules-center": [
+    "clock"
+  ],
   "modules-right": [
     "network",
     "bluetooth",
     "pulseaudio",
     "battery"
   ],
-
-  "hyprland/window": {  
+  "hyprland/window": {
     "format": "{class}",
     "rewrite": {
       "": "Arch Linux"
@@ -35,22 +36,22 @@
     "all-outputs": false,
     "on-click": "activate",
     "format": "{name} {icon}",
-		"format-icons": {
-			"1": "○",
-			"2": "○",
-			"3": "○",
-			"4": "○",
-			"5": "○",
-			"active": "●",
-			"default": ""
+    "format-icons": {
+      "1": "○",
+      "2": "○",
+      "3": "○",
+      "4": "○",
+      "5": "○",
+      "active": "●",
+      "default": ""
     }
   },
   "network": {
     "format-wifi": "<span color='#00FFFF'>󰤨</span>",
-    "format-ethernet": "<span color='#7FFF00'></span>",
+    "format-ethernet": "<span color='#7FFF00'>󰈀</span>",
     "format-linked": "<span color='#FFA500'></span>",
     "format-disconnected": "<span color='#FF4040'>󱘖</span>",
-    "interval": 1,
+    "interval": 5,
     "tooltip-format": "Network: <big><b>{essid}</b></big>\nSignal strength: <b>{signaldBm}dBm ({signalStrength}%)</b>\nFrequency: <b>{frequency}MHz</b>\nInterface: <b>{ifname}</b>",
     "on-click": "iwgtk"
   },
@@ -61,8 +62,14 @@
     },
     "format": "<span color='#28CD41'>{icon}</span>",
     "format-charging": "󱐋",
-	  "interval": 1,
-    "format-icons": ["󰂎", "󰁼", "󰁿", "󰂁", "󰁹"],
+    "interval": 1,
+    "format-icons": [
+      "󰂎",
+      "󰁼",
+      "󰁿",
+      "󰂁",
+      "󰁹"
+    ],
     "tooltip": true
   },
   "pulseaudio": {
@@ -103,7 +110,7 @@
   "memory": {
     "format": "<span color='#8A2BE2'>  </span>{percentage}% ",
     "tooltip": true,
-    "tooltip-format": "{used:0.2f}G/{total:0.2f}G", 
+    "tooltip-format": "{used:0.2f}G/{total:0.2f}G",
     "on-click": "btop++"
   },
   "cpu": {
@@ -111,35 +118,35 @@
     "tooltip": true
   },
   "clock": {
-    "format": "{:%A, %H:%M}",
-    "interval": 1,
+    "format": "{:%a %d, %H:%M}",
+    "interval": 60,
     "tooltip-format": "<tt>{calendar}</tt>",
-    "calendar": { 
-      "mode": "year", 
-      "mode-mon-col": 4, 
-      "format": { 
+    "calendar": {
+      "mode": "year",
+      "mode-mon-col": 4,
+      "format": {
         "months": "<span color='#00FFFF'><b>{}</b></span>",
         "today": "<span color='#00FFFF'><b>{}</b></span>"
-      }    
-    }     
-  },   
-  "tray": {   
-    "icon-size": 17,   
-    "spacing": 6   
-  },   
-  "backlight": {   
-    "device": "intel_backlight",  
+      }
+    }
+  },
+  "tray": {
+    "icon-size": 17,
+    "spacing": 6
+  },
+  "backlight": {
+    "device": "intel_backlight",
     "format": "<span color='#FFD700'>{icon}</span>{percent}% ",
-    "tooltip": true,   
+    "tooltip": true,
     "tooltip-format": "{percent}%",
-    "format-icons": [    
-      "<span color='#696969'> 󰃞 </span>",  
-      "<span color='#A9A9A9'> 󰃝 </span>",  
-      "<span color='#FFFF66'> 󰃟 </span>",  
-      "<span color='#FFD700'> 󰃠 </span>"   
-    ]    
-  },    
-  "bluetooth": {          
+    "format-icons": [
+      "<span color='#696969'> 󰃞 </span>",
+      "<span color='#A9A9A9'> 󰃝 </span>",
+      "<span color='#FFFF66'> 󰃟 </span>",
+      "<span color='#FFD700'> 󰃠 </span>"
+    ]
+  },
+  "bluetooth": {
     "format": "<span color='#808080'></span>",
     "format-connected": "<span color='#50C878'></span>",
     "format-connected-battery": "<span color='#00BFFF'></span>",
@@ -150,4 +157,3 @@
     "on-click": "blueman-manager"
   }
 }
-
