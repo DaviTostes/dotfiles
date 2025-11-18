@@ -32,7 +32,8 @@ if status is-interactive
   alias ga='git add'
   alias gaa='git add .'
   alias gc='git commit -m'
-  alias gp='git pull'
+  alias gpl='git pull'
+  alias gps='git push'
 
   alias del='rm -rf'
 
