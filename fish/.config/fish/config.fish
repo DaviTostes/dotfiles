@@ -22,13 +22,16 @@ if status is-interactive
   alias v='nvim'
 
   alias t='tmux'
-  alias tma='tmux attach -t'
-  alias tmk='tmux kill-session -t'
-  alias tml='tmux ls'
+  alias tn='tmux new -s'
+  alias ta='tmux attach -t'
+  alias tk='tmux kill-session -t'
+  alias tl='tmux ls'
 
   alias g='git'
+  alias gch='git checkout'
   alias gs='git status'
   alias gd='git diff'
+  alias gb='git branch'
   alias ga='git add'
   alias gaa='git add .'
   alias gc='git commit -m'
@@ -36,6 +39,8 @@ if status is-interactive
   alias gps='git push'
 
   alias del='rm -rf'
+  alias clear='wipe --duration 800'
+  alias ll='ls -lah'
 
   alias task go-task
 end
