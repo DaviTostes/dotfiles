@@ -35,5 +35,5 @@ vim.keymap.set("n", "<leader>v", ":lua MiniVisits.select_path()<CR>")
 vim.keymap.set('n', "<leader>f", ":Pick files<CR>")
 
 --buffers
-vim.keymap.set('n', "_", ":bn<CR>")
-vim.keymap.set('n', "+", ":bp<CR>")
+vim.keymap.set('n', "_", ":bp<CR>")
+vim.keymap.set('n', "+", ":bn<CR>")
