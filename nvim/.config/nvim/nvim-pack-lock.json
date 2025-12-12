@@ -8,6 +8,10 @@
       "rev": "3f86702",
       "src": "https://github.com/m4xshen/autoclose.nvim"
     },
+    "bruno.nvim": {
+      "rev": "fd266b9",
+      "src": "https://github.com/jesses-code-adventures/bruno.nvim"
+    },
     "cmp-nvim-lsp": {
       "rev": "cbc7b02",
       "src": "https://github.com/hrsh7th/cmp-nvim-lsp"
@@ -15,6 +19,10 @@
     "cmp_luasnip": {
       "rev": "98d9cb5",
       "src": "https://github.com/saadparwaiz1/cmp_luasnip"
+    },
+    "copilot.vim": {
+      "rev": "f89e977",
+      "src": "https://github.com/github/copilot.vim"
     },
     "friendly-snippets": {
       "rev": "572f566",
@@ -44,12 +52,16 @@
       "rev": "f6b8656",
       "src": "https://github.com/nvim-mini/mini.visits"
     },
+    "nomad": {
+      "src": "https://github.com/nomad/nomad",
+      "version": "'*'"
+    },
     "nvim-cmp": {
       "rev": "d97d85e",
       "src": "https://github.com/hrsh7th/nvim-cmp"
     },
     "nvim-lspconfig": {
-      "rev": "dc7e7c7",
+      "rev": "a2bd1cf",
       "src": "https://github.com/neovim/nvim-lspconfig"
     },
     "nvim-treesitter": {
@@ -57,7 +69,7 @@
       "src": "https://github.com/nvim-treesitter/nvim-treesitter"
     },
     "oil.nvim": {
-      "rev": "7e1cd77",
+      "rev": "cbcb3f9",
       "src": "https://github.com/stevearc/oil.nvim"
     },
     "transparent.nvim": {
@@ -77,7 +89,7 @@
       "src": "https://github.com/kristijanhusak/vim-dadbod-completion"
     },
     "vim-dadbod-ui": {
-      "rev": "236179f",
+      "rev": "48c4f27",
       "src": "https://github.com/kristijanhusak/vim-dadbod-ui"
     },
     "vim-tmux-navigator": {

@@ -14,6 +14,7 @@ vim.pack.add(
     { src = "https://github.com/stevearc/oil.nvim" },
     { src = "https://github.com/christoomey/vim-tmux-navigator" },
     { src = "https://github.com/mg979/vim-visual-multi" },
+    { src = "https://github.com/github/copilot.vim" },
     -- lsp
     { src = "https://github.com/neovim/nvim-lspconfig" },
     -- snippets
@@ -31,6 +32,26 @@ vim.pack.add(
     { src = "https://github.com/rafamadriz/friendly-snippets" },
   }
 )
+
+vim.api.nvim_create_autocmd({"BufRead", "BufNewFile"}, {
+  pattern = "*.bru",
+  callback = function()
+    vim.bo.filetype = "bruno"
+    vim.bo.syntax = "bruno"
+  end,
+})
+
+vim.filetype.add({
+  extension = {
+    bru = "bruno",
+  }
+})
+
+vim.filetype.add({
+  extension = {
+    bru = "bruno",
+  }
+})
 
 require "mini.icons".setup()
 
@@ -64,7 +85,7 @@ require "nvim-treesitter.configs".setup({
     "go",
     "gotmpl",
     "python",
-    "regex"
+    "regex",
   },
   auto_install = true,
   highlight = { enable = true },
@@ -229,6 +250,21 @@ require "mini.visits".setup({})
 require "mini.git".setup({})
 require "mini.diff".setup({})
 
+local function truncated_filename()
+  local full = vim.api.nvim_buf_get_name(0)
+  if full == "" then
+    return "[No Name]"
+  end
+
+  local parts = vim.split(full, "/")
+  local count = #parts
+
+  -- last 3 items: parent/parent/file
+  local start = math.max(1, count - 2)
+
+  return table.concat(vim.list_slice(parts, start, count), "/")
+end
+
 local statusline = require('mini.statusline')
 statusline.setup({
   content = {
@@ -236,7 +272,7 @@ statusline.setup({
       local mode, mode_hl = statusline.section_mode({ trunc_width = 120 })
       local git           = statusline.section_git({ trunc_width = 75 })
       local diagnostics   = statusline.section_diagnostics({ trunc_width = 75 })
-      local filename      = vim.fn.expand('%:t')
+      local filename      = truncated_filename()
       local location      = statusline.section_location({ trunc_width = 75 })
 
       local lsp           = function()
@@ -263,6 +299,7 @@ statusline.setup({
   },
   use_icons = true,
 })
+
 
 require "vim-options"
 require "keymaps"
