@@ -5,6 +5,7 @@ if status is-interactive
   set -gx BUN_INSTALL "$HOME/.bun"
   set -gx JAVA_HOME "/usr/lib/jvm/java-17-openjdk"
   set -x SSH_AUTH_SOCK $XDG_RUNTIME_DIR/ssh-agent.socket
+  set -gx DOTNET_ROOT /usr/share/dotnet
 
   set -gx PATH \
   $HOME/flutter/bin \
@@ -16,7 +17,8 @@ if status is-interactive
   $JAVA_HOME/bin \
   $HOME/.ghcup/bin \
   $HOME/.pub-cache/bin \
-  $HOME/.cargo/bin
+  $HOME/.cargo/bin \
+  $HOME/zen
 
   # Aliases
   alias v='nvim'
@@ -39,10 +41,12 @@ if status is-interactive
   alias gps='git push'
 
   alias del='rm -rf'
-  alias clear='wipe --duration 800'
+  alias clear='wipe --char-pattern circle --color-pattern circle --colors dark-blue --char-segments 1 --color-segments 1 --char-invert false --color-invert false --duration 1200'
   alias ll='ls -lah'
 
   alias task go-task
+
+  alias s="zen --search"
 end
 
 if test -z "$WAYLAND_DISPLAY"; and test "$XDG_VTNR" = "1"

@@ -1,7 +1,12 @@
 vim.keymap.set('n', '<leader>w', ':write<CR>')
 vim.keymap.set('n', '<leader>q', ':quit<CR>')
 vim.keymap.set('n', '<leader>u', function()
-  vim.pack.update()
+  local ok, err = pcall(vim.pack.update)
+  if not ok then
+    vim.notify('Pack update failed: ' .. tostring(err), vim.log.levels.ERROR)
+  else
+    vim.notify('Pack update completed', vim.log.levels.INFO)
+  end
 end)
 
 -- dadbod
