@@ -54,7 +54,7 @@
     "format-disconnected": "<span color='#FF4040'>󱘖</span>",
     "interval": 5,
     "tooltip-format": "Network: <big><b>{essid}</b></big>\nSignal strength: <b>{signaldBm}dBm ({signalStrength}%)</b>\nFrequency: <b>{frequency}MHz</b>\nInterface: <b>{ifname}</b>",
-    "on-click": "iwgtk"
+    "on-click": "iwmenu -l custom --launcher-command 'wofi --show dmenu'"
   },
   "battery": {
     "states": {
@@ -89,7 +89,7 @@
         "<span color='#00FF7F'></span>"
       ]
     },
-    "on-click-right": "hyprpwcenter",
+    "on-click-right": "pavucontrol",
     "on-click": "pactl -- set-sink-mute 0 toggle",
     "tooltip": true,
     "tooltip-format": "device: {desc}\nvolume: {volume}%"
@@ -155,6 +155,6 @@
     "tooltip-format-connected": "{controller_alias}\t{controller_address}\n\n{num_connections} connected\n\n{device_enumerate}",
     "tooltip-format-enumerate-connected": "{device_alias}\t{device_address}",
     "tooltip-format-enumerate-connected-battery": "{device_alias}\t{device_address}\t{device_battery_percentage}%",
-    "on-click": "blueman-manager"
+    "on-click": "bzmenu -l custom --launcher-command 'wofi --show dmenu'"
   }
 }

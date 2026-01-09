@@ -3,6 +3,7 @@ vim.g.mapleader = " "
 local opt = vim.opt
 
 -- General Editing and Appearence
+opt.colorcolumn = "81"
 opt.number = true
 opt.expandtab = true
 opt.shiftwidth = 2
@@ -21,7 +22,6 @@ opt.list = true
 opt.guifont = "Agave Nerd Font Mono 12"
 vim.g.db_ui_use_nerd_fonts = 1
 vim.cmd.colorscheme "vague"
-
 
 -- Search and Navigation
 opt.ignorecase = true
