@@ -45,12 +45,10 @@ if status is-interactive
   alias ll='ls -lah'
 
   alias task go-task
-
-  alias s="zen --search"
 end
 
 if test -z "$WAYLAND_DISPLAY"; and test "$XDG_VTNR" = "1"
-    exec Hyprland
+    exec start-hyprland
 end
 
 fish_add_path /home/toast/.spicetify
