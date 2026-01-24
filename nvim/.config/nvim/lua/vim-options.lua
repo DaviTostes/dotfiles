@@ -3,7 +3,7 @@ vim.g.mapleader = " "
 local opt = vim.opt
 
 -- General Editing and Appearence
-opt.colorcolumn = "81"
+-- opt.colorcolumn = "81"
 opt.number = true
 opt.expandtab = true
 opt.shiftwidth = 2

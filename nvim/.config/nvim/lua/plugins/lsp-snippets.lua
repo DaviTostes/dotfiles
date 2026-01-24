@@ -63,7 +63,7 @@ vim.lsp.enable({
   "gopls",
   "dartls",
   "html",
-  "omnisharp",
+  "csharp_ls",
   "jsonls",
   "cssls",
   "htmx",
@@ -170,16 +170,10 @@ vim.lsp.config("html", {
   on_attach = on_attach,
 })
 
-vim.lsp.config("omnisharp", {
+vim.lsp.config("csharp_ls", {
   capabilities = capabilities,
   on_attach = on_attach,
-  cmd = {
-    "env", "DOTNET_ROOT=/usr/share/dotnet",
-    "/usr/bin/omnisharp",
-    "--languageserver",
-    "--hostPID", tostring(vim.fn.getpid()),
-  },
-  filetypes = { "cs" },
+  cmd = { "/home/toast/.dotnet/tools/csharp-ls" }
 })
 
 vim.lsp.config("jsonls", {

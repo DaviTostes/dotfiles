@@ -1,56 +1,41 @@
 {
   "plugins": {
-    "99": {
-      "rev": "37af305",
-      "src": "https://github.com/ThePrimeagen/99"
+    "LuaSnip": {
+      "rev": "dae4f5a"
     },
-    "LuaSnip": [],
     "autoclose.nvim": [],
     "bafa.nvim": {
-      "rev": "d4199d0",
-      "src": "https://github.com/mistweaverco/bafa.nvim.git"
+      "rev": "7e3cbd5"
     },
     "cmp-nvim-lsp": [],
     "cmp_luasnip": [],
-    "copilot.vim": [],
     "friendly-snippets": [],
     "github-nvim-theme": [],
-    "mini-git": {
-      "rev": "df3881f"
-    },
+    "mini-git": [],
     "mini.diff": [],
     "mini.icons": [],
     "mini.pick": {
-      "rev": "aa242ac"
+      "rev": "7c0a674"
     },
     "mini.statusline": [],
     "mini.visits": [],
-    "nvim-cmp": {
-      "rev": "85bbfad"
-    },
+    "nvim-cmp": [],
     "nvim-lspconfig": {
-      "rev": "92ee7d4"
+      "rev": "419b082"
     },
     "nvim-treesitter": {
-      "rev": "2ba5ec18"
+      "rev": "ec034813"
     },
     "nvim-web-devicons": {
-      "rev": "6788013",
-      "src": "https://github.com/nvim-tree/nvim-web-devicons"
+      "rev": "8033534"
     },
     "oil.nvim": {
-      "rev": "81b8a91"
+      "rev": "f55b25e"
     },
     "oxocarbon.nvim": [],
-    "toast": {
-      "rev": "df97c9f",
-      "src": "https://github.com/davitostes/toast"
-    },
     "transparent.nvim": [],
     "vague.nvim": [],
-    "vim-dadbod": {
-      "rev": "6d1d41d"
-    },
+    "vim-dadbod": [],
     "vim-dadbod-completion": [],
     "vim-dadbod-ui": [],
     "vim-tmux-navigator": [],
