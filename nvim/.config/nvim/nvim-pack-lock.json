@@ -9,36 +9,44 @@
     },
     "cmp-nvim-lsp": [],
     "cmp_luasnip": [],
-    "friendly-snippets": [],
+    "friendly-snippets": {
+      "rev": "6cd7280"
+    },
     "github-nvim-theme": [],
     "mini-git": [],
     "mini.diff": [],
     "mini.icons": [],
     "mini.pick": {
-      "rev": "7c0a674"
+      "rev": "4ad37ad"
     },
     "mini.statusline": [],
     "mini.visits": [],
-    "nvim-cmp": [],
+    "nvim-cmp": {
+      "rev": "da88697"
+    },
     "nvim-lspconfig": {
-      "rev": "419b082"
+      "rev": "66fd02a"
     },
     "nvim-treesitter": {
-      "rev": "ec034813"
+      "rev": "45a07f86"
     },
     "nvim-web-devicons": {
-      "rev": "8033534"
+      "rev": "746ffbb"
     },
     "oil.nvim": {
       "rev": "f55b25e"
     },
     "oxocarbon.nvim": [],
     "transparent.nvim": [],
-    "vague.nvim": [],
+    "vague.nvim": {
+      "rev": "c1ab4d4"
+    },
     "vim-dadbod": [],
     "vim-dadbod-completion": [],
     "vim-dadbod-ui": [],
-    "vim-tmux-navigator": [],
+    "vim-tmux-navigator": {
+      "rev": "e41c431"
+    },
     "vim-visual-multi": []
   }
 }
