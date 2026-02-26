@@ -13,37 +13,49 @@
       "rev": "6cd7280"
     },
     "github-nvim-theme": [],
-    "mini-git": [],
-    "mini.diff": [],
-    "mini.icons": [],
-    "mini.pick": {
-      "rev": "4ad37ad"
+    "mini-git": {
+      "rev": "a9565e3"
     },
-    "mini.statusline": [],
-    "mini.visits": [],
+    "mini.diff": {
+      "rev": "ff3cd5e"
+    },
+    "mini.icons": {
+      "rev": "5b9076d"
+    },
+    "mini.pick": {
+      "rev": "8521fe2"
+    },
+    "mini.statusline": {
+      "rev": "8c3829d"
+    },
+    "mini.visits": {
+      "rev": "317a37c"
+    },
     "nvim-cmp": {
       "rev": "da88697"
     },
     "nvim-lspconfig": {
-      "rev": "66fd02a"
+      "rev": "a40d22e"
     },
     "nvim-treesitter": {
-      "rev": "45a07f86"
+      "rev": "957f86ae"
     },
     "nvim-web-devicons": {
-      "rev": "746ffbb"
+      "rev": "737cf6c"
     },
     "oil.nvim": {
-      "rev": "f55b25e"
+      "rev": "0fcc838"
     },
     "oxocarbon.nvim": [],
     "transparent.nvim": [],
     "vague.nvim": {
-      "rev": "c1ab4d4"
+      "rev": "4abd79d"
     },
     "vim-dadbod": [],
     "vim-dadbod-completion": [],
-    "vim-dadbod-ui": [],
+    "vim-dadbod-ui": {
+      "rev": "07e92e2"
+    },
     "vim-tmux-navigator": {
       "rev": "e41c431"
     },

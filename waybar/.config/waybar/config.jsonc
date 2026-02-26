@@ -22,7 +22,7 @@
   ],
   "modules-right": [
     "network",
-    "bluetooth",
+    // "bluetooth",
     "pulseaudio",
     "battery"
   ],
