@@ -17,14 +17,13 @@ if status is-interactive
   $JAVA_HOME/bin \
   $HOME/.ghcup/bin \
   $HOME/.pub-cache/bin \
-  $HOME/.cargo/bin \
-  $HOME/zen
+  $HOME/.cargo/bin
 
   # Aliases
   alias v='nvim'
 
   alias t='tmux'
-  alias tn='tmux new -s'
+  alias tn='tmux new'
   alias ta='tmux attach -t'
   alias tk='tmux kill-session -t'
   alias tl='tmux ls'
@@ -36,19 +35,21 @@ if status is-interactive
   alias gb='git branch'
   alias ga='git add'
   alias gaa='git add .'
+  alias gap='git add -p .'
   alias gc='git commit -m'
   alias gpl='git pull'
   alias gps='git push'
+  alias grs='git restore --staged -p .'
 
   alias del='rm -rf'
   alias clear='wipe --char-pattern circle --color-pattern circle --colors dark-blue --char-segments 1 --color-segments 1 --char-invert false --color-invert false --duration 1200'
   alias ll='ls -lah'
 
   alias task go-task
+
+  fastfetch
 end
 
 if test -z "$WAYLAND_DISPLAY"; and test "$XDG_VTNR" = "1"
     exec start-hyprland
 end
-
-fish_add_path /home/toast/.spicetify
