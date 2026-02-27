@@ -46,3 +46,6 @@ end)
 
 -- Toast
 vim.keymap.set({"n", "v"}, "<leader>t", ":Toast<CR>", { desc = 'Toast: Generate completion' })
+
+-- Omm
+vim.keymap.set({"n", "v"}, "<leader>o", ":Omm<CR>", { desc = 'Omm: Task Manager' })
