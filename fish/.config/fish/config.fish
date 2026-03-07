@@ -22,6 +22,8 @@ if status is-interactive
   # Aliases
   alias v='nvim'
 
+  alias omm='omm --editor nvim'
+
   alias t='tmux'
   alias tn='tmux new'
   alias ta='tmux attach -t'
