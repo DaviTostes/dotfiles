@@ -9,7 +9,7 @@
       "src": "https://github.com/m4xshen/autoclose.nvim"
     },
     "bafa.nvim": {
-      "rev": "7e3cbd511699a70bcd367a420635e0c7391367d7",
+      "rev": "e5886581dcd8aba95e813a01fa77fef864ee3135",
       "src": "https://github.com/mistweaverco/bafa.nvim.git"
     },
     "cmp-nvim-lsp": {
@@ -57,15 +57,15 @@
       "src": "https://github.com/hrsh7th/nvim-cmp"
     },
     "nvim-lspconfig": {
-      "rev": "ead0f5f342d8d323441e7d4b88f0fc436a81ad5f",
+      "rev": "dd261ad5266ab5bbec249d21efeceda98ff3e1a6",
       "src": "https://github.com/neovim/nvim-lspconfig"
     },
     "nvim-treesitter": {
-      "rev": "544320a9cf5d6bf539ec1cc54d393064015670c4",
+      "rev": "ebc3201290b8372df2b3a1c23b71b9f007d972ff",
       "src": "https://github.com/nvim-treesitter/nvim-treesitter"
     },
     "nvim-web-devicons": {
-      "rev": "737cf6c657898d0c697311d79d361288a1343d50",
+      "rev": "d7462543c9e366c0d196c7f67a945eaaf5d99414",
       "src": "https://github.com/nvim-tree/nvim-web-devicons"
     },
     "oil.nvim": {
@@ -85,7 +85,7 @@
       "src": "https://github.com/tribela/transparent.nvim"
     },
     "vague.nvim": {
-      "rev": "2baf167930cf2fa9c6aa7de08a4522e9fb527b33",
+      "rev": "8c4643f8a5106dbc492918f86ff6b5c81111ce9a",
       "src": "https://github.com/vague-theme/vague.nvim"
     },
     "vim-dadbod": {
