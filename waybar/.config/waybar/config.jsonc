@@ -48,10 +48,10 @@
     }
   },
   "network": {
-    "format-wifi": "<span color='#00FFFF'>󰤨</span>",
-    "format-ethernet": "<span color='#7FFF00'>󰈀</span>",
-    "format-linked": "<span color='#FFA500'></span>",
-    "format-disconnected": "<span color='#FF4040'>󱘖</span>",
+    "format-wifi": "<span color='#FAF9F6'>󰤨</span>",
+    "format-ethernet": "<span color='#FAF9F6'>󰈀</span>",
+    "format-linked": "<span color='#FAF9F6'></span>",
+    "format-disconnected": "<span color='#FAF9F6'>󱘖</span>",
     "interval": 5,
     "tooltip-format": "Network: <big><b>{essid}</b></big>\nSignal strength: <b>{signaldBm}dBm ({signalStrength}%)</b>\nFrequency: <b>{frequency}MHz</b>\nInterface: <b>{ifname}</b>",
     "on-click": "iwmenu -l custom --launcher-command 'wofi --show dmenu'"
@@ -61,7 +61,7 @@
       "warning": 30,
       "critical": 15
     },
-    "format": "<span color='#28CD41'>{icon}</span>",
+    "format": "<span color='#FAF9F6'>{icon}</span>",
     "format-charging": "󱐋",
     "interval": 1,
     "format-icons": [
@@ -74,19 +74,19 @@
     "tooltip": true
   },
   "pulseaudio": {
-    "format": "<span color='#00FF7F'>{icon}</span>",
-    "format-muted": "<span color='#FF4040'>󰖁</span>",
+    "format": "<span color='#FAF9F6'>{icon}</span>",
+    "format-muted": "<span color='#FAF9F6'>󰖁</span>",
     "format-icons": {
-      "headphone": "<span color='#BF00FF'></span>",
-      "hands-free": "<span color='#BF00FF'></span>",
-      "headset": "<span color='#BF00FF'></span>",
-      "phone": "<span color='#00FFFF'></span>",
-      "portable": "<span color='#00FFFF'></span>",
+      "headphone": "<span color='#FAF9F6'></span>",
+      "hands-free": "<span color='#FAF9F6'></span>",
+      "headset": "<span color='#FAF9F6'></span>",
+      "phone": "<span color='#FAF9F6'></span>",
+      "portable": "<span color='#FAF9F6'></span>",
       "car": "<span color='#FFA500'></span>",
       "default": [
-        "<span color='#808080'></span>",
-        "<span color='#FFFF66'></span>",
-        "<span color='#00FF7F'></span>"
+        "<span color='#FAF9F6'></span>",
+        "<span color='#FAF9F6'></span>",
+        "<span color='#FAF9F6'></span>"
       ]
     },
     "on-click-right": "pavucontrol",
@@ -126,8 +126,8 @@
       "mode": "year",
       "mode-mon-col": 4,
       "format": {
-        "months": "<span color='#00FFFF'><b>{}</b></span>",
-        "today": "<span color='#00FFFF'><b>{}</b></span>"
+        "months": "<span color='#FAF9F6'><b>{}</b></span>",
+        "today": "<span color='#FAF9F6'><b>{}</b></span>"
       }
     }
   },
