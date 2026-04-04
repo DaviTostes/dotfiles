@@ -67,7 +67,8 @@ vim.lsp.enable({
   "jsonls",
   "cssls",
   "htmx",
-  "bruno_ls"
+  "bruno_ls",
+  "yamlls"
 })
 
 vim.lsp.config("bruno_ls", {
@@ -184,4 +185,21 @@ vim.lsp.config("jsonls", {
 vim.lsp.config("htmx", {
   capabilities = capabilities,
   on_attach = on_attach
+})
+
+vim.lsp.config("yamlls", {
+  capabilities = capabilities,
+  on_attach = on_attach,
+  filetypes = { 'yaml', 'yml' },
+  settings = {
+    yaml = {
+      schemaStore = {
+        enable = true,
+        url = "https://www.schemastore.org"
+      },
+      schemas = {
+        ["https://json.schemastore.org"] = ".github/workflows/*"
+      },
+    }
+  }
 })
