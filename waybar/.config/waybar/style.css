@@ -9,11 +9,17 @@
   background-color: rgba(0, 0, 0, 0);
 }
 
-#network,
 #bluetooth,
-#pulseaudio,
 #battery {
-  margin: 0px 10px;
+  margin: 0px 20px;
+}
+
+#pulseaudio {
+  margin: 0px 15px 0px 10px;
+}
+
+#network {
+  margin: 0px 5px 0px 0px;
 }
 
 #custpm-temperature.critical,
