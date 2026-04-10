@@ -49,6 +49,8 @@ if status is-interactive
 
   alias task go-task
 
+  alias d='npm run dev'
+
   fastfetch
 end
 
