@@ -46,7 +46,12 @@ vim.keymap.set('n', '<leader>m', function()
 end)
 
 -- Toast
-vim.keymap.set({"n", "v"}, "<leader>t", ":Toast<CR>", { desc = 'Toast: Generate completion' })
+vim.keymap.set({ "n", "v" }, "<leader>t", ":Toast<CR>", { desc = 'Toast: Generate completion' })
 
 -- Omm
-vim.keymap.set({"n", "v"}, "<leader>o", ":Omm<CR>", { desc = 'Omm: Task Manager' })
+vim.keymap.set({ "n", "v" }, "<leader>o", ":Omm<CR>", { desc = 'Omm: Task Manager' })
+
+-- mini.git
+vim.keymap.set('v', '<leader>gb', function()
+  MiniGit.show_range_history()
+end, { desc = 'Git blame visual selection' })
