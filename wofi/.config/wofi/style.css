@@ -1,55 +1,91 @@
-@define-color base       #1e1e2e;
-@define-color background #14161B;
-@define-color foreground #E0E2EA;
-@define-color border     #4F5258;
-@define-color blue       #A6DBFF;
-@define-color green      #B4F6C0;
-@define-color yellow     #FCE094;
-@define-color red        #FFC0B9;
-@define-color magenta    #FFCAFF;
-@define-color cyan       #8CF8F7;
+@define-color background  #0d0d0d;
+@define-color border      #444444;
+@define-color fg-primary  #e0e0e0;
+@define-color fg-dim      #666666;
+@define-color selection   #1e1e1e;
 
 * {
-  font-family: 'Agave Nerd Font Mono', monospace;
-  font-size: 18px;
+  font-family: 'SF Pro Display', 'Helvetica Neue', 'Inter', sans-serif;
+  font-size: 14px;
+  color: @fg-primary;
 }
 
-/* Window container */
 window {
   margin: 0;
-  padding: 0px;
-  border: 2px solid @border;
-  border-radius: 8px;
-  background-color: @base;
-}
-
-/* Inner areas */
-#inner-box, #outer-box, #scroll, #input, #entry {
-  margin: 3px;
-  padding: 5px;
+  padding: 0;
+  border: 1px solid @border;
+  border-radius: 10px;
   background-color: @background;
 }
 
-/* Text styling */
-#text, #input {
-  color: @foreground;
+#outer-box {
+  margin: 0;
+  padding: 0;
+  background-color: transparent;
 }
 
-#input {
+#input,
+#input:focus {
+  margin: 0;
+  padding: 14px 16px 14px 5px;
+  background-color: transparent;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23666666' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cline x1='21' y1='21' x2='16.65' y2='16.65'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: 8px center;
   border: none;
-  border-radius: 0.1em;
+  border-bottom: 1px solid @border;
+  border-radius: 0;
+  margin: 0 12px;
+  color: @fg-dim;
+  font-size: 14px;
+  caret-color: @fg-primary;
+  outline: none;
+  box-shadow: none;
 }
 
-/* Selection and highlighting */
+#entry,
+#entry:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+*:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+#scroll {
+  margin: 0;
+  padding: 6px 0;
+  background-color: transparent;
+}
+
+#inner-box {
+  margin: 0;
+  padding: 0;
+  background-color: transparent;
+}
+
+#entry {
+  margin: 2px 8px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background-color: transparent;
+}
+
 #entry:selected {
-  background-color: @blue;
+  background-color: @selection;
+}
+
+#text {
+  color: @fg-primary;
+  font-size: 14px;
 }
 
 #entry:selected #text {
-  color: @background;
+  color: @fg-primary;
 }
 
-/* Focused input indicator */
-#input * {
-  outline: 2px solid @blue !important;
+#img {
+  margin-right: 12px;
 }
