@@ -9,9 +9,6 @@ vim.keymap.set('n', '<leader>u', function()
   end
 end)
 
--- dadbod
-vim.keymap.set("n", "<leader>tb", "<C-:>DBUI<CR>", {})
-
 -- diagnostics
 vim.keymap.set("n", "]d", vim.diagnostic.goto_next, { desc = "Next diagnostic" })
 vim.keymap.set("n", "[d", vim.diagnostic.goto_prev, { desc = "Previous diagnostic" })
@@ -45,13 +42,36 @@ vim.keymap.set('n', '<leader>m', function()
   require 'bafa'.toggle()
 end)
 
--- Toast
-vim.keymap.set({ "n", "v" }, "<leader>t", ":Toast<CR>", { desc = 'Toast: Generate completion' })
-
--- Omm
-vim.keymap.set({ "n", "v" }, "<leader>o", ":Omm<CR>", { desc = 'Omm: Task Manager' })
-
 -- mini.git
 vim.keymap.set('v', '<leader>gb', function()
   MiniGit.show_range_history()
 end, { desc = 'Git blame visual selection' })
+
+-- treesiter
+local select = require("nvim-treesitter-textobjects.select")
+
+vim.keymap.set({ "x", "o" }, "af", function()
+  select.select_textobject("@function.outer", "textobjects")
+end)
+
+vim.keymap.set({ "x", "o" }, "if", function()
+  select.select_textobject("@function.inner", "textobjects")
+end)
+
+local move = require("nvim-treesitter-textobjects.move")
+
+vim.keymap.set("n", "]f", function()
+  move.goto_next_start("@function.outer")
+end)
+
+vim.keymap.set("n", "[f", function()
+  move.goto_previous_start("@function.outer")
+end)
+
+vim.keymap.set("n", "]c", function()
+  move.goto_next_start("@class.outer")
+end)
+
+vim.keymap.set("n", "[c", function()
+  move.goto_previous_start("@class.outer")
+end)

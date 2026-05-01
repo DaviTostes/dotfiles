@@ -10,12 +10,11 @@ shell fish
 
 background_opacity 0.9
 
-symbol_map U+1F300-U+1FAFF,U+2600-U+27BF,U+1F000-U+1F02F,U+1F0A0-U+1F0FF,U+1F100-U+1F64F,U+1F680-U+1F6FF Noto Color Emoji
-
 
 # BEGIN_KITTY_FONTS
-font_family      family="Agave Nerd Font"
+font_family      family='Agave Nerd Font Mono' postscript_name=AgaveNFM-Regular
 bold_font        auto
 italic_font      auto
 bold_italic_font auto
+symbol_map U+1F300-U+1FAFF,U+2600-U+27BF,U+1F000-U+1F02F,U+1F0A0-U+1F0FF,U+1F100-U+1F64F,U+1F680-U+1F6FF Noto Color Emoji
 # END_KITTY_FONTS
