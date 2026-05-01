@@ -49,10 +49,15 @@ if status is-interactive
 
   alias task go-task
 
-  alias d='npm run dev'
+  alias d='dcrun'
 
   fastfetch
+
+  keychain --quiet --nogui ~/.ssh/moussa
+  keychain --quiet --nogui ~/.ssh/scalefy
+  source ~/.keychain/(cat /etc/hostname)-fish
 end
+
 
 if test -z "$WAYLAND_DISPLAY"; and test "$XDG_VTNR" = "1"
     exec start-hyprland

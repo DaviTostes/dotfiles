@@ -1,9 +1,12 @@
-vim.pack.add({ "https://github.com/nvim-treesitter/nvim-treesitter" })
+vim.pack.add({
+  { src = "https://github.com/nvim-treesitter/nvim-treesitter" },
+  { src = "https://github.com/nvim-treesitter/nvim-treesitter-textobjects" },
+})
 
 local treesitter = require "nvim-treesitter"
 
 treesitter.setup {
-  install_dir = vim.fn.stdpath('data') .. '/site'
+  install_dir = vim.fn.stdpath('data') .. '/site',
 }
 
 treesitter.install {
@@ -20,7 +23,7 @@ treesitter.install {
 }
 
 vim.api.nvim_create_autocmd("FileType", {
-    callback = function(args)
-        pcall(vim.treesitter.start, args.buf)
-    end,
+  callback = function(args)
+    pcall(vim.treesitter.start, args.buf)
+  end,
 })
