@@ -68,7 +68,9 @@ vim.lsp.enable({
   "cssls",
   "htmx",
   "bruno_ls",
-  "yamlls"
+  "yamlls",
+  "basics-language-server",
+  "ccls",
 })
 
 vim.lsp.config("bruno_ls", {
@@ -201,5 +203,42 @@ vim.lsp.config("yamlls", {
         ["https://json.schemastore.org"] = ".github/workflows/*"
       },
     }
+  }
+})
+
+vim.lsp.config("basics-language-server", {
+  capabilities = capabilities,
+  on_attach = on_attach,
+  settings = {
+    buffer = {
+      enable = true,
+      minCompletionLength = 4
+    },
+    path = {
+      enable = true
+    },
+    snippet = {
+      enable = false,
+      sources = {}
+    }
+  }
+})
+
+vim.lsp.config("ccls", {
+  capabilities = capabilities,
+  on_attach = on_attach,
+  cmd = { "/home/toast/ccls/Release/ccls" },
+  filetypes = { "c", "cpp", "objc", "objcpp", "cuda" },
+  offset_encoding = "utf-32",
+  workspace_required = true,
+  root_markers = { "compile_commands.json", "compile_flags.txt", ".ccls", ".git" },
+  init_options = {
+    compilationDatabaseDirectory = "build",
+    index = {
+      threads = 0,
+    },
+    clang = {
+      excludeArgs = { "-frounding-math" },
+    },
   }
 })
