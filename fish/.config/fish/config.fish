@@ -17,7 +17,7 @@ if status is-interactive
   $JAVA_HOME/bin \
   $HOME/.ghcup/bin \
   $HOME/.pub-cache/bin \
-  $HOME/.cargo/bin 
+  $HOME/.cargo/bin
 
   # Aliases
   alias v='nvim'

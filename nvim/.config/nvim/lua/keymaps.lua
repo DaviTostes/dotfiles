@@ -20,7 +20,7 @@ vim.keymap.set("n", "gd", vim.lsp.buf.definition, {})
 vim.keymap.set("n", "gD", vim.lsp.buf.declaration, {})
 vim.keymap.set({ "n", "v" }, "<space>ca", vim.lsp.buf.code_action, {})
 vim.keymap.set("n", "<leader>lf", vim.lsp.buf.format, {})
-vim.keymap.set("n", "<leader>lr", ':LspRestart<CR>')
+vim.keymap.set("n", "<leader>lr", ':lsp restart<CR>')
 
 -- oil
 vim.keymap.set("n", "<leader>e", "<CMD>Oil<CR>", {})
