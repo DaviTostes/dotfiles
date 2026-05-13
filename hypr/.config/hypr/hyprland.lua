@@ -2,11 +2,15 @@
 ---- MONITORS ----
 --------------------
 
-hl.monitor({ output = "DP-2", mode = "1920x1080@120", position = "0x0", scale = 1 })
-hl.monitor({ output = "HDMI-A-1", mode = "1920x1080@75", position = "1920x0", scale = 1 })
+local primaryMonitor   = "DP-2"
+local secondaryMonitor = "HDMI-A-1"
+local resolution       = "1920x1080"
 
-hl.workspace_rule({ workspace = "1", monitor = "DP-2", default = false })
-hl.workspace_rule({ workspace = "2", monitor = "HDMI-A-1", default = true })
+hl.monitor({ output = primaryMonitor,   mode = resolution .. "@120", position = "0x0",    scale = 1 })
+hl.monitor({ output = secondaryMonitor, mode = resolution .. "@75",  position = "1920x0", scale = 1 })
+
+hl.workspace_rule({ workspace = "1", monitor = primaryMonitor,   default = false })
+hl.workspace_rule({ workspace = "2", monitor = secondaryMonitor, default = true })
 
 -- hl.monitor({ output = "eDP-1",    mode = "1920x1080@60", position = "0x0",    scale = 1 })
 -- hl.monitor({ output = "HDMI-A-1", mode = "1920x1080@75", position = "1920x0", scale = 1 })
@@ -24,34 +28,51 @@ local discord     = "vesktop"
 local btManager   = "bzmenu -l custom --launcher-command 'wofi --show dmenu'"
 local wifiManager = "iwmenu -l custom --launcher-command 'wofi --show dmenu'"
 
+local function termRun(cmd) return terminal .. " " .. cmd end
+
 -------------------
 ---- AUTOSTART ----
 -------------------
 
+local autostart = {
+  "dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP",
+  "waybar",
+  "swaync",
+  "hypridle",
+  "hyprpaper",
+  "swayosd-server",
+  "wl-paste --watch cliphist store",
+}
+
 hl.on("hyprland.start", function()
-  hl.exec_cmd("dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP")
-  hl.exec_cmd("swaync")
-  hl.exec_cmd("hypridle")
-  hl.exec_cmd("hyprpaper")
-  hl.exec_cmd("swayosd-server")
-  hl.exec_cmd("wl-paste --watch cliphist store")
+  for _, cmd in ipairs(autostart) do
+    hl.exec_cmd(cmd)
+  end
 end)
 
 -------------------------------
 ---- ENVIRONMENT VARIABLES ----
 -------------------------------
 
-hl.env("XDG_CURRENT_DESKTOP", "Hyprland")
-hl.env("XDG_SESSION_TYPE", "wayland")
-hl.env("XDG_SESSION_DESKTOP", "Hyprland")
+local cursorSize = "22"
 
-hl.env("LIBVA_DRIVER_NAME", "radeonsi")
+local envs = {
+  XDG_CURRENT_DESKTOP  = "Hyprland",
+  XDG_SESSION_TYPE     = "wayland",
+  XDG_SESSION_DESKTOP  = "Hyprland",
 
-hl.env("XCURSOR_THEME", "Bibata-Modern-Classic")
-hl.env("XCURSOR_SIZE", "28")
-hl.env("HYPRCURSOR_SIZE", "28")
+  LIBVA_DRIVER_NAME    = "radeonsi",
 
-hl.env("QT_QPA_PLATFORMTHEME", "qt5ct")
+  XCURSOR_THEME        = "Sunity-cursors-white",
+  XCURSOR_SIZE         = cursorSize,
+  HYPRCURSOR_SIZE      = cursorSize,
+
+  QT_QPA_PLATFORMTHEME = "qt5ct",
+}
+
+for k, v in pairs(envs) do
+  hl.env(k, v)
+end
 
 -----------------------
 ---- LOOK AND FEEL ----
@@ -60,7 +81,7 @@ hl.env("QT_QPA_PLATFORMTHEME", "qt5ct")
 hl.config({
   general = {
     gaps_in          = 0,
-    gaps_out         = 0,
+    gaps_out         = 2,
 
     border_size      = 2,
 
@@ -75,7 +96,7 @@ hl.config({
   },
 
   decoration = {
-    rounding         = 1,
+    rounding         = 4,
     rounding_power   = 2,
 
     active_opacity   = 1.0,
@@ -147,39 +168,43 @@ hl.device({
 ---- ANIMATIONS ----
 --------------------
 
-hl.curve("easeOutQuint", { type = "bezier", points = { { 0.23, 1 }, { 0.32, 1 } } })
-hl.curve("easeInOutCubic", { type = "bezier", points = { { 0.65, 0.05 }, { 0.36, 1 } } })
-hl.curve("linear", { type = "bezier", points = { { 0, 0 }, { 1, 1 } } })
-hl.curve("almostLinear", { type = "bezier", points = { { 0.5, 0.5 }, { 0.75, 1 } } })
-hl.curve("quick", { type = "bezier", points = { { 0.15, 0 }, { 0.1, 1 } } })
+local curves = {
+  easeOutQuint   = { { 0.23, 1 },    { 0.32, 1 } },
+  easeInOutCubic = { { 0.65, 0.05 }, { 0.36, 1 } },
+  linear         = { { 0, 0 },       { 1, 1 } },
+  almostLinear   = { { 0.5, 0.5 },   { 0.75, 1 } },
+  quick          = { { 0.15, 0 },    { 0.1, 1 } },
+}
 
-hl.animation({ leaf = "global", enabled = true, speed = 10, bezier = "default" })
-hl.animation({ leaf = "border", enabled = true, speed = 5.39, bezier = "easeOutQuint" })
-hl.animation({ leaf = "windows", enabled = true, speed = 4.79, bezier = "easeOutQuint" })
-hl.animation({ leaf = "windowsIn", enabled = true, speed = 4.1, bezier = "easeOutQuint", style = "popin 87%" })
-hl.animation({ leaf = "windowsOut", enabled = true, speed = 1.49, bezier = "linear", style = "popin 87%" })
-hl.animation({ leaf = "fadeIn", enabled = true, speed = 1.73, bezier = "almostLinear" })
-hl.animation({ leaf = "fadeOut", enabled = true, speed = 1.46, bezier = "almostLinear" })
-hl.animation({ leaf = "fade", enabled = true, speed = 3.03, bezier = "quick" })
-hl.animation({ leaf = "layers", enabled = true, speed = 3.81, bezier = "easeOutQuint" })
-hl.animation({ leaf = "layersIn", enabled = true, speed = 4, bezier = "easeOutQuint", style = "fade" })
-hl.animation({ leaf = "layersOut", enabled = true, speed = 1.5, bezier = "linear", style = "fade" })
-hl.animation({ leaf = "fadeLayersIn", enabled = true, speed = 1.79, bezier = "almostLinear" })
-hl.animation({ leaf = "fadeLayersOut", enabled = true, speed = 1.39, bezier = "almostLinear" })
-hl.animation({ leaf = "workspaces", enabled = true, speed = 1.94, bezier = "almostLinear", style = "fade" })
-hl.animation({ leaf = "workspacesIn", enabled = true, speed = 1.21, bezier = "almostLinear", style = "fade" })
-hl.animation({ leaf = "workspacesOut", enabled = true, speed = 1.94, bezier = "almostLinear", style = "fade" })
-hl.animation({ leaf = "zoomFactor", enabled = true, speed = 7, bezier = "quick" })
+for name, points in pairs(curves) do
+  hl.curve(name, { type = "bezier", points = points })
+end
+
+local animations = {
+  { leaf = "global",         enabled = true, speed = 10,   bezier = "default" },
+  { leaf = "border",         enabled = true, speed = 5.39, bezier = "easeOutQuint" },
+  { leaf = "windows",        enabled = true, speed = 4.79, bezier = "easeOutQuint" },
+  { leaf = "windowsIn",      enabled = true, speed = 4.1,  bezier = "easeOutQuint", style = "popin 87%" },
+  { leaf = "windowsOut",     enabled = true, speed = 1.49, bezier = "linear",       style = "popin 87%" },
+  { leaf = "fadeIn",         enabled = true, speed = 1.73, bezier = "almostLinear" },
+  { leaf = "fadeOut",        enabled = true, speed = 1.46, bezier = "almostLinear" },
+  { leaf = "fade",           enabled = true, speed = 3.03, bezier = "quick" },
+  { leaf = "layers",         enabled = true, speed = 3.81, bezier = "easeOutQuint" },
+  { leaf = "layersIn",       enabled = true, speed = 4,    bezier = "easeOutQuint", style = "fade" },
+  { leaf = "layersOut",      enabled = true, speed = 1.5,  bezier = "linear",       style = "fade" },
+  { leaf = "fadeLayersIn",   enabled = true, speed = 1.79, bezier = "almostLinear" },
+  { leaf = "fadeLayersOut",  enabled = true, speed = 1.39, bezier = "almostLinear" },
+  { leaf = "workspaces",     enabled = true, speed = 1.94, bezier = "almostLinear", style = "fade" },
+  { leaf = "workspacesIn",   enabled = true, speed = 1.21, bezier = "almostLinear", style = "fade" },
+  { leaf = "workspacesOut",  enabled = true, speed = 1.94, bezier = "almostLinear", style = "fade" },
+  { leaf = "zoomFactor",     enabled = true, speed = 7,    bezier = "quick" },
+}
+
+for _, a in ipairs(animations) do hl.animation(a) end
 
 ----------------------
 ---- WINDOW RULES ----
 ----------------------
-
-hl.window_rule({
-  name  = "firefox-pip",
-  match = { class = "firefox", title = "Picture-in-Picture" },
-  float = true,
-})
 
 hl.window_rule({
   name       = "steam-games-fullscreen",
@@ -213,67 +238,80 @@ hl.window_rule({
 ---- KEYBINDINGS ----
 ---------------------
 
-local mainMod = "SUPER"
+local mainMod   = "SUPER"
+local superShift = mainMod .. " + SHIFT"
+local superAlt   = mainMod .. " + ALT"
 
-hl.bind(mainMod .. " + Return", hl.dsp.exec_cmd(terminal))
-hl.bind(mainMod .. " + C", hl.dsp.window.close())
-hl.bind(mainMod .. " + M", hl.dsp.exec_cmd("command -v hyprshutdown >/dev/null 2>&1 && hyprshutdown || hyprctl dispatch 'hl.dsp.exit()'"))
-hl.bind(mainMod .. " + E", hl.dsp.exec_cmd(fileManager))
-hl.bind(mainMod .. " + V", hl.dsp.window.float({ action = "toggle" }))
-hl.bind(mainMod .. " + space", hl.dsp.exec_cmd(menu))
-hl.bind("SUPER + ALT + space", hl.dsp.exec_cmd(clipHistory))
+local function mod(suffix)   return mainMod    .. " + " .. suffix end
+local function shift(suffix) return superShift .. " + " .. suffix end
+local function alt(suffix)   return superAlt   .. " + " .. suffix end
 
-hl.bind(mainMod .. " + P", hl.dsp.window.pseudo())
-hl.bind(mainMod .. " + T", hl.dsp.layout("togglesplit"))
+local exec = hl.dsp.exec_cmd
 
-hl.bind(mainMod .. " + B", hl.dsp.exec_cmd(browser))
-hl.bind(mainMod .. " + D", hl.dsp.exec_cmd(discord))
-hl.bind(mainMod .. " + S", hl.dsp.exec_cmd("steam"))
-hl.bind(mainMod .. " + Z", hl.dsp.exec_cmd("zapzap"))
-hl.bind("SUPER + SHIFT + Z", hl.dsp.exec_cmd("Telegram"))
-hl.bind(mainMod .. " + A", hl.dsp.exec_cmd("claude-desktop --toggle"))
-hl.bind("SUPER + SHIFT + B", hl.dsp.exec_cmd(btManager))
-hl.bind("SUPER + SHIFT + W", hl.dsp.exec_cmd(wifiManager))
-hl.bind("SUPER + SHIFT + I", hl.dsp.exec_cmd("kitty btop"))
-hl.bind("SUPER + SHIFT + M", hl.dsp.exec_cmd("kitty maily"))
-hl.bind(mainMod .. " + W", hl.dsp.exec_cmd("pgrep -x waybar && killall waybar || waybar"))
-hl.bind(mainMod .. " + U", hl.dsp.exec_cmd("pavucontrol"))
+local function osd(arg)        return exec("swayosd-client " .. arg) end
+local function brightness(arg) return exec("brightnessctl set " .. arg) end
 
-hl.bind("F9", hl.dsp.exec_cmd("pkill -SIGUSR1 albus"))
-hl.bind("F9", hl.dsp.exec_cmd("pkill -SIGUSR2 albus"), { release = true })
+hl.bind(mod("Return"),       exec(terminal))
+hl.bind(mod("C"),            hl.dsp.window.close())
+hl.bind(mod("M"),            exec("command -v hyprshutdown >/dev/null 2>&1 && hyprshutdown || hyprctl dispatch 'hl.dsp.exit()'"))
+hl.bind(mod("E"),            exec(fileManager))
+hl.bind(mod("V"),            hl.dsp.window.float({ action = "toggle" }))
+hl.bind(mod("space"),        exec(menu))
+hl.bind(alt("space"),        exec(clipHistory))
 
-hl.bind("PRINT", hl.dsp.exec_cmd("hyprshot -m window"))
-hl.bind("SHIFT + PRINT", hl.dsp.exec_cmd("hyprshot -m region"))
-hl.bind("SUPER + SHIFT + L", hl.dsp.exec_cmd("hyprlock"))
+hl.bind(mod("P"),            hl.dsp.window.pseudo())
+hl.bind(mod("T"),            hl.dsp.layout("togglesplit"))
 
-hl.bind("SUPER + SHIFT + C", hl.dsp.exec_cmd("hyprpicker -a"))
+hl.bind(mod("B"),            exec(browser))
+hl.bind(mod("D"),            exec(discord))
+hl.bind(mod("S"),            exec("steam"))
+hl.bind(mod("Z"),            exec("zapzap"))
+hl.bind(shift("Z"),          exec("Telegram"))
+hl.bind(mod("A"),            exec("claude-desktop --toggle"))
+hl.bind(shift("B"),          exec(btManager))
+hl.bind(shift("W"),          exec(wifiManager))
+hl.bind(shift("I"),          exec(termRun("btop")))
+hl.bind(shift("M"),          exec(termRun("maily")))
+hl.bind(mod("W"),            exec("pgrep -x waybar && killall waybar || waybar"))
+hl.bind(mod("U"),            exec("pavucontrol"))
 
-hl.bind(mainMod .. " + R", hl.dsp.exec_cmd("fish -c record"))
+hl.bind("F9",                exec("pkill -SIGUSR1 albus"))
+hl.bind("F9",                exec("pkill -SIGUSR2 albus"), { release = true })
 
-hl.bind(mainMod .. " + H", hl.dsp.focus({ direction = "l" }))
-hl.bind(mainMod .. " + L", hl.dsp.focus({ direction = "r" }))
-hl.bind(mainMod .. " + K", hl.dsp.focus({ direction = "u" }))
-hl.bind(mainMod .. " + J", hl.dsp.focus({ direction = "d" }))
+hl.bind("PRINT",             exec("hyprshot -m window"))
+hl.bind("SHIFT + PRINT",     exec("hyprshot -m region"))
+hl.bind(shift("L"),          exec("hyprlock"))
 
-for i = 1, 9 do
-  hl.bind(mainMod .. " + " .. i, hl.dsp.focus({ workspace = i }))
-  hl.bind("SUPER + SHIFT + " .. i, hl.dsp.window.move({ workspace = i }))
+hl.bind(shift("C"),          exec("hyprpicker -a"))
+
+hl.bind(mod("R"),            exec("fish -c record"))
+
+local directions = { H = "l", L = "r", K = "u", J = "d" }
+for key, dir in pairs(directions) do
+  hl.bind(mod(key), hl.dsp.focus({ direction = dir }))
 end
-hl.bind(mainMod .. " + 0", hl.dsp.focus({ workspace = 10 }))
-hl.bind("SUPER + SHIFT + 0", hl.dsp.window.move({ workspace = 10 }))
 
-hl.bind(mainMod .. " + Tab", hl.dsp.workspace.toggle_special("magic"))
-hl.bind("SUPER + SHIFT + Tab", hl.dsp.window.move({ workspace = "special:magic" }))
+local maxWorkspaces = 9
+for i = 1, maxWorkspaces do
+  hl.bind(mod(i),   hl.dsp.focus({ workspace = i }))
+  hl.bind(shift(i), hl.dsp.window.move({ workspace = i }))
+end
+hl.bind(mod(0),   hl.dsp.focus({ workspace = 10 }))
+hl.bind(shift(0), hl.dsp.window.move({ workspace = 10 }))
 
-hl.bind(mainMod .. " + mouse_down", hl.dsp.focus({ workspace = "e+1" }))
-hl.bind(mainMod .. " + mouse_up", hl.dsp.focus({ workspace = "e-1" }))
+local specialWs = "magic"
+hl.bind(mod("Tab"),   hl.dsp.workspace.toggle_special(specialWs))
+hl.bind(shift("Tab"), hl.dsp.window.move({ workspace = "special:" .. specialWs }))
 
-hl.bind(mainMod .. " + mouse:272", hl.dsp.window.drag(), { mouse = true })
-hl.bind(mainMod .. " + mouse:273", hl.dsp.window.resize(), { mouse = true })
+hl.bind(mod("mouse_down"), hl.dsp.focus({ workspace = "e+1" }))
+hl.bind(mod("mouse_up"),   hl.dsp.focus({ workspace = "e-1" }))
 
-hl.bind("XF86AudioRaiseVolume", hl.dsp.exec_cmd("swayosd-client --output-volume raise"), { repeating = true })
-hl.bind("XF86AudioLowerVolume", hl.dsp.exec_cmd("swayosd-client --output-volume lower"), { repeating = true })
-hl.bind("XF86AudioMute", hl.dsp.exec_cmd("swayosd-client --output-volume mute-toggle"), { locked = true })
+hl.bind(mod("mouse:272"), hl.dsp.window.drag(),   { mouse = true })
+hl.bind(mod("mouse:273"), hl.dsp.window.resize(), { mouse = true })
 
-hl.bind("XF86MonBrightnessUp", hl.dsp.exec_cmd("brightnessctl set +5%"), { repeating = true })
-hl.bind("XF86MonBrightnessDown", hl.dsp.exec_cmd("brightnessctl set 5%-"), { repeating = true })
+hl.bind("XF86AudioRaiseVolume", osd("--output-volume raise"),       { repeating = true })
+hl.bind("XF86AudioLowerVolume", osd("--output-volume lower"),       { repeating = true })
+hl.bind("XF86AudioMute",        osd("--output-volume mute-toggle"), { locked = true })
+
+hl.bind("XF86MonBrightnessUp",   brightness("+5%"), { repeating = true })
+hl.bind("XF86MonBrightnessDown", brightness("5%-"), { repeating = true })
