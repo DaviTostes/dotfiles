@@ -23,7 +23,7 @@ local terminal    = "kitty"
 local fileManager = "pcmanfm"
 local menu        = "wofi --width 750 --height 355 --show drun"
 local clipHistory = "cliphist list | wofi -S dmenu | cliphist decode | wl-copy"
-local browser     = "zen-browser"
+local browser     = "helium-browser"
 local discord     = "vesktop"
 local btManager   = "bzmenu -l custom --launcher-command 'wofi --show dmenu'"
 local wifiManager = "iwmenu -l custom --launcher-command 'wofi --show dmenu'"
@@ -81,7 +81,7 @@ end
 hl.config({
   general = {
     gaps_in          = 0,
-    gaps_out         = 2,
+    gaps_out         = 1,
 
     border_size      = 2,
 
@@ -96,7 +96,7 @@ hl.config({
   },
 
   decoration = {
-    rounding         = 4,
+    rounding         = 5,
     rounding_power   = 2,
 
     active_opacity   = 1.0,

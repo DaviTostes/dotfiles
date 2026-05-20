@@ -1,7 +1,7 @@
 {
   "plugins": {
     "LuaSnip": {
-      "rev": "a62e108",
+      "rev": "0abc8f390b278c3b4aabc4c004ac8a088b65cf24",
       "src": "https://github.com/L3MON4D3/LuaSnip"
     },
     "autoclose.nvim": {
@@ -9,7 +9,7 @@
       "src": "https://github.com/m4xshen/autoclose.nvim"
     },
     "bafa.nvim": {
-      "rev": "1af49a5c2356a68181dce03c68fbe51ca6f050da",
+      "rev": "87968d01e72660826bce00f9956515bd1d0d5b74",
       "src": "https://github.com/mistweaverco/bafa.nvim.git"
     },
     "cmp-nvim-lsp": {
@@ -25,27 +25,27 @@
       "src": "https://github.com/rafamadriz/friendly-snippets"
     },
     "mini-git": {
-      "rev": "a007cc4",
+      "rev": "7c81d173462042cd3a3571643bce03a6c255fd41",
       "src": "https://github.com/nvim-mini/mini-git"
     },
     "mini.diff": {
-      "rev": "ab11575",
+      "rev": "5af2b6be4a4beb673f3196a414f6fd932bbedd48",
       "src": "https://github.com/nvim-mini/mini.diff"
     },
     "mini.icons": {
-      "rev": "bac6317",
+      "rev": "520995f1d75da0e4cc901ee95080b1ff2bc46b94",
       "src": "https://github.com/nvim-mini/mini.icons"
     },
     "mini.pick": {
-      "rev": "437d44e",
+      "rev": "0e25916ec4b0f3ad81329e529db55ef350ac9901",
       "src": "https://github.com/nvim-mini/mini.pick"
     },
     "mini.statusline": {
-      "rev": "b456bfe",
+      "rev": "7091f554d7d26b5d55f4c937634da53ba277a44a",
       "src": "https://github.com/nvim-mini/mini.statusline"
     },
     "mini.visits": {
-      "rev": "dc91169",
+      "rev": "0e4b914220e816ffa926398817fb54b58c6a12eb",
       "src": "https://github.com/nvim-mini/mini.visits"
     },
     "nvim-cmp": {
@@ -53,7 +53,7 @@
       "src": "https://github.com/hrsh7th/nvim-cmp"
     },
     "nvim-lspconfig": {
-      "rev": "0e25d7445ba0d7cc0ad02a39aa843cc8b9d2525e",
+      "rev": "246572944c2a1e2a646c2e7609ff619b0fe74c18",
       "src": "https://github.com/neovim/nvim-lspconfig"
     },
     "nvim-treesitter": {
@@ -65,7 +65,7 @@
       "src": "https://github.com/nvim-treesitter/nvim-treesitter-textobjects"
     },
     "nvim-web-devicons": {
-      "rev": "4fc505ac7bd7692824a142e96e5f529c133862f8",
+      "rev": "7d8dad2c837fcdf2e65997e68657c1a21c568074",
       "src": "https://github.com/nvim-tree/nvim-web-devicons"
     },
     "oil.nvim": {

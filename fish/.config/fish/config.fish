@@ -48,7 +48,6 @@ if status is-interactive
   alias ll='ls -lah'
   alias d='dcrun'
   alias task go-task
-  alias rg='ripgrep'
 
   fastfetch
 
