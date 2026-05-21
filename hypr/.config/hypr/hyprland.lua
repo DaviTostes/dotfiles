@@ -1,3 +1,47 @@
+-------------------------------
+---- ENVIRONMENT VARIABLES ----
+-------------------------------
+
+local cursorSize = "22"
+
+local envs = {
+  XDG_CURRENT_DESKTOP  = "Hyprland",
+  XDG_SESSION_TYPE     = "wayland",
+  XDG_SESSION_DESKTOP  = "Hyprland",
+
+  LIBVA_DRIVER_NAME    = "radeonsi",
+
+  XCURSOR_THEME        = "Sunity-cursors-white",
+  XCURSOR_SIZE         = cursorSize,
+  HYPRCURSOR_SIZE      = cursorSize,
+
+  QT_QPA_PLATFORMTHEME = "qt5ct",
+}
+
+for k, v in pairs(envs) do
+  hl.env(k, v)
+end
+
+-------------------
+---- AUTOSTART ----
+-------------------
+
+local autostart = {
+  "dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP",
+  "waybar",
+  "swaync",
+  "hypridle",
+  "hyprpaper",
+  "swayosd-server",
+  "wl-paste --watch cliphist store",
+}
+
+hl.on("hyprland.start", function()
+  for _, cmd in ipairs(autostart) do
+    hl.exec_cmd(cmd)
+  end
+end)
+
 --------------------
 ---- MONITORS ----
 --------------------
@@ -29,50 +73,6 @@ local btManager   = "bzmenu -l custom --launcher-command 'wofi --show dmenu'"
 local wifiManager = "iwmenu -l custom --launcher-command 'wofi --show dmenu'"
 
 local function termRun(cmd) return terminal .. " " .. cmd end
-
--------------------
----- AUTOSTART ----
--------------------
-
-local autostart = {
-  "dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP",
-  "waybar",
-  "swaync",
-  "hypridle",
-  "hyprpaper",
-  "swayosd-server",
-  "wl-paste --watch cliphist store",
-}
-
-hl.on("hyprland.start", function()
-  for _, cmd in ipairs(autostart) do
-    hl.exec_cmd(cmd)
-  end
-end)
-
--------------------------------
----- ENVIRONMENT VARIABLES ----
--------------------------------
-
-local cursorSize = "22"
-
-local envs = {
-  XDG_CURRENT_DESKTOP  = "Hyprland",
-  XDG_SESSION_TYPE     = "wayland",
-  XDG_SESSION_DESKTOP  = "Hyprland",
-
-  LIBVA_DRIVER_NAME    = "radeonsi",
-
-  XCURSOR_THEME        = "Sunity-cursors-white",
-  XCURSOR_SIZE         = cursorSize,
-  HYPRCURSOR_SIZE      = cursorSize,
-
-  QT_QPA_PLATFORMTHEME = "qt5ct",
-}
-
-for k, v in pairs(envs) do
-  hl.env(k, v)
-end
 
 -----------------------
 ---- LOOK AND FEEL ----
