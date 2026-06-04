@@ -15,7 +15,6 @@
     // "memory",
     // "cpu",
     // "backlight"
-    // "custom/browser-video",
   ],
   "modules-center": [
     "clock"

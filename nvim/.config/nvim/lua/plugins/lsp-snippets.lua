@@ -71,6 +71,8 @@ vim.lsp.enable({
   "yamlls",
   "basics-language-server",
   "ccls",
+  "marksman",
+  "arduino-language-server",
 })
 
 vim.lsp.config("bruno_ls", {
@@ -242,3 +244,19 @@ vim.lsp.config("ccls", {
     },
   }
 })
+
+vim.lsp.config("marksman", {
+  capabilities = capabilities,
+  on_attach = on_attach,
+})
+
+vim.lsp.config("arduino_language_server", {
+  cmd = {
+    "arduino-language-server",
+    "-cli-config", vim.fn.expand("~/.arduino15/arduino-cli.yaml"),
+    "-fqbn", "esp32:esp32:esp32",
+    "-cli", "arduino-cli",
+    "-clangd", "clangd",
+  },
+})
+vim.lsp.enable("arduino_language_server")
