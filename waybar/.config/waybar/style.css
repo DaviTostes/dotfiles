@@ -3,10 +3,14 @@
   font-weight: bolder;
   font-size: 12px;
   color: #dcdfe1;
+  min-height: 0;
+  margin: 0px;
+  padding: 0;
 }
 
 #waybar {
   background-color: rgba(0, 0, 0, 0);
+  margin-top: 1px;
 }
 
 #bluetooth,
@@ -22,18 +26,46 @@
   margin: 0px 5px 0px 0px;
 }
 
-#custpm-temperature.critical,
+#tray {
+  margin: 0px 5px 0px 10px;
+}
+
+#window {
+  font-size: 16px;
+}
+
+#custom-temperature.critical,
 #pulseaudio.muted {
   color: #FF0000;
 }
 
-#workspaces button.active {
-  color: #61afef;
+#workspaces button {
+  font-size: 12px;
+  padding: 3px 2px;
+  margin-right: 0px;
+  border: none;
+  box-shadow: none;
+  background: transparent;
 }
 
-#workspaces button {
+#workspaces button label {
+  color: #6a6a6a;
+}
+
+#workspaces button.active label,
+#workspaces button.focused label,
+#workspaces button.visible label {
+  color: #ffffff;
+}
+
+#workspaces button.urgent {
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(166, 227, 161, 0.5);
+  border-radius: 10px;
+}
+
+#workspaces button:hover {
   background: transparent;
-  border: none;
-  color: #888888;
-  font-weight: bold;
+  color: #ffffff;
+  border-radius: 8px;
 }

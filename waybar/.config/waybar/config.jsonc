@@ -1,12 +1,15 @@
 {
-  "output": ["DP-2", "eDP-1", "HDMI-A-1"],
+  "output": [
+    "DP-2",
+    "eDP-1",
+    "HDMI-A-1"
+  ],
   "layer": "top",
   "position": "top",
   "height": 0,
   "spacing": 0,
   "modules-left": [
-    "hyprland/workspaces",
-    "tray"
+    "hyprland/workspaces"
     // "custom/lock",
     // "custom/reboot",
     // "custom/power",
@@ -20,9 +23,11 @@
     "clock"
   ],
   "modules-right": [
-    "network",
+    // "hyprland/window",
+    "tray",
+    // "network",
     // "bluetooth",
-    "pulseaudio",
+    // "pulseaudio",
     "battery"
   ],
   "hyprland/window": {
@@ -35,16 +40,16 @@
     "disable-scroll": false,
     "all-outputs": false,
     "on-click": "activate",
-    "format": "{name} {icon}",
-    "format-icons": {
-      "1": "○",
-      "2": "○",
-      "3": "○",
-      "4": "○",
-      "5": "○",
-      "active": "●",
-      "default": ""
-    }
+    "format": "{name}"
+    // "format-icons": {
+    //   "1": "○",
+    //   "2": "○",
+    //   "3": "○",
+    //   "4": "○",
+    //   "5": "○",
+    //   "active": "●",
+    //   "default": ""
+    // }
   },
   "network": {
     "format-wifi": "<span color='#FAF9F6'>󰤨</span>",
@@ -122,17 +127,27 @@
     "interval": 60,
     "tooltip-format": "<tt>{calendar}</tt>",
     "calendar": {
-      "mode": "year",
-      "mode-mon-col": 4,
+      "mode": "month",
+      "mode-mon-col": 3,
+      "weeks-pos": "",
+      "on-scroll": 1,
       "format": {
-        "months": "<span color='#FAF9F6'><b>{}</b></span>",
-        "today": "<span color='#FAF9F6'><b>{}</b></span>"
+        "months": "<span color='#ffead3'><b>{}</b></span>",
+        "days": "<span color='#ecc6d9'><b>{}</b></span>",
+        "weeks": "<span color='#99ffdd'><b>W{}</b></span>",
+        "weekdays": "<span color='#ffcc66'><b>{}</b></span>",
+        "today": "<span color='#ffcc66'><b><u>{}</u></b></span>"
       }
+    },
+    "actions": {
+      "on-click-right": "mode",
+      "on-scroll-up": "shift_up",
+      "on-scroll-down": "shift_down"
     }
   },
   "tray": {
-    "icon-size": 17,
-    "spacing": 6
+    "icon-size": 16,
+    "spacing": 4
   },
   "backlight": {
     "device": "intel_backlight",
@@ -147,9 +162,9 @@
     ]
   },
   "bluetooth": {
-    "format": "<span color='#808080'></span>",
-    "format-connected": "<span color='#50C878'></span>",
-    "format-connected-battery": "<span color='#00BFFF'></span>",
+    "format": "<span color='#808080'></span>",
+    "format-connected": "<span color='#50C878'></span>",
+    "format-connected-battery": "<span color='#00BFFF'></span>",
     "tooltip-format": "{controller_alias}\t{controller_address}\n\n{num_connections} connected",
     "tooltip-format-connected": "{controller_alias}\t{controller_address}\n\n{num_connections} connected\n\n{device_enumerate}",
     "tooltip-format-enumerate-connected": "{device_alias}\t{device_address}",
