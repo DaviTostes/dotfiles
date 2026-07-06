@@ -72,7 +72,8 @@ vim.lsp.enable({
   "basics-language-server",
   "ccls",
   "marksman",
-  "arduino-language-server",
+  "arduino_language_server",
+  "fish_lsp"
 })
 
 vim.lsp.config("bruno_ls", {
@@ -259,4 +260,8 @@ vim.lsp.config("arduino_language_server", {
     "-clangd", "clangd",
   },
 })
-vim.lsp.enable("arduino_language_server")
+
+vim.lsp.config("fish_lsp", {
+  capabilities = capabilities,
+  on_attach = on_attach,
+})

@@ -28,12 +28,14 @@ end
 
 local autostart = {
   "dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP",
+  "systemctl --user import-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP",
   "waybar",
   "swaync",
   "hypridle",
   "hyprpaper",
   "swayosd-server",
   "wl-paste --watch cliphist store",
+  "sunshine",
 }
 
 hl.on("hyprland.start", function()
@@ -72,7 +74,7 @@ local discord     = "vesktop"
 local btManager   = "bzmenu -l custom --launcher-command 'wofi --show dmenu'"
 local wifiManager = "iwmenu -l custom --launcher-command 'wofi --show dmenu'"
 
-local function termRun(cmd) return terminal .. " " .. cmd end
+local function termRun(cmd) return terminal .. " --title \"" .. cmd .. "\" " .. cmd end
 
 -----------------------
 ---- LOOK AND FEEL ----
@@ -80,7 +82,7 @@ local function termRun(cmd) return terminal .. " " .. cmd end
 
 hl.config({
   general = {
-    gaps_in          = 0,
+    gaps_in          = 2,
     gaps_out         = 2,
 
     border_size      = 2,
@@ -157,6 +159,10 @@ hl.config({
   xwayland = {
     force_zero_scaling = true,
   },
+
+  -- render = {
+  --   direct_scanout = true,
+  -- }
 })
 
 hl.device({
@@ -206,33 +212,17 @@ for _, a in ipairs(animations) do hl.animation(a) end
 ---- WINDOW RULES ----
 ----------------------
 
-hl.window_rule({
-  name       = "steam-games-fullscreen",
-  match      = {
-    content = "game",
-    class   = "steam_app_%d+|gamescope",
-    title   = "negative:^(?i)(.*(Launcher|NetEase Game Security).*)$",
-  },
-  fullscreen = true,
-})
+local sideApps = { "warbler", "omm", "maily", "btop", "calc" }
 
-hl.window_rule({
-  name         = "claude-quick-entry",
-  match        = { class = "claude-quick-entry" },
-  border_size  = 0,
-  no_blur      = true,
-  rounding     = 0,
-  no_shadow    = true,
-  stay_focused = true,
-})
-
-hl.window_rule({
-  name   = "albus-response",
-  match  = { title = "albus-response" },
-  float  = true,
-  center = true,
-  size   = { 800, 600 },
-})
+for _, app in ipairs(sideApps) do
+  hl.window_rule({
+    name  = app,
+    match = { title = app },
+    float = true,
+    move  = { 1100, 50 },
+    size  = { 800, 1000 },
+  })
+end
 
 ---------------------
 ---- KEYBINDINGS ----
@@ -267,7 +257,8 @@ hl.bind(mod("D"), exec(discord))
 hl.bind(mod("S"), exec("steam"))
 hl.bind(mod("Z"), exec("zapzap"))
 hl.bind(shift("Z"), exec("Telegram"))
-hl.bind(mod("A"), exec("claude-desktop --toggle"))
+hl.bind(mod("A"), exec(termRun("warbler")))
+hl.bind(mod("O"), exec(termRun("omm")))
 hl.bind(shift("B"), exec(btManager))
 hl.bind(shift("W"), exec(wifiManager))
 hl.bind(shift("I"), exec(termRun("btop")))
@@ -275,16 +266,13 @@ hl.bind(shift("M"), exec(termRun("maily")))
 hl.bind(mod("W"), exec("pgrep -x waybar && killall waybar || waybar"))
 hl.bind(mod("U"), exec("pavucontrol"))
 
-hl.bind("F9", exec("pkill -SIGUSR1 albus"))
-hl.bind("F9", exec("pkill -SIGUSR2 albus"), { release = true })
-
 hl.bind("PRINT", exec("hyprshot -m window"))
 hl.bind("SHIFT + PRINT", exec("hyprshot -m region"))
 hl.bind(shift("L"), exec("hyprlock"))
 
-hl.bind(shift("C"), exec("hyprpicker -a"))
+hl.bind(shift("C"), exec(termRun("calc")))
 
-hl.bind(mod("R"), exec("fish -c record"))
+hl.bind(shift("R"), exec("fish -c record"))
 
 local directions = { H = "l", L = "r", K = "u", J = "d" }
 for key, dir in pairs(directions) do
