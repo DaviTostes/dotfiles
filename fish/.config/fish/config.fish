@@ -54,7 +54,6 @@ if status is-interactive
 
   keychain --quiet --nogui ~/.ssh/moussa
   keychain --quiet --nogui ~/.ssh/scalefy
-  source ~/.keychain/(cat /etc/hostname)-fish
 end
 
 

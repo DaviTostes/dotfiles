@@ -35,7 +35,8 @@ local autostart = {
   "hyprpaper",
   "swayosd-server",
   "wl-paste --watch cliphist store",
-  "sunshine",
+  "ollama",
+  "goytn"
 }
 
 hl.on("hyprland.start", function()
@@ -243,7 +244,7 @@ local function brightness(arg) return exec("brightnessctl set " .. arg) end
 
 hl.bind(mod("Return"), exec(terminal))
 hl.bind(mod("C"), hl.dsp.window.close())
-hl.bind(mod("M"), exec("command -v hyprshutdown >/dev/null 2>&1 && hyprshutdown || hyprctl dispatch 'hl.dsp.exit()'"))
+hl.bind(shift("M"), exec("command -v hyprshutdown >/dev/null 2>&1 && hyprshutdown || hyprctl dispatch 'hl.dsp.exit()'"))
 hl.bind(mod("E"), exec(fileManager))
 hl.bind(mod("V"), hl.dsp.window.float({ action = "toggle" }))
 hl.bind(mod("space"), exec(menu))
@@ -255,14 +256,14 @@ hl.bind(mod("T"), hl.dsp.layout("togglesplit"))
 hl.bind(mod("B"), exec(browser))
 hl.bind(mod("D"), exec(discord))
 hl.bind(mod("S"), exec("steam"))
-hl.bind(mod("Z"), exec("zapzap"))
+hl.bind(mod("Z"), exec("whatsie"))
 hl.bind(shift("Z"), exec("Telegram"))
 hl.bind(mod("A"), exec(termRun("warbler")))
 hl.bind(mod("O"), exec(termRun("omm")))
 hl.bind(shift("B"), exec(btManager))
 hl.bind(shift("W"), exec(wifiManager))
-hl.bind(shift("I"), exec(termRun("btop")))
-hl.bind(shift("M"), exec(termRun("maily")))
+hl.bind(mod("I"), exec(termRun("btop")))
+hl.bind(mod("M"), exec(termRun("maily")))
 hl.bind(mod("W"), exec("pgrep -x waybar && killall waybar || waybar"))
 hl.bind(mod("U"), exec("pavucontrol"))
 
