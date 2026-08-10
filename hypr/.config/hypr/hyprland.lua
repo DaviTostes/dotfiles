@@ -35,7 +35,7 @@ local autostart = {
   "hyprpaper",
   "swayosd-server",
   "wl-paste --watch cliphist store",
-  "ollama",
+  "ollama serve",
   "goytn"
 }
 
@@ -225,6 +225,14 @@ for _, app in ipairs(sideApps) do
   })
 end
 
+hl.window_rule({
+  name = "TaskBarHero",
+  match = { title = "TaskBarHero" },
+  monitor = "DP-2",
+  -- opacity = "0.9 override",
+  float = true
+})
+
 ---------------------
 ---- KEYBINDINGS ----
 ---------------------
@@ -266,6 +274,7 @@ hl.bind(mod("I"), exec(termRun("btop")))
 hl.bind(mod("M"), exec(termRun("maily")))
 hl.bind(mod("W"), exec("pgrep -x waybar && killall waybar || waybar"))
 hl.bind(mod("U"), exec("pavucontrol"))
+hl.bind(mod("N"), exec("swaync-client -t -sw"))
 
 hl.bind("PRINT", exec("hyprshot -m window"))
 hl.bind("SHIFT + PRINT", exec("hyprshot -m region"))

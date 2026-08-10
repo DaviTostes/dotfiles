@@ -41,6 +41,10 @@ progress {
   padding: 0px;
 }
 
+.notification image {
+  object-fit: contain;
+}
+
 * {
   padding: 0px;
   margin: 0px;

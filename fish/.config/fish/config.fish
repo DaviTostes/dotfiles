@@ -44,7 +44,6 @@ if status is-interactive
   alias grs='git restore --staged -p .'
 
   alias del='rm -rf'
-  alias clear='wipe --char-pattern circle --color-pattern circle --colors dark-blue --char-segments 1 --color-segments 1 --char-invert false --color-invert false --duration 1200'
   alias ll='ls -lah'
   alias d='dcrun'
   alias task go-task
@@ -52,7 +51,7 @@ if status is-interactive
 
   fastfetch
 
-  keychain --quiet --nogui ~/.ssh/moussa
+  # keychain --quiet --nogui ~/.ssh/moussa
   keychain --quiet --nogui ~/.ssh/scalefy
 end
 
