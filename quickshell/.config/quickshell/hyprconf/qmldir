@@ -1,0 +1,15 @@
+singleton HyprSettings 1.0 HyprSettings.qml
+singleton Theme 1.0 Theme.qml
+HyprConfig 1.0 HyprConfig.qml
+PaperTab 1.0 PaperTab.qml
+LockTab 1.0 LockTab.qml
+IdleTab 1.0 IdleTab.qml
+SectionCard 1.0 SectionCard.qml
+TextEntry 1.0 TextEntry.qml
+NumField 1.0 NumField.qml
+TextButton 1.0 TextButton.qml
+CheckRow 1.0 CheckRow.qml
+SegRow 1.0 SegRow.qml
+MonCombo 1.0 MonCombo.qml
+PathRow 1.0 PathRow.qml
+PreviewBox 1.0 PreviewBox.qml

@@ -21,7 +21,7 @@ opt.termguicolors = true
 opt.list = true
 opt.guifont = "Agave Nerd Font Mono 12"
 vim.g.db_ui_use_nerd_fonts = 1
-vim.cmd.colorscheme "vague"
+vim.cmd.colorscheme "vesper"
 
 -- Search and Navigation
 opt.ignorecase = true

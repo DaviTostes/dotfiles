@@ -15,7 +15,7 @@ local envs = {
   XCURSOR_SIZE         = cursorSize,
   HYPRCURSOR_SIZE      = cursorSize,
 
-  QT_QPA_PLATFORMTHEME = "qt5ct",
+  QT_QPA_PLATFORMTHEME = "qt6ct",
 }
 
 for k, v in pairs(envs) do
@@ -29,14 +29,15 @@ end
 local autostart = {
   "dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP",
   "systemctl --user import-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP",
-  "waybar",
+  "quickshell",
   "swaync",
   "hypridle",
   "hyprpaper",
   "swayosd-server",
   "wl-paste --watch cliphist store",
   "ollama serve",
-  "goytn"
+  "goytn",
+  "maily"
 }
 
 hl.on("hyprland.start", function()
@@ -58,9 +59,6 @@ hl.monitor({ output = secondaryMonitor, mode = resolution .. "@75", position = "
 
 hl.workspace_rule({ workspace = "1", monitor = primaryMonitor, default = false })
 hl.workspace_rule({ workspace = "2", monitor = secondaryMonitor, default = true })
-
--- hl.monitor({ output = "eDP-1",    mode = "1920x1080@60", position = "0x0",    scale = 1 })
--- hl.monitor({ output = "HDMI-A-1", mode = "1920x1080@75", position = "1920x0", scale = 1 })
 
 ---------------------
 ---- MY PROGRAMS ----
@@ -160,10 +158,6 @@ hl.config({
   xwayland = {
     force_zero_scaling = true,
   },
-
-  -- render = {
-  --   direct_scanout = true,
-  -- }
 })
 
 hl.device({
@@ -204,6 +198,9 @@ local animations = {
   { leaf = "workspaces",    enabled = true, speed = 1.94, bezier = "almostLinear", style = "fade" },
   { leaf = "workspacesIn",  enabled = true, speed = 1.21, bezier = "almostLinear", style = "fade" },
   { leaf = "workspacesOut", enabled = true, speed = 1.94, bezier = "almostLinear", style = "fade" },
+  -- special workspace (opencode dropdown): quick vertical slide instead of
+  -- the inherited fade, which made the dropdown flash in and out
+  { leaf = "specialWorkspace", enabled = true, speed = 3, bezier = "default", style = "slidevert" },
   { leaf = "zoomFactor",    enabled = true, speed = 7,    bezier = "quick" },
 }
 
@@ -212,6 +209,30 @@ for _, a in ipairs(animations) do hl.animation(a) end
 ----------------------
 ---- WINDOW RULES ----
 ----------------------
+
+hl.window_rule({
+  name   = "octo-launcher",
+  match  = { title = "Octo Launcher" },
+  float  = true,
+  center = true,
+  size   = { 1200, 800 }
+})
+
+hl.window_rule({
+  name      = "magic-keep",
+  match     = { class = "magic-keep" },
+  workspace = "special:magic",
+  no_focus  = true,
+  float     = true,
+  move      = { 10, 10 },
+  size      = { 10, 10 },
+})
+
+hl.window_rule({
+  name       = "wow-fullscreen",
+  match      = { title = "World of Warcraft" },
+  fullscreen = true,
+})
 
 local sideApps = { "warbler", "omm", "maily", "btop", "calc" }
 
@@ -224,14 +245,6 @@ for _, app in ipairs(sideApps) do
     size  = { 800, 1000 },
   })
 end
-
-hl.window_rule({
-  name = "TaskBarHero",
-  match = { title = "TaskBarHero" },
-  monitor = "DP-2",
-  -- opacity = "0.9 override",
-  float = true
-})
 
 ---------------------
 ---- KEYBINDINGS ----
@@ -266,15 +279,15 @@ hl.bind(mod("D"), exec(discord))
 hl.bind(mod("S"), exec("steam"))
 hl.bind(mod("Z"), exec("whatsie"))
 hl.bind(shift("Z"), exec("Telegram"))
-hl.bind(mod("A"), exec(termRun("warbler")))
 hl.bind(mod("O"), exec(termRun("omm")))
 hl.bind(shift("B"), exec(btManager))
 hl.bind(shift("W"), exec(wifiManager))
 hl.bind(mod("I"), exec(termRun("btop")))
 hl.bind(mod("M"), exec(termRun("maily")))
-hl.bind(mod("W"), exec("pgrep -x waybar && killall waybar || waybar"))
+hl.bind(mod("W"), exec("pgrep -x quickshell && killall quickshell || quickshell"))
 hl.bind(mod("U"), exec("pavucontrol"))
 hl.bind(mod("N"), exec("swaync-client -t -sw"))
+hl.bind(shift("N"), exec("swaync-client -C"))
 
 hl.bind("PRINT", exec("hyprshot -m window"))
 hl.bind("SHIFT + PRINT", exec("hyprshot -m region"))
@@ -297,8 +310,37 @@ end
 hl.bind(mod(0), hl.dsp.focus({ workspace = 10 }))
 hl.bind(shift(0), hl.dsp.window.move({ workspace = 10 }))
 
-local specialWs = "magic"
-hl.bind(mod("Tab"), hl.dsp.workspace.toggle_special(specialWs))
+-- 0.56.2's toggle_special dispatcher silently no-ops; the monitor methods
+-- below are the working primitives (verified). An empty special workspace
+-- cannot be created by any dispatcher, so the first SUPER+Tab parks a tiny
+-- helper window on special:magic (created via the magic-keep rule) and the
+-- workspace.created event then reveals it.
+local specialWs   = "magic"
+local magicPending = false
+
+hl.on("workspace.created", function(ws)
+  if magicPending and ws.name == "special:" .. specialWs then
+    magicPending = false
+    if ws.monitor then
+      ws.monitor:set_special_workspace{ workspace = ws.name }
+    end
+  end
+end)
+
+hl.bind(mod("Tab"), function()
+  local m = hl.get_active_monitor()
+  if m.active_special_workspace then
+    m:set_special_workspace{}
+    return
+  end
+  local name = "special:" .. specialWs
+  if hl.get_workspace(name) then
+    m:set_special_workspace{ workspace = name }
+  elseif not magicPending then
+    magicPending = true
+    hl.exec_cmd("kitty --class magic-keep -e sleep infinity")
+  end
+end)
 hl.bind(shift("Tab"), hl.dsp.window.move({ workspace = "special:" .. specialWs }))
 
 hl.bind(mod("mouse_down"), hl.dsp.focus({ workspace = "e+1" }))
