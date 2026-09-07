@@ -1,12 +1,19 @@
-@define-color background  #0d0d0d;
-@define-color border      #444444;
-@define-color fg-primary  #e0e0e0;
-@define-color fg-dim      #666666;
-@define-color selection   #1e1e1e;
+/* matches the quickshell bar / Pomodoro dropdown palette (Theme.qml):
+   bg #161719, border #282a2e, surface #1e2126, hover #282c33,
+   text #a9afb8, muted #5c6470, accent #d3d9e0, Agave Nerd Font */
+
+@define-color background  #161719;
+@define-color border      #282a2e;
+@define-color fg-primary  #a9afb8;
+@define-color fg-dim      #5c6470;
+@define-color fg-accent   #d3d9e0;
+@define-color surface     #1e2126;
+@define-color hover       #282c33;
 
 * {
-  font-family: 'SF Pro Display', 'Helvetica Neue', 'Inter', sans-serif;
-  font-size: 14px;
+  font-family: "Agave Nerd Font";
+  font-weight: bold;
+  font-size: 13px;
   color: @fg-primary;
 }
 
@@ -14,7 +21,7 @@ window {
   margin: 0;
   padding: 0;
   border: 1px solid @border;
-  border-radius: 10px;
+  border-radius: 6px;
   background-color: @background;
 }
 
@@ -26,19 +33,17 @@ window {
 
 #input,
 #input:focus {
-  margin: 0;
-  padding: 14px 16px 14px 5px;
+  margin: 0 6px;
+  padding: 12px 12px 12px 24px;
   background-color: transparent;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23666666' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cline x1='21' y1='21' x2='16.65' y2='16.65'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%235c6470' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cline x1='21' y1='21' x2='16.65' y2='16.65'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: 8px center;
+  background-position: 2px center;
   border: none;
   border-bottom: 1px solid @border;
   border-radius: 0;
-  margin: 0 12px;
-  color: @fg-dim;
-  font-size: 14px;
-  caret-color: @fg-primary;
+  color: @fg-primary;
+  caret-color: @fg-accent;
   outline: none;
   box-shadow: none;
 }
@@ -71,19 +76,25 @@ window {
   padding: 10px 12px;
   border-radius: 6px;
   background-color: transparent;
+  transition: none;
+}
+
+#entry:hover {
+  background-color: @hover;
 }
 
 #entry:selected {
-  background-color: @selection;
+  background-color: @hover;
 }
 
 #text {
   color: @fg-primary;
-  font-size: 14px;
+  font-size: 13px;
 }
 
-#entry:selected #text {
-  color: @fg-primary;
+#entry:selected #text,
+#entry:hover #text {
+  color: @fg-accent;
 }
 
 #img {

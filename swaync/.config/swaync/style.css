@@ -1,0 +1,369 @@
+/* flat theme for swaync — matches the quickshell bar / Pomodoro dropdown
+   palette (Theme.qml): bg #161719, border #282a2e, surface #1e2126,
+   hover #282c33, text #a9afb8, muted #5c6470, accent #d3d9e0.
+   The :root variables neutralize the stock theme's borders/shadows, which
+   use higher-specificity selectors than we can match here. */
+
+:root {
+  --cc-bg: #161719;
+  --noti-border-color: #282a2e;
+  --noti-bg: 30, 33, 38; /* #1e2126 */
+  --noti-bg-alpha: 1;
+  --noti-bg-darker: #161719;
+  --noti-bg-hover: #282c33;
+  --noti-bg-focus: rgba(40, 44, 51, 0.6);
+  --noti-close-bg: #282a2e;
+  --noti-close-bg-hover: #ff6666;
+  --text-color: #a9afb8;
+  --text-color-disabled: #5c6470;
+  --bg-selected: #d3d9e0;
+  --border: 1px solid #282a2e;
+  --border-radius: 6px;
+  --notification-shadow: none;
+  --font-size-body: 13px;
+  --font-size-summary: 15px;
+  --hover-tranistion: background 0.15s ease-in-out;
+  --hover-transition: background 0.15s ease-in-out;
+  --mpris-album-art-overlay: rgba(22, 23, 25, 0.75);
+  --mpris-album-art-icon-size: 96px;
+  --mpris-album-art-shadow: none;
+}
+
+@define-color cc-bg #161719;
+@define-color noti-border-color #282a2e;
+@define-color noti-bg #1e2126;
+@define-color noti-bg-darker #161719;
+@define-color noti-bg-hover #282c33;
+@define-color noti-close-bg #282a2e;
+@define-color noti-close-bg-hover #ff6666;
+@define-color text-color #a9afb8;
+@define-color text-color-disabled #5c6470;
+@define-color bg-selected #d3d9e0;
+
+* {
+  font-family: "Agave Nerd Font";
+  font-weight: bolder;
+  font-size: 13px;
+  color: #a9afb8;
+  outline: none;
+  text-shadow: none;
+}
+
+notificationwindow, blankwindow,
+.blank-window {
+  background: transparent;
+}
+
+/* ---------- notification cards ---------- */
+
+.notification-row {
+  background: none;
+  outline: none;
+}
+
+.notification-row:focus,
+.notification-row:hover {
+  background: transparent;
+}
+
+.notification-row .notification-background {
+  padding: 4px 8px;
+}
+
+.notification-row .notification-background .notification {
+  background: #1e2126;
+  border: 1px solid #282a2e;
+  border-radius: 6px;
+  padding: 0;
+  box-shadow: none;
+  transition: none;
+}
+
+.notification-row .notification-background .notification.critical {
+  border: 1px solid #ff6666;
+}
+
+/* the big click area with summary + body */
+
+.notification-row .notification-background .notification .notification-default-action {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 8px;
+  margin: 0;
+  border-radius: 6px;
+  color: #a9afb8;
+  transition: none;
+}
+
+.notification-row .notification-background .notification .notification-default-action:hover {
+  background: rgba(40, 44, 51, 0.5);
+}
+
+.notification-row .notification-background .notification .notification-default-action .notification-content {
+  background: transparent;
+  padding: 0;
+}
+
+.notification-row .notification-background .notification .notification-default-action .notification-content .text-box .summary {
+  font-size: 15px;
+  font-weight: bold;
+  background: transparent;
+  color: #d3d9e0;
+  text-shadow: none;
+}
+
+.notification-row .notification-background .notification .notification-default-action .notification-content .text-box .time {
+  font-size: 15px;
+  background: transparent;
+  color: #5c6470;
+  text-shadow: none;
+  margin-right: 30px;
+}
+
+.notification-row .notification-background .notification .notification-default-action .notification-content .text-box .body {
+  background: transparent;
+  color: #a9afb8;
+  text-shadow: none;
+}
+
+.notification-row .notification-background .notification .notification-default-action .notification-content .text-box label {
+  filter: none;
+}
+
+.notification-row .notification-background .notification .notification-default-action .notification-content .image {
+  border-radius: 6px;
+  margin: 4px;
+}
+
+.notification-row .notification-background .notification .notification-default-action .notification-content .app-icon {
+  -gtk-icon-shadow: none;
+  margin: 4px;
+}
+
+/* the stock theme paints this white — keep it flat */
+.notification-row .notification-background .notification .notification-default-action .notification-content .body-image {
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  margin-top: 4px;
+}
+
+/* action buttons under the card */
+
+.notification-row .notification-background .notification .notification-alt-actions {
+  background: none;
+  padding: 4px 6px 6px;
+}
+
+.notification-row .notification-background .notification .notification-action {
+  background: transparent;
+  margin: 4px 6px 8px;
+  padding: 0;
+}
+
+.notification-row .notification-background .notification .notification-action > button {
+  background: #161719;
+  border: none;
+  box-shadow: none;
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: #a9afb8;
+  text-shadow: none;
+  transition: none;
+}
+
+.notification-row .notification-background .notification .notification-action > button:hover {
+  background: #282c33;
+  color: #d3d9e0;
+}
+
+/* close button */
+
+.notification-row .notification-background .close-button {
+  background: #282a2e;
+  color: #a9afb8;
+  border: none;
+  box-shadow: none;
+  border-radius: 6px;
+  margin-top: 8px;
+  margin-right: 8px;
+  padding: 0;
+  min-width: 22px;
+  min-height: 22px;
+}
+
+.notification-row .notification-background .close-button:hover {
+  background: #ff6666;
+  color: #161719;
+  box-shadow: none;
+  border: none;
+}
+
+/* grouped notifications */
+
+.notification-group .notification-group-buttons,
+.notification-group .notification-group-headers {
+  color: #5c6470;
+}
+
+.notification-group .notification-group-headers .notification-group-header,
+.notification-group .notification-group-headers .notification-group-icon {
+  color: #5c6470;
+}
+
+/* inline reply */
+
+.notification-row .notification-background .notification .notification-default-action .notification-content .inline-reply {
+  margin-top: 4px;
+}
+
+.notification-row .notification-background .notification .notification-default-action .notification-content .inline-reply .inline-reply-entry {
+  background: #161719;
+  color: #a9afb8;
+  caret-color: #a9afb8;
+  border: 1px solid #282a2e;
+  border-radius: 6px;
+}
+
+.notification-row .notification-background .notification .notification-default-action .notification-content .inline-reply .inline-reply-button {
+  background: #161719;
+  border: 1px solid #282a2e;
+  border-radius: 6px;
+  color: #a9afb8;
+  margin-left: 4px;
+}
+
+.notification-row .notification-background .notification .notification-default-action .notification-content .inline-reply .inline-reply-button:hover {
+  background: #282c33;
+}
+
+/* progress bar */
+
+progressbar trough {
+  background: #161719;
+  border: none;
+  border-radius: 3px;
+  min-height: 6px;
+}
+
+progressbar progress {
+  background: #8b95a3;
+  border: none;
+  border-radius: 3px;
+}
+
+/* ---------- control center ---------- */
+
+.control-center {
+  background: #161719;
+  border: 1px solid #282a2e;
+  border-radius: 6px;
+  color: #a9afb8;
+}
+
+.control-center .control-center-list {
+  background: transparent;
+}
+
+/* the stock theme puts a multi-layer shadow ring on every card here */
+.control-center .control-center-list .notification {
+  box-shadow: none;
+}
+
+.control-center .control-center-list-placeholder {
+  opacity: 0.5;
+}
+
+.floating-notifications {
+  background: transparent;
+}
+
+.floating-notifications .notification {
+  box-shadow: none;
+}
+
+.control-center scrollbar,
+.control-center scrollbar trough,
+.notification-window scrollbar,
+.notification-window scrollbar trough {
+  background: transparent;
+  border: none;
+}
+
+.control-center scrollbar slider,
+.notification-window scrollbar slider {
+  background: #282a2e;
+  border-radius: 3px;
+  min-width: 6px;
+}
+
+.control-center scrollbar slider:hover,
+.notification-window scrollbar slider:hover {
+  background: #5c6470;
+}
+
+/* ---------- widgets ---------- */
+
+.widget {
+  margin: 4px 8px;
+  padding: 0;
+  border-radius: 6px;
+  background: transparent;
+}
+
+.widget-title {
+  color: #d3d9e0;
+  font-size: 15px;
+  margin: 8px 8px 4px;
+}
+
+.widget-title > button {
+  background: #1e2126;
+  border: none;
+  box-shadow: none;
+  border-radius: 6px;
+  padding: 4px 10px;
+  margin-left: 8px;
+  color: #a9afb8;
+}
+
+.widget-title > button:hover {
+  background: #282c33;
+  color: #d3d9e0;
+}
+
+.widget-dnd {
+  margin: 4px 8px;
+}
+
+.widget-dnd label {
+  margin-right: 8px;
+  color: #a9afb8;
+}
+
+.widget-dnd > switch {
+  background: #1e2126;
+  border: none;
+  border-radius: 8px;
+  padding: 2px;
+}
+
+.widget-dnd > switch:checked {
+  background: #d3d9e0;
+}
+
+.widget-dnd > switch slider {
+  background: #5c6470;
+  border-radius: 8px;
+  min-width: 18px;
+  min-height: 18px;
+}
+
+.widget-dnd > switch:checked slider {
+  background: #101216;
+}
+
+.widget-label > label {
+  color: #5c6470;
+}

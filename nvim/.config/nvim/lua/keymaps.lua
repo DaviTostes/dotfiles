@@ -42,6 +42,23 @@ vim.keymap.set('n', '<leader>m', function()
   require 'bafa'.toggle()
 end)
 
+-- mini.diff
+vim.keymap.set('n', ']h', function()
+  MiniDiff.goto_hunk('next')
+end, { desc = 'Next git hunk' })
+
+vim.keymap.set('n', '[h', function()
+  MiniDiff.goto_hunk('prev')
+end, { desc = 'Previous git hunk' })
+
+vim.keymap.set('n', ']H', function()
+  MiniDiff.goto_hunk('last')
+end, { desc = 'Last git hunk' })
+
+vim.keymap.set('n', '[H', function()
+  MiniDiff.goto_hunk('first')
+end, { desc = 'First git hunk' })
+
 -- mini.git
 vim.keymap.set('v', '<leader>gb', function()
   MiniGit.show_range_history()
@@ -75,3 +92,17 @@ end)
 vim.keymap.set("n", "[c", function()
   move.goto_previous_start("@class.outer")
 end)
+
+-- moves
+
+-- Normal mode: Move current line down/up
+vim.keymap.set('n', '<A-j>', ':m .+1<CR>==', { desc = "Move line down", silent = true })
+vim.keymap.set('n', '<A-k>', ':m .-2<CR>==', { desc = "Move line up", silent = true })
+
+-- Visual mode: Move selected block down/up and keep selection
+vim.keymap.set('v', '<A-j>', ":m '>+1<CR>gv=gv", { desc = "Move selection down", silent = true })
+vim.keymap.set('v', '<A-k>', ":m '<-2<CR>gv=gv", { desc = "Move selection up", silent = true })
+
+-- Insert mode: Move current line down/up and stay in insert mode
+vim.keymap.set('i', '<A-j>', '<Esc>:m .+1<CR>==gi', { desc = "Move line down", silent = true })
+vim.keymap.set('i', '<A-k>', '<Esc>:m .-2<CR>==gi', { desc = "Move line up", silent = true })
