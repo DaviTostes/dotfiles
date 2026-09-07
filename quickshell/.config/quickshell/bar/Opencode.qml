@@ -105,6 +105,7 @@ Pill {
   readonly property color cAccent: "#d3d9e0"
   readonly property color cDark: "#101216"
   readonly property color cLive: "#a6e3a1"
+  readonly property color cErr: "#d2686a"
   readonly property color cIdleText: "#585f68"
 
   implicitWidth: label.implicitWidth + 14
@@ -237,6 +238,8 @@ Pill {
           if (d.finish && d.finish !== "tool-calls") {
             root.busy = false;
             root.execEndMs = Date.now();
+            // panel closed ⇒ nobody is watching: ping the desktop
+            if (!root.panelOpen) root.notifyDone(false);
           } else {
             root.busy = true;
           }
@@ -261,6 +264,7 @@ Pill {
           const msg = typeof e === "string" ? e
               : (e && (e.message || e.name)) || "";
           root.error = msg !== "" ? msg : "model error";
+          if (!root.panelOpen) root.notifyDone(true);
           refreshSoon();
         }
         return;
@@ -322,9 +326,8 @@ Pill {
     // part was never streamed to us — add it settled
     chatModel.append({ key: key, kind: kind, text: d.text,
                        name: "", state: "", toolIn: "", toolOut: "",
-                       live: false });
+                       diff: "", live: false });
     if (chatView.pinned) Qt.callLater(chatView.stick);
-    debugChat("ended");
   }
 
   function flushDeltas() {
@@ -348,13 +351,12 @@ Pill {
       if (!found) {
         chatModel.append({ key: key, kind: kind, text: text,
                            name: "", state: "", toolIn: "", toolOut: "",
-                           live: true });
+                           diff: "", live: true });
       }
       stuck = true;
     }
     // callLater: stick after the layout pass, against fresh contentHeight
     if (stuck) Qt.callLater(chatView.stick);
-    debugChat("flush");
   }
 
   Timer {
@@ -518,6 +520,29 @@ Pill {
     return "";
   }
 
+  // cap a joined unified diff, keeping whole lines
+  function patchText(p) {
+    if (p === "" || p.length <= 4000) return p;
+    const cut = p.slice(0, 4000);
+    return cut.slice(0, cut.lastIndexOf("\n") + 1) + " …";
+  }
+
+  // unified diff → selectable HTML: +green, −red, hunk headers muted
+  function renderDiff(p) {
+    const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+                     .replace(/>/g, "&gt;");
+    const lines = p.split("\n").map(l => {
+      let c = root.cText;
+      if (l.startsWith("+")) c = root.cLive;
+      else if (l.startsWith("-")) c = root.cErr;
+      else if (l.startsWith("@@") || l.startsWith("Index")
+               || l.startsWith("---") || l.startsWith("+++")) c = root.cMuted;
+      return "<span style=\"color:" + c + "\">" + (esc(l) || "&nbsp;") + "</span>";
+    });
+    return "<pre style=\"white-space:pre-wrap; margin:0\">"
+        + lines.join("\n") + "</pre>";
+  }
+
   // identity of the newest message including activity signals — changes on
   // new parts, text/reasoning deltas, tool state changes and completion
   function topKeyOf(m) {
@@ -531,26 +556,37 @@ Pill {
           : "");
   }
 
-  // TEMP DEBUG: compact model snapshot — find the disappearing-part bug
-  function debugChat(tag) {
-    let s = tag + " n=" + chatModel.count + " [";
-    for (let i = 0; i < chatModel.count; i++) {
-      const it = chatModel.get(i);
-      s += (i ? ", " : "") + it.kind.charAt(0) + ":" + it.key.slice(-6) + ":"
-          + (it.kind === "tool" ? (it.state || "").slice(0, 12) : it.text.length);
-    }
-    console.log("CHAT " + s + "]");
-  }
-
   // transient "copied" toast in the panel
   function showCopyToast() { toastTimer.restart(); }
+
+  // desktop notification for a turn that ends while the panel is closed —
+  // the only way to learn the job finished without reopening it
+  function notifyDone(isErr) {
+    const title = isErr ? "opencode — erro"
+        : "opencode — " + ((root.session && root.session.title) || "turno concluído");
+    let body = isErr ? root.error : "";
+    if (!isErr) {
+      // tail of the newest assistant text (text.ended arrived first, so it
+      // is already in the model)
+      for (let i = chatModel.count - 1; i >= 0; i--) {
+        const it = chatModel.get(i);
+        if (it.kind === "assistant" && it.text !== "") {
+          body = it.text.length > 120 ? "…" + it.text.slice(-120) : it.text;
+          break;
+        }
+      }
+    }
+    body = body.replace(/\n+/g, " ").trim();
+    if (body === "") body = isErr ? "falha desconhecida" : "turno concluído";
+    Quickshell.execDetached(["notify-send", "-u", isErr ? "normal" : "low",
+                             "-a", "opencode", title, body]);
+  }
 
   function loadMessages() {
     if (!root.session) return;
     api("GET", "/api/session/" + root.session.id + "/message", null, (ok, data) => {
       if (!ok || !data || !data.data) return;
       const wasPinned = chatView.pinned;
-      let mode = "inplace";
       // rebuild atomically: intermediate contentHeight collapses clamp
       // contentY and would clobber the pinned/scroll state mid-rebuild
       root.rebuilding = true;
@@ -572,7 +608,7 @@ Pill {
         if (m.type === "user") {
           desired.push({ key: m.id, kind: "user", text: m.text || "",
                          name: "", state: "", toolIn: "", toolOut: "",
-                         live: false });
+                         diff: "", live: false });
         } else if (m.type === "assistant") {
           // keys match the streaming-delta scheme
           // (msgID:type:perTypeOrdinal); content can be null/missing on
@@ -592,22 +628,34 @@ Pill {
                   ? c.text : prev[k];
               desired.push({ key: key, kind: "assistant", text: t,
                              name: "", state: "", toolIn: "", toolOut: "",
-                             live: !done });
+                             diff: "", live: !done });
             } else if (c.type === "reasoning") {
               const k = key + "|reasoning";
               const t = (c.text || "").length >= (prev[k] || "").length
                   ? (c.text || "") : (prev[k] || "");
               desired.push({ key: key, kind: "reasoning", text: t,
                              name: "", state: "", toolIn: "", toolOut: "",
-                             live: !done });
+                             diff: "", live: !done });
             } else if (c.type === "tool") {
               const st = c.state || {};
               const running = st.status === "running" || st.status === "streaming";
+              const name = c.tool || c.name || "tool";
+              // edit/patch tools carry unified diffs in metadata.files;
+              // write has none — synthesize (a new file is all additions)
+              const patches = ((st.metadata || {}).files || [])
+                  .map(f => f.patch || "").filter(p => p !== "");
+              let diff = patchText(patches.join("\n"));
+              if (diff === "" && name === "write" && st.input
+                  && typeof st.input.content === "string") {
+                diff = patchText(st.input.content.split("\n")
+                    .map(l => "+" + l).join("\n"));
+              }
               desired.push({
-                key: key, kind: "tool", name: c.tool || c.name || "tool",
+                key: key, kind: "tool", name: name,
                 state: (st.status || "") + (st.title ? " · " + st.title : running ? " · running…" : ""),
                 toolIn: st.input ? JSON.stringify(st.input, null, 1) : "",
                 toolOut: toolOutText(st),
+                diff: diff,
                 live: false
               });
             }
@@ -638,13 +686,13 @@ Pill {
           if (it.state !== d.state) chatModel.setProperty(i, "state", d.state);
           if (it.toolIn !== d.toolIn) chatModel.setProperty(i, "toolIn", d.toolIn);
           if (it.toolOut !== d.toolOut) chatModel.setProperty(i, "toolOut", d.toolOut);
+          if (it.diff !== d.diff) chatModel.setProperty(i, "diff", d.diff);
           // `live` only ever settles true → false (part finished)
           if (it.live && !d.live) chatModel.setProperty(i, "live", false);
         }
         for (let i = chatModel.count; i < desired.length; i++)
           chatModel.append(desired[i]);
       } else {
-        mode = "rebuild";
         chatModel.clear();
         for (const d of desired) chatModel.append(d);
       }
@@ -678,7 +726,6 @@ Pill {
       // restore the scroll exactly where the rebuild found it
       chatView.pinned = wasPinned;
       if (wasPinned) Qt.callLater(chatView.stick);
-      debugChat("reload " + mode);
     });
   }
 
@@ -1181,7 +1228,7 @@ Pill {
               text: "\uf04d"
               font.family: "Agave Nerd Font"
               font.pixelSize: 11
-              color: "#ff6666"
+              color: root.cErr
             }
             MouseArea {
               id: stopMa
@@ -1202,7 +1249,7 @@ Pill {
           text: root.error
           font.family: "Agave Nerd Font"
           font.pixelSize: 10
-          color: "#ff6666"
+          color: root.cErr
           elide: Text.ElideRight
         }
 
@@ -1331,7 +1378,7 @@ Pill {
                     font.family: "Agave Nerd Font"
                     font.pixelSize: 10
                     color: msgDel.kind === "reasoning" ? root.cMuted
-                         : (msgDel.state.indexOf("error") !== -1 ? "#ff6666" : root.cMuted)
+                         : (msgDel.state.indexOf("error") !== -1 ? root.cErr : root.cMuted)
                     opacity: 0.9
 
                     MouseArea {
@@ -1355,7 +1402,9 @@ Pill {
 
                     SelText {
                       id: toolInEdit
-                      visible: msgDel.toolIn !== ""
+                      // with a diff shown, the raw JSON input only duplicates
+                      // it and clutters the foldout
+                      visible: msgDel.toolIn !== "" && msgDel.diff === ""
                       width: parent.width
                       height: contentHeight
                       text: msgDel.toolIn
@@ -1377,6 +1426,20 @@ Pill {
                       font.pixelSize: 9
                       color: root.cMuted
                       onSelectedTextChanged: if (selectedText !== "") root.selEdit = reasoningEdit
+                      onCopied: root.showCopyToast()
+                    }
+
+                    // colored unified diff (edit/patch tools)
+                    SelText {
+                      id: diffEdit
+                      visible: msgDel.diff !== ""
+                      width: parent.width
+                      height: contentHeight
+                      text: renderDiff(msgDel.diff)
+                      textFormat: TextEdit.RichText
+                      font.pixelSize: 9
+                      color: root.cText
+                      onSelectedTextChanged: if (selectedText !== "") root.selEdit = diffEdit
                       onCopied: root.showCopyToast()
                     }
 
@@ -1684,7 +1747,7 @@ Pill {
                   font.family: "Agave Nerd Font"
                   font.pixelSize: 10
                   font.bold: parent.modelData.v !== "reject"
-                  color: parent.modelData.v === "reject" ? "#ff6666" : root.cAccent
+                  color: parent.modelData.v === "reject" ? root.cErr : root.cAccent
                 }
                 MouseArea {
                   id: permMa
@@ -1780,7 +1843,7 @@ Pill {
               text: root.busy || root.sending ? "\uf04d" : "➤"
               font.family: "Agave Nerd Font"
               font.pixelSize: 12
-              color: root.busy || root.sending ? "#ff6666" : root.cLive
+              color: root.busy || root.sending ? root.cErr : root.cLive
             }
             MouseArea {
               id: sendMa
@@ -1789,6 +1852,46 @@ Pill {
               cursorShape: Qt.PointingHandCursor
               onClicked: root.busy || root.sending ? root.interrupt() : root.send()
             }
+          }
+        }
+      }
+
+      // ----- jump to latest -----
+      // floats over the chat, above the input row; shown once the user
+      // scrolled away from the bottom (pinned went false)
+      Rectangle {
+        id: jumpBtn
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.rightMargin: 12
+        anchors.bottomMargin: 54     // input row (38) + gap
+        z: 5
+        visible: opacity > 0
+        opacity: (!chatView.pinned && root.panelOpen) ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
+        width: 30
+        height: 22
+        radius: 5
+        color: jumpMa.containsMouse ? root.cHover : root.cSurface
+        border.color: root.cBorder
+        border.width: 1
+
+        Text {
+          anchors.centerIn: parent
+          text: "\uf103"           // angle-double-down
+          font.family: "Agave Nerd Font"
+          font.pixelSize: 11
+          color: root.cText
+        }
+
+        MouseArea {
+          id: jumpMa
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: {
+            chatView.pinned = true;
+            chatView.stick();
           }
         }
       }
