@@ -289,6 +289,8 @@ hl.bind(mod("U"), exec("pavucontrol"))
 hl.bind(mod("N"), exec("swaync-client -t -sw"))
 hl.bind(shift("N"), exec("swaync-client -C"))
 
+hl.bind(mod("A"), exec("qs ipc call opencode toggle"))  -- opencode chat panel
+
 hl.bind("PRINT", exec("hyprshot -m window"))
 hl.bind("SHIFT + PRINT", exec("hyprshot -m region"))
 hl.bind(shift("L"), exec("hyprlock"))

@@ -37,7 +37,7 @@ Pill {
         ? (root.playing ? "󰏤" : "󰐊") + " " + root.player.trackTitle
         : ""
     color: root.panelOpen ? Theme.accent : Theme.text
-    Behavior on color { ColorAnimation { duration: 300 } }
+    Behavior on color { ColorAnimation { duration: 200 } }
   }
 
   MouseArea {
@@ -53,10 +53,16 @@ Pill {
     onClicked: root.panelOpen = false
   }
 
+  // drive the popup's close fade (see the dropdown panel below)
+  onPanelOpenChanged: panelOpen ? hideAnim.stop() : hideAnim.restart()
+
   // ---------- dropdown panel ----------
   PopupWindow {
-    visible: root.panelOpen
+    // stays mapped briefly while closing so the fade can play
+    visible: root.panelOpen || hideAnim.running
     color: "transparent"
+
+    Timer { id: hideAnim; interval: 220 }
 
     implicitWidth: panelBody.implicitWidth + 24
     implicitHeight: panelBody.implicitHeight + 16
@@ -184,7 +190,7 @@ Pill {
             font.bold: true
             font.pixelSize: 13
             color: ctrl.dim ? Theme.muted : (ctrlMa.containsMouse ? Theme.accent : Theme.text)
-            Behavior on color { ColorAnimation { duration: 150 } }
+            Behavior on color { ColorAnimation { duration: 200 } }
           }
 
           MouseArea {
@@ -209,9 +215,9 @@ Pill {
           Rectangle {
             width: 42; height: 28; radius: 6
             color: playMa.containsMouse ? Theme.hover : Theme.surface
-            Behavior on color { ColorAnimation { duration: 150 } }
+            Behavior on color { ColorAnimation { duration: 200 } }
             scale: playMa.containsMouse ? 1.06 : 1
-            Behavior on scale { NumberAnimation { duration: 130; easing.type: Easing.OutCubic } }
+            Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
 
             Text {
               anchors.centerIn: parent

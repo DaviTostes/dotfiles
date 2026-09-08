@@ -1,5 +1,6 @@
 import Quickshell
 import QtQuick
+import "../hyprconf"
 
 // Tooltip rendered as a layer-shell popup so it is never clipped
 // by the bar surface (plain QML Popups are cut off at the panel edge).
@@ -18,7 +19,10 @@ PopupWindow {
   property int contentW: 64
   property int contentH: 0
 
-  visible: shown && target != null
+  // stays mapped briefly while hiding so the fade can play
+  visible: (tip.shown && target != null) || hideTimer.running
+  Timer { id: hideTimer; interval: 170 }
+  onShownChanged: tip.shown ? hideTimer.stop() : hideTimer.restart()
   color: "transparent"
 
   implicitWidth: contentW + 24
@@ -49,10 +53,16 @@ PopupWindow {
 
   Rectangle {
     anchors.fill: parent
-    color: "#222"
+    color: Theme.bg
     radius: 6
-    border.color: "#3a3a3a"
+    border.color: Theme.border
     border.width: 1
+    opacity: tip.shown ? 1 : 0
+    Behavior on opacity { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
+    transform: Translate {
+      y: tip.shown ? 0 : -5
+      Behavior on y { NumberAnimation { duration: 170; easing.type: Easing.OutCubic } }
+    }
   }
 
   Item {
@@ -84,9 +94,9 @@ PopupWindow {
       visible: tip.content == null && tip.rich
       textFormat: Text.RichText
       text: tip.text
-      font.family: "Agave Nerd Font"
+      font.family: Theme.font
       font.pixelSize: 12
-      color: "#dcdfe1"
+      color: Theme.text
     }
 
     Column {
@@ -97,18 +107,18 @@ PopupWindow {
 
       Text {
         text: tip.text
-        font.family: "Agave Nerd Font"
+        font.family: Theme.font
         font.bold: true
         font.pixelSize: 12
-        color: "#ffffff"
+        color: Theme.text
       }
 
       Text {
         visible: tip.subtitle !== ""
         text: tip.subtitle
-        font.family: "Agave Nerd Font"
+        font.family: Theme.font
         font.pixelSize: 11
-        color: "#8a8a8a"
+        color: Theme.muted
       }
     }
   }

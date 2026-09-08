@@ -1,4 +1,5 @@
 import Quickshell
+import "../hyprconf"
 import QtQuick
 
 Pill {
@@ -25,18 +26,9 @@ Pill {
   property bool panelOpen: false
 
   readonly property bool running: runState === "run"
-  readonly property color cWork: "#d3d9e0"      // work accent — light gray
-  readonly property color cBreak: "#8b95a3"     // break accent — mid gray
-  readonly property color cPaused: "#4a505a"    // dim gray when paused
-  readonly property color cIdleText: "#585f68"  // idle pill text
-  readonly property color cMuted: "#5c6470"     // secondary text
-  readonly property color cText: "#a9afb8"      // primary text
-  readonly property color cSurface: "#1e2126"   // buttons / chips
-  readonly property color cHover: "#282c33"     // hover surface
-  readonly property color cDark: "#101216"      // text on accent fills
 
   readonly property color phaseColor:
-      runState === "pause" ? cPaused : (phase === "work" ? cWork : cBreak)
+      runState === "pause" ? Theme.paused : (phase === "work" ? Theme.accent : Theme.accent2)
   // not readonly: the Behavior needs to write the animated value
   property real progress: phase === "work"
       ? 1 - remaining / workDuration
@@ -99,7 +91,7 @@ Pill {
   Text {
     id: label
     anchors.centerIn: parent
-    font.family: "Agave Nerd Font"
+    font.family: Theme.font
     font.bold: true
     font.pixelSize: 12
     text: {
@@ -107,8 +99,8 @@ Pill {
       const s = root.remaining % 60;
       return "󰄉 " + m + ":" + ("0" + s).slice(-2);
     }
-    color: root.runState !== "run" && root.runState !== "pause" ? root.cIdleText : root.phaseColor
-    Behavior on color { ColorAnimation { duration: 300 } }
+    color: root.runState !== "run" && root.runState !== "pause" ? Theme.idleText : root.phaseColor
+    Behavior on color { ColorAnimation { duration: 200 } }
   }
 
   MouseArea {
@@ -132,11 +124,17 @@ Pill {
     onClicked: root.panelOpen = false
   }
 
+  // drive the popup's close fade (see the dropdown panel below)
+  onPanelOpenChanged: panelOpen ? hideAnim.stop() : hideAnim.restart()
+
   // ---------- dropdown panel ----------
   PopupWindow {
 
-    visible: root.panelOpen
+    // stays mapped briefly while closing so the fade can play
+    visible: root.panelOpen || hideAnim.running
     color: "transparent"
+
+    Timer { id: hideAnim; interval: 220 }
 
     implicitWidth: panelBody.implicitWidth + 24
     implicitHeight: panelBody.implicitHeight + 16
@@ -163,9 +161,9 @@ Pill {
 
     Rectangle {
       anchors.fill: parent
-      color: "#161719"
+      color: Theme.bg
       radius: 6
-      border.color: "#282a2e"
+      border.color: Theme.border
       border.width: 1
     }
 
@@ -201,7 +199,7 @@ Pill {
               ctx.reset();
               ctx.lineWidth = 3;
               ctx.lineCap = "round";
-              ctx.strokeStyle = "#282a2e";
+              ctx.strokeStyle = Theme.border;
               ctx.beginPath();
               ctx.arc(22, 22, 18, 0, Math.PI * 2);
               ctx.stroke();
@@ -220,16 +218,16 @@ Pill {
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             text: root.phase === "work" ? "\uf017" : (root.phase === "long" ? "\uf186" : "\uf0f4")
-            font.family: "Agave Nerd Font"
+            font.family: Theme.font
             font.pixelSize: 13
             color: root.phaseColor
-            Behavior on color { ColorAnimation { duration: 300 } }
+            Behavior on color { ColorAnimation { duration: 200 } }
           }
 
           Text {
             x: 58
             y: 6
-            font.family: "Agave Nerd Font"
+            font.family: Theme.font
             font.bold: true
             font.pixelSize: 21
             color: root.phaseColor
@@ -238,15 +236,15 @@ Pill {
               const s = root.remaining % 60;
               return m + ":" + ("0" + s).slice(-2);
             }
-            Behavior on color { ColorAnimation { duration: 300 } }
+            Behavior on color { ColorAnimation { duration: 200 } }
           }
 
           Text {
             x: 58
             y: 31
-            font.family: "Agave Nerd Font"
+            font.family: Theme.font
             font.pixelSize: 10
-            color: root.cMuted
+            color: Theme.muted
             text: root.phaseName(root.phase) + " · session " + (root.phase === "work" ? root.cycle + 1 : root.cycle) + " of " + root.longEvery
           }
         }
@@ -258,17 +256,17 @@ Pill {
 
           Rectangle {
             width: 96; height: 28; radius: 6
-            color: root.running ? root.cSurface : root.cWork
+            color: root.running ? Theme.surface : Theme.accent
             Behavior on color { ColorAnimation { duration: 200 } }
             scale: playMa.containsMouse ? 1.04 : 1
-            Behavior on scale { NumberAnimation { duration: 130; easing.type: Easing.OutCubic } }
+            Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
 
             Text {
               anchors.centerIn: parent
-              font.family: "Agave Nerd Font"
+              font.family: Theme.font
               font.bold: true
               font.pixelSize: 13
-              color: root.running ? root.cText : root.cDark
+              color: root.running ? Theme.text : Theme.deep
               Behavior on color { ColorAnimation { duration: 200 } }
               text: root.running ? "\uf04c  pause" : (root.runState === "pause" ? "\uf04b  resume" : "\uf04b  start")
             }
@@ -284,13 +282,13 @@ Pill {
 
           Rectangle {
             width: 34; height: 28; radius: 6
-            color: rb.containsMouse ? root.cHover : root.cSurface
-            Behavior on color { ColorAnimation { duration: 150 } }
+            color: rb.containsMouse ? Theme.hover : Theme.surface
+            Behavior on color { ColorAnimation { duration: 200 } }
             Text {
               anchors.centerIn: parent
-              font.family: "Agave Nerd Font"
+              font.family: Theme.font
               font.pixelSize: 13
-              color: root.cText
+              color: Theme.text
               text: "\uf0e2"
             }
             MouseArea {
@@ -304,13 +302,13 @@ Pill {
 
           Rectangle {
             width: 34; height: 28; radius: 6
-            color: sb.containsMouse ? root.cHover : root.cSurface
-            Behavior on color { ColorAnimation { duration: 150 } }
+            color: sb.containsMouse ? Theme.hover : Theme.surface
+            Behavior on color { ColorAnimation { duration: 200 } }
             Text {
               anchors.centerIn: parent
-              font.family: "Agave Nerd Font"
+              font.family: Theme.font
               font.pixelSize: 13
-              color: root.cText
+              color: Theme.text
               text: "\uf04e"
             }
             MouseArea {
@@ -328,7 +326,7 @@ Pill {
           id: chipRow
 
           property string title
-          property color accent: root.cWork
+          property color accent: Theme.accent
           property string current
           property var values: []
           property var pick: null
@@ -338,9 +336,9 @@ Pill {
           Text {
             width: 40
             text: chipRow.title
-            font.family: "Agave Nerd Font"
+            font.family: Theme.font
             font.pixelSize: 10
-            color: root.cMuted
+            color: Theme.muted
             anchors.verticalCenter: parent.verticalCenter
           }
 
@@ -356,19 +354,19 @@ Pill {
               width: chipText.implicitWidth + 12
               height: 20
               radius: 5
-              color: sel ? chipRow.accent : (chipMa.containsMouse ? root.cHover : root.cSurface)
-              Behavior on color { ColorAnimation { duration: 150 } }
+              color: sel ? chipRow.accent : (chipMa.containsMouse ? Theme.hover : Theme.surface)
+              Behavior on color { ColorAnimation { duration: 200 } }
               scale: chipMa.containsMouse ? 1.07 : 1
-              Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+              Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
 
               Text {
                 id: chipText
                 anchors.centerIn: parent
-                font.family: "Agave Nerd Font"
+                font.family: Theme.font
                 font.pixelSize: 10
                 font.bold: chip.sel
-                color: chip.sel ? root.cDark : root.cText
-                Behavior on color { ColorAnimation { duration: 150 } }
+                color: chip.sel ? Theme.deep : Theme.text
+                Behavior on color { ColorAnimation { duration: 200 } }
                 text: chip.modelData
               }
 
@@ -385,7 +383,7 @@ Pill {
 
         ChipRow {
           title: "focus"
-          accent: root.cWork
+          accent: Theme.accent
           values: ["5m", "15m", "25m", "45m", "60m"]
           current: Math.round(root.workDuration / 60) + "m"
           pick: v => {
@@ -396,7 +394,7 @@ Pill {
 
         ChipRow {
           title: "break"
-          accent: root.cBreak
+          accent: Theme.accent2
           values: ["5m", "10m", "15m", "30m"]
           current: Math.round(root.shortBreak / 60) + "m"
           pick: v => {
@@ -407,7 +405,7 @@ Pill {
 
         ChipRow {
           title: "long"
-          accent: root.cWork
+          accent: Theme.accent
           values: ["3", "4", "6"]
           current: String(root.longEvery)
           pick: v => { root.longEvery = parseInt(v); }
@@ -415,7 +413,7 @@ Pill {
 
         ChipRow {
           title: "long"
-          accent: root.cBreak
+          accent: Theme.accent2
           values: ["15m", "20m", "30m"]
           current: Math.round(root.longBreak / 60) + "m"
           pick: v => {
@@ -441,25 +439,25 @@ Pill {
 
               Text {
                 text: modelData.label
-                font.family: "Agave Nerd Font"
+                font.family: Theme.font
                 font.pixelSize: 10
-                color: root.cMuted
+                color: Theme.muted
                 anchors.verticalCenter: parent.verticalCenter
               }
 
               Rectangle {
                 anchors.verticalCenter: parent.verticalCenter
                 width: 26; height: 14; radius: 7
-                color: modelData.get() ? root.cWork : root.cSurface
-                Behavior on color { ColorAnimation { duration: 180 } }
+                color: modelData.get() ? Theme.accent : Theme.surface
+                Behavior on color { ColorAnimation { duration: 200 } }
 
                 Rectangle {
                   x: modelData.get() ? parent.width - width - 2 : 2
                   anchors.verticalCenter: parent.verticalCenter
                   width: 10; height: 10; radius: 5
-                  color: modelData.get() ? root.cDark : root.cMuted
+                  color: modelData.get() ? Theme.deep : Theme.muted
                   Behavior on x { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-                  Behavior on color { ColorAnimation { duration: 180 } }
+                  Behavior on color { ColorAnimation { duration: 200 } }
                 }
 
                 MouseArea {
@@ -475,9 +473,9 @@ Pill {
         // ----- stats -----
         Text {
           anchors.horizontalCenter: parent.horizontalCenter
-          font.family: "Agave Nerd Font"
+          font.family: Theme.font
           font.pixelSize: 10
-          color: root.cMuted
+          color: Theme.muted
           text: root.sessions + " sessions · " + root.focusMinutes + "m focus today"
         }
       }

@@ -2,6 +2,7 @@ import Quickshell
 import Quickshell.Io
 import QtQuick
 import QtQuick.Controls.Basic
+import "../hyprconf"
 
 // opencode — native chat panel (no kitty window at all).
 //
@@ -39,6 +40,15 @@ Pill {
 
   // ---------- panel ----------
   property bool panelOpen: false
+  property string mode: "chat"    // central tab: chat | translate | calc
+  // tab swipe: on tab change the incoming body starts offset to the side
+  // (direction follows the tab order) and glides back to 0
+  property real swipeOfs: 0
+  property int prevTab: 0
+  Behavior on swipeOfs {
+    id: swipeBehavior
+    NumberAnimation { duration: 200; easing.type: Easing.OutCubic }
+  }
   property string menu: ""        // "" | "sessions" | "models" | "agents" | "commands" | "files"
 
   // ---------- service ----------
@@ -94,19 +104,6 @@ Pill {
 
   // keep plain XMLHttpRequest objects alive while a request is in flight
   property var inflight: []
-
-  // ---------- Pomodoro palette ----------
-  readonly property color cBg: "#161719"
-  readonly property color cBorder: "#282a2e"
-  readonly property color cSurface: "#1e2126"
-  readonly property color cHover: "#282c33"
-  readonly property color cText: "#a9afb8"
-  readonly property color cMuted: "#5c6470"
-  readonly property color cAccent: "#d3d9e0"
-  readonly property color cDark: "#101216"
-  readonly property color cLive: "#a6e3a1"
-  readonly property color cErr: "#d2686a"
-  readonly property color cIdleText: "#585f68"
 
   implicitWidth: label.implicitWidth + 14
 
@@ -529,14 +526,15 @@ Pill {
 
   // unified diff → selectable HTML: +green, −red, hunk headers muted
   function renderDiff(p) {
+    if (!p) return "";
     const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
                      .replace(/>/g, "&gt;");
     const lines = p.split("\n").map(l => {
-      let c = root.cText;
-      if (l.startsWith("+")) c = root.cLive;
-      else if (l.startsWith("-")) c = root.cErr;
+      let c = Theme.text;
+      if (l.startsWith("+")) c = Theme.live;
+      else if (l.startsWith("-")) c = Theme.err;
       else if (l.startsWith("@@") || l.startsWith("Index")
-               || l.startsWith("---") || l.startsWith("+++")) c = root.cMuted;
+               || l.startsWith("---") || l.startsWith("+++")) c = Theme.muted;
       return "<span style=\"color:" + c + "\">" + (esc(l) || "&nbsp;") + "</span>";
     });
     return "<pre style=\"white-space:pre-wrap; margin:0\">"
@@ -556,8 +554,10 @@ Pill {
           : "");
   }
 
-  // transient "copied" toast in the panel
-  function showCopyToast() { toastTimer.restart(); }
+  // transient toast in the panel (copy confirmations, stt status, …)
+  function showToast(msg) { toastText.text = msg; toastTimer.restart(); }
+
+  function showCopyToast() { root.showToast("copied to clipboard"); }
 
   // desktop notification for a turn that ends while the panel is closed —
   // the only way to learn the job finished without reopening it
@@ -942,18 +942,93 @@ Pill {
     root.panelOpen = false;
   }
 
+  // ---------- voice (whisper.cpp STT) ----------
+  // mic pill in the input row: records via pw-record (16k mono s16), then
+  // transcribes with whisper-cli into the real editor (hiddenInput) at the
+  // caret, so the user can edit before sending.
+  property string sttState: "idle"    // idle | rec | stt
+  property int recSecs: 0
+  property bool sttCancel: false      // panel closed mid-recording: discard
+  readonly property string micWav: "/tmp/opencode-chat-mic.wav"
+  readonly property string sttModel: Quickshell.env("HOME")
+      + "/.local/share/whisper/ggml-small.bin"
+
+  function startRec() {
+    if (root.sttState !== "idle" || recProc.running || sttProc.running) return;
+    root.sttCancel = false;
+    recProc.running = true;
+  }
+
+  function stopRec() {
+    if (root.sttState !== "rec" || !recProc.running) return;
+    recProc.running = false;          // onExited → transcribe
+  }
+
+  function transcribe() {
+    sttProc.out = "";
+    sttProc.running = true;
+  }
+
+  function finishStt(code) {
+    root.sttState = "idle";
+    const t = (sttProc.out || "").replace(/\s+/g, " ").trim();
+    if (t === "") {
+      root.showToast(code !== 0 ? "stt falhou (exit " + code + ")" : "nada capturado");
+      return;
+    }
+    // insert at the caret of the real editor (mirrors into the popup field)
+    const at = hiddenInput.cursorPosition;
+    const pad = hiddenInput.text !== "" && at > 0
+        && hiddenInput.text.charAt(at - 1) !== " " ? " " : "";
+    hiddenInput.insert(at, pad + t);
+    hiddenInput.cursorPosition = at + (pad + t).length;
+    // auto-send: the transcription is the message
+    if (!root.busy && !root.sending) root.send();
+  }
+
+  Process {
+    id: recProc
+    command: ["pw-record", "--rate", "16000", "--channels", "1",
+              "--format", "s16", root.micWav]
+    onStarted: { root.sttState = "rec"; root.recSecs = 0; recTimer.start(); }
+    onExited: {
+      recTimer.stop();
+      if (root.sttCancel) { root.sttCancel = false; root.sttState = "idle"; return; }
+      root.transcribe();
+    }
+  }
+
+  Process {
+    id: sttProc
+    property string out: ""
+    command: ["whisper-cli", "-m", root.sttModel, "-l", "pt", "-np", "-nt",
+              "-f", root.micWav]
+    stdout: SplitParser {
+      onRead: data => sttProc.out += data + "\n"
+    }
+    onStarted: root.sttState = "stt"
+    onExited: code => root.finishStt(code)
+  }
+
+  Timer {
+    id: recTimer
+    interval: 1000
+    repeat: true
+    onTriggered: root.recSecs += 1
+  }
+
   // ---------- pill ----------
   Text {
     id: label
     anchors.centerIn: parent
     text: "󰆍"
-    font.family: "Agave Nerd Font"
+    font.family: Theme.font
     font.bold: true
     font.pixelSize: 14
-    color: root.busy ? root.cLive
-         : root.panelOpen ? root.cAccent
-         : (mouse.containsMouse ? "#ffffff" : "#dcdfe1")
-    Behavior on color { ColorAnimation { duration: 150 } }
+    color: root.busy ? Theme.live
+         : root.panelOpen ? Theme.accent
+         : (mouse.containsMouse ? Theme.accent : Theme.text)
+    Behavior on color { ColorAnimation { duration: 200 } }
   }
 
   MouseArea {
@@ -970,7 +1045,7 @@ Pill {
   Tip {
     target: root
     shown: mouse.containsMouse
-    text: "opencode — chat panel"
+    text: "central de inteligência"
   }
 
   // keyboard: the chat input field lives in the popup window, but the
@@ -993,13 +1068,15 @@ Pill {
 
     onTextChanged: if (!root.inputSyncing) {
       root.inputSyncing = true;
-      inputField.text = text;
+      if (root.mode === "translate") translateBox.sourceText = text;
+      else inputField.text = text;
       root.inputSyncing = false;
-      root.updateFinder();
+      if (root.mode === "chat") root.updateFinder();
     }
     onCursorPositionChanged: if (!root.inputSyncing) {
       root.inputSyncing = true;
-      inputField.cursorPosition = cursorPosition;
+      if (root.mode === "translate") translateBox.setCursorPos(cursorPosition);
+      else inputField.cursorPosition = cursorPosition;
       root.inputSyncing = false;
     }
     // the chat's TextEdits never hold the (compositor) keyboard — the bar
@@ -1012,8 +1089,14 @@ Pill {
         event.accepted = true;
       }
     }
-    Keys.onReturnPressed: root.send()
-    Keys.onEnterPressed: root.send()
+    Keys.onReturnPressed: {
+      if (root.mode === "translate") translateBox.translate();
+      else root.send();
+    }
+    Keys.onEnterPressed: {
+      if (root.mode === "translate") translateBox.translate();
+      else root.send();
+    }
     Keys.onEscapePressed: root.closeMenuOrPanel()
   }
 
@@ -1034,13 +1117,24 @@ Pill {
   PopupWindow {
     id: panel
 
-    visible: root.panelOpen
+    // stays mapped briefly while closing so the fade/slide can play
+    visible: root.panelOpen || hideAnim.running
     color: "transparent"
     implicitWidth: panelContent.width
     implicitHeight: panelContent.height
 
+    Timer { id: hideAnim; interval: 220 }
+
     onVisibleChanged: {
-      if (!visible || !root.panelOpen) return;
+      if (!visible) {
+        // panel closed mid-recording: discard the take
+        if (root.sttState !== "idle") {
+          root.sttCancel = true;
+          recProc.running = false;
+        }
+        return;
+      }
+      if (!root.panelOpen) return;
       // the BAR window holds compositor keyboard focus (its OnDemand grab
       // was taken by the pill's click) — focus the hidden TextInput that
       // lives there; the popup's field mirrors its text (see hiddenInput).
@@ -1059,35 +1153,52 @@ Pill {
 
     anchor {
       window: root.QsWindow.window
-      edges: Edges.Top | Edges.Right
-      gravity: Edges.Bottom | Edges.Left
+      edges: Edges.Top | Edges.Left
+      gravity: Edges.Bottom | Edges.Right
     }
 
     anchor.onAnchoring: {
-      // pill coords (relative to the bar window) + the bar's own offsets
-      // (Bar.qml margins: left 2); right-align the panel's right edge
-      // with the pill's right edge
+      // pin the panel's TOP-LEFT corner at (pillRight - 660, pillBottom + 6):
+      // for the 660-wide chat panel this right-aligns its right edge with
+      // the pill's right edge (as before), and — because the anchor is the
+      // top-left corner — tab resizes never move the origin; the panel
+      // only shrinks/grows from its right and bottom edges
       const p = root.mapToItem(null, 0, 0);
-      anchor.rect.x = p.x + 2;
+      anchor.rect.x = p.x + 2 + root.width - 660;
       anchor.rect.y = p.y + root.height + 6;
-      anchor.rect.width = root.width;
+      anchor.rect.width = 1;
       anchor.rect.height = 1;
     }
 
     Rectangle {
       id: panelContent
-      anchors.fill: parent
+      x: 0
+      y: 0
+      // fixed panel size for all tabs — resizing the popup per tab proved
+      // janky, so everything lives in the same dropdown
       width: 660
       height: 700
-      color: root.cBg
+      color: Theme.bg
       radius: 6
-      border.color: root.cBorder
+      border.color: Theme.border
       border.width: 1
+      // open/close: fade + drop-in (same motion as the player/pomodoro
+      // dropdowns); the popup stays mapped for 220ms on close (hideAnim)
+      opacity: root.panelOpen ? 1 : 0
+      Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+      transform: Translate {
+        y: root.panelOpen ? 0 : -8
+        Behavior on y { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+      }
+
+      // chat is empty (and no menu open) → TUI-style centered prompt
+      property bool empty: root.mode === "chat" && chatModel.count === 0
+                           && root.menu === ""
 
       Column {
         anchors.fill: parent
         anchors.margins: 10
-        anchors.bottomMargin: 0   // input row sits on the bottom edge
+        anchors.bottomMargin: 0   // input row is a floating sibling below
         spacing: 8
 
         // ----- header -----
@@ -1097,29 +1208,65 @@ Pill {
           height: 26
           spacing: 8
 
-          Text {
-            id: headerIcon
+          // central tabs: chat / translate / calculator
+          Row {
+            id: tabRow
             anchors.verticalCenter: parent.verticalCenter
-            text: "󰆍"
-            font.family: "Agave Nerd Font"
-            font.bold: true
-            font.pixelSize: 13
-            color: root.busy ? root.cLive : root.cMuted
+            spacing: 4
+
+            Repeater {
+              model: [
+                { id: "chat", icon: "󰆍" },
+                { id: "translate", icon: "\uf1ab" },
+                { id: "calc", icon: "\uf1ec" }
+              ]
+
+              delegate: Rectangle {
+                required property var modelData
+
+                readonly property bool cur: root.mode === modelData.id
+                width: 24; height: 20; radius: 5
+                color: cur ? Theme.hover
+                     : tabMa.containsMouse ? Theme.hover : "transparent"
+                Behavior on color { ColorAnimation { duration: 200 } }
+                scale: cur ? 1 : (tabMa.containsMouse ? 1.04 : 1)
+                Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+
+                Text {
+                  anchors.centerIn: parent
+                  text: parent.modelData.icon
+                  font.family: Theme.font
+                  font.pixelSize: 12
+                  color: parent.cur ? Theme.accent : Theme.muted
+                }
+
+                MouseArea {
+                  id: tabMa
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.mode = parent.modelData.id
+                }
+              }
+            }
           }
 
           // session title — click for the session list. Width accounts for
           // every sibling (incl. the stop button, which appears mid-turn)
           // so the header never overflows the panel edge
           Text {
+            id: titleText
             anchors.verticalCenter: parent.verticalCenter
-            width: parent.width - headerIcon.width - costText.width
+            visible: root.mode === "chat"
+            width: parent.width - tabRow.width
+                   - costText.width
                    - modelBtn.width - agentBtn.width - newBtn.width - 40
                    - (stopBtn.visible ? stopBtn.width + 8 : 0)
             text: root.session ? (root.session.title || "opencode") : "opencode — new chat"
-            font.family: "Agave Nerd Font"
+            font.family: Theme.font
             font.bold: true
             font.pixelSize: 12
-            color: root.cAccent
+            color: Theme.accent
             elide: Text.ElideRight
 
             MouseArea {
@@ -1133,29 +1280,31 @@ Pill {
           Text {
             id: costText
             anchors.verticalCenter: parent.verticalCenter
+            visible: root.mode === "chat"
             text: root.session && root.session.cost > 0
                   ? "$" + root.session.cost.toFixed(2) : ""
-            font.family: "Agave Nerd Font"
+            font.family: Theme.font
             font.pixelSize: 10
-            color: root.cMuted
+            color: Theme.muted
           }
 
           // model chip — click for the model list
           Rectangle {
             id: modelBtn
             anchors.verticalCenter: parent.verticalCenter
+            visible: root.mode === "chat"
             width: modelText.implicitWidth + 14
             height: 22
             radius: 5
-            color: modelMa.containsMouse ? root.cHover : root.cSurface
-            Behavior on color { ColorAnimation { duration: 150 } }
+            color: modelMa.containsMouse ? Theme.hover : Theme.surface
+            Behavior on color { ColorAnimation { duration: 200 } }
             Text {
               id: modelText
               anchors.centerIn: parent
               text: root.session && root.session.model ? root.session.model.id : "model"
-              font.family: "Agave Nerd Font"
+              font.family: Theme.font
               font.pixelSize: 10
-              color: root.cText
+              color: Theme.text
             }
             MouseArea {
               id: modelMa
@@ -1170,18 +1319,19 @@ Pill {
           Rectangle {
             id: agentBtn
             anchors.verticalCenter: parent.verticalCenter
+            visible: root.mode === "chat"
             width: agentText.implicitWidth + 14
             height: 22
             radius: 5
-            color: agentMa.containsMouse ? root.cHover : root.cSurface
-            Behavior on color { ColorAnimation { duration: 150 } }
+            color: agentMa.containsMouse ? Theme.hover : Theme.surface
+            Behavior on color { ColorAnimation { duration: 200 } }
             Text {
               id: agentText
               anchors.centerIn: parent
               text: root.session && root.session.agent ? root.session.agent : "agent"
-              font.family: "Agave Nerd Font"
+              font.family: Theme.font
               font.pixelSize: 10
-              color: root.cText
+              color: Theme.text
             }
             MouseArea {
               id: agentMa
@@ -1195,17 +1345,18 @@ Pill {
           Rectangle {
             id: newBtn
             anchors.verticalCenter: parent.verticalCenter
+            visible: root.mode === "chat"
             width: 22; height: 22; radius: 5
-            color: newChatMa.containsMouse ? root.cHover : root.cSurface
-            Behavior on color { ColorAnimation { duration: 150 } }
+            color: newChatMa.containsMouse ? Theme.hover : Theme.surface
+            Behavior on color { ColorAnimation { duration: 200 } }
             scale: newChatMa.containsMouse ? 1.07 : 1
-            Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+            Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
             Text {
               anchors.centerIn: parent
               text: "\uf067"          // plus — the old oct glyph overflowed the 22px chip
-              font.family: "Agave Nerd Font"
+              font.family: Theme.font
               font.pixelSize: 11
-              color: root.cText
+              color: Theme.text
             }
             MouseArea {
               id: newChatMa
@@ -1220,15 +1371,15 @@ Pill {
             id: stopBtn
             anchors.verticalCenter: parent.verticalCenter
             width: 22; height: 22; radius: 5
-            visible: root.busy || root.sending
-            color: stopMa.containsMouse ? root.cHover : root.cSurface
-            Behavior on color { ColorAnimation { duration: 150 } }
+            visible: (root.busy || root.sending) && root.mode === "chat"
+            color: stopMa.containsMouse ? Theme.hover : Theme.surface
+            Behavior on color { ColorAnimation { duration: 200 } }
             Text {
               anchors.centerIn: parent
               text: "\uf04d"
-              font.family: "Agave Nerd Font"
+              font.family: Theme.font
               font.pixelSize: 11
-              color: root.cErr
+              color: Theme.err
             }
             MouseArea {
               id: stopMa
@@ -1243,23 +1394,29 @@ Pill {
         // ----- error line -----
         Text {
           id: errorLine
+          transform: Translate { x: root.swipeOfs }
           width: parent.width
-          height: root.error !== "" ? implicitHeight : 0
-          visible: root.error !== ""
+          height: root.error !== "" && root.mode === "chat" ? implicitHeight : 0
+          visible: height > 0
+          clip: true
+          Behavior on height { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
           text: root.error
-          font.family: "Agave Nerd Font"
+          font.family: Theme.font
           font.pixelSize: 10
-          color: root.cErr
+          color: Theme.err
           elide: Text.ElideRight
         }
 
         // ----- chat history (anchored to the bottom like a real chat) -----
         Flickable {
           id: chatView
+          transform: Translate { x: root.swipeOfs }
           width: parent.width
-          height: parent.height - headerRow.height - menuBox.height
-                  - errorLine.height - permBanner.height - inputRow.height
-                  - 8 * 5
+          height: root.mode === "chat"
+              ? parent.height - headerRow.height - menuBox.height
+                - errorLine.height - permBanner.height - inputRow.height
+                - 8 * 4 - 10
+              : 0
           clip: true
           contentWidth: width
           contentHeight: chatCol.implicitHeight + (height > chatCol.implicitHeight
@@ -1320,9 +1477,9 @@ Pill {
                     return foldHead.implicitHeight + 8;
                   }
                   radius: 8
-                  color: msgDel.kind === "user" ? root.cSurface : "transparent"
+                  color: msgDel.kind === "user" ? Theme.surface : "transparent"
                   border.width: msgDel.kind === "user" ? 1 : 0
-                  border.color: root.cBorder
+                  border.color: Theme.border
 
                   // invisible measure: TextEdit has no content-hugging width,
                   // this sizes the user bubble
@@ -1332,7 +1489,7 @@ Pill {
                     width: Math.min(chatCol.width - 60, implicitWidth)
                     text: msgDel.text
                     textFormat: Text.PlainText
-                    font.family: "Agave Nerd Font"
+                    font.family: Theme.font
                     font.pixelSize: 12
                   }
 
@@ -1360,7 +1517,7 @@ Pill {
                     textFormat: TextEdit.MarkdownText
                     text: msgDel.text
                     font.pixelSize: 12
-                    color: root.cAccent
+                    color: Theme.accent
                     onSelectedTextChanged: if (selectedText !== "") root.selEdit = asstText
                     onCopied: root.showCopyToast()
                   }
@@ -1375,10 +1532,10 @@ Pill {
                         + (msgDel.kind === "tool" ? "⚒ " + msgDel.name
                              + (msgDel.state !== "" ? " · " + msgDel.state : "")
                            : "✦ reasoning")
-                    font.family: "Agave Nerd Font"
+                    font.family: Theme.font
                     font.pixelSize: 10
-                    color: msgDel.kind === "reasoning" ? root.cMuted
-                         : (msgDel.state.indexOf("error") !== -1 ? root.cErr : root.cMuted)
+                    color: msgDel.kind === "reasoning" ? Theme.muted
+                         : (msgDel.state.indexOf("error") !== -1 ? Theme.err : Theme.muted)
                     opacity: 0.9
 
                     MouseArea {
@@ -1410,7 +1567,7 @@ Pill {
                       text: msgDel.toolIn
                       textFormat: TextEdit.PlainText
                       font.pixelSize: 9
-                      color: root.cIdleText
+                      color: Theme.idleText
                       onSelectedTextChanged: if (selectedText !== "") root.selEdit = toolInEdit
                       onCopied: root.showCopyToast()
                     }
@@ -1424,7 +1581,7 @@ Pill {
                       text: msgDel.text
                       textFormat: TextEdit.PlainText
                       font.pixelSize: 9
-                      color: root.cMuted
+                      color: Theme.muted
                       onSelectedTextChanged: if (selectedText !== "") root.selEdit = reasoningEdit
                       onCopied: root.showCopyToast()
                     }
@@ -1438,7 +1595,7 @@ Pill {
                       text: renderDiff(msgDel.diff)
                       textFormat: TextEdit.RichText
                       font.pixelSize: 9
-                      color: root.cText
+                      color: Theme.text
                       onSelectedTextChanged: if (selectedText !== "") root.selEdit = diffEdit
                       onCopied: root.showCopyToast()
                     }
@@ -1453,7 +1610,7 @@ Pill {
                             : msgDel.toolOut
                       textFormat: TextEdit.PlainText
                       font.pixelSize: 9
-                      color: msgDel.kind === "reasoning" ? root.cMuted : root.cText
+                      color: msgDel.kind === "reasoning" ? Theme.muted : Theme.text
                       onSelectedTextChanged: if (selectedText !== "") root.selEdit = toolOutEdit
                       onCopied: root.showCopyToast()
                     }
@@ -1466,9 +1623,9 @@ Pill {
             Text {
               visible: root.busy
               text: "◌ thinking…"
-              font.family: "Agave Nerd Font"
+              font.family: Theme.font
               font.pixelSize: 11
-              color: root.cMuted
+              color: Theme.muted
               SequentialAnimation on opacity {
                 running: root.busy
                 loops: Animation.Infinite
@@ -1482,14 +1639,17 @@ Pill {
         // ----- menus (sessions / models / agents / commands / files) -----
         Rectangle {
           id: menuBox
+          transform: Translate { x: root.swipeOfs }
           width: parent.width
-          height: root.menu !== "" ? Math.min(200, menuCol.implicitHeight + 12) : 0
-          visible: root.menu !== ""
+          height: root.menu !== "" && root.mode === "chat"
+              ? Math.min(200, menuCol.implicitHeight + 12) : 0
+          visible: height > 0
           radius: 6
-          color: root.cSurface
-          border.color: root.cBorder
+          color: Theme.surface
+          border.color: Theme.border
           border.width: 1
           clip: true
+          Behavior on height { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
 
           Flickable {
             id: menuFlick
@@ -1520,15 +1680,15 @@ Pill {
                 width: menuCol.width - 4
                 height: 24
                 radius: 4
-                color: fileMa.containsMouse ? root.cHover : "transparent"
+                color: fileMa.containsMouse ? Theme.hover : "transparent"
                 Text {
                   anchors.left: parent.left
                   anchors.leftMargin: 8
                   anchors.verticalCenter: parent.verticalCenter
                   text: parent.modelData
-                  font.family: "Agave Nerd Font"
+                  font.family: Theme.font
                   font.pixelSize: 10
-                  color: root.cText
+                  color: Theme.text
                   elide: Text.ElideMiddle
                   width: parent.width - 16
                 }
@@ -1552,17 +1712,17 @@ Pill {
                 width: menuCol.width - 4
                 height: 24
                 radius: 4
-                color: sesMa.containsMouse ? root.cHover : "transparent"
+                color: sesMa.containsMouse ? Theme.hover : "transparent"
                 Text {
                   anchors.left: parent.left
                   anchors.leftMargin: 8
                   anchors.verticalCenter: parent.verticalCenter
                   width: parent.width - 90
                   text: (parent.cur ? "● " : "") + (parent.modelData.title || parent.modelData.id)
-                  font.family: "Agave Nerd Font"
+                  font.family: Theme.font
                   font.pixelSize: 10
                   font.bold: parent.cur
-                  color: parent.cur ? root.cAccent : root.cText
+                  color: parent.cur ? Theme.accent : Theme.text
                   elide: Text.ElideRight
                 }
                 Text {
@@ -1570,9 +1730,9 @@ Pill {
                   anchors.rightMargin: 8
                   anchors.verticalCenter: parent.verticalCenter
                   text: parent.modelData.agent || ""
-                  font.family: "Agave Nerd Font"
+                  font.family: Theme.font
                   font.pixelSize: 9
-                  color: root.cMuted
+                  color: Theme.muted
                 }
                 MouseArea {
                   id: sesMa
@@ -1595,7 +1755,7 @@ Pill {
                 width: menuCol.width - 4
                 height: 24
                 radius: 4
-                color: modMa.containsMouse ? root.cHover : "transparent"
+                color: modMa.containsMouse ? Theme.hover : "transparent"
                 Text {
                   anchors.left: parent.left
                   anchors.leftMargin: 8
@@ -1603,10 +1763,10 @@ Pill {
                   width: parent.width - 90
                   text: (parent.cur ? "● " : "") + parent.modelData.name
                       + "  ·  " + parent.modelData.providerID
-                  font.family: "Agave Nerd Font"
+                  font.family: Theme.font
                   font.pixelSize: 10
                   font.bold: parent.cur
-                  color: parent.cur ? root.cAccent : root.cText
+                  color: parent.cur ? Theme.accent : Theme.text
                   elide: Text.ElideRight
                 }
                 MouseArea {
@@ -1629,16 +1789,16 @@ Pill {
                 width: menuCol.width - 4
                 height: 24
                 radius: 4
-                color: agMa.containsMouse ? root.cHover : "transparent"
+                color: agMa.containsMouse ? Theme.hover : "transparent"
                 Text {
                   anchors.left: parent.left
                   anchors.leftMargin: 8
                   anchors.verticalCenter: parent.verticalCenter
                   text: (parent.cur ? "● " : "") + parent.modelData.name
-                  font.family: "Agave Nerd Font"
+                  font.family: Theme.font
                   font.pixelSize: 10
                   font.bold: parent.cur
-                  color: parent.cur ? root.cAccent : root.cText
+                  color: parent.cur ? Theme.accent : Theme.text
                 }
                 MouseArea {
                   id: agMa
@@ -1664,7 +1824,7 @@ Pill {
                 width: menuCol.width - 4
                 height: 24
                 radius: 4
-                color: cmdMa.containsMouse ? root.cHover : "transparent"
+                color: cmdMa.containsMouse ? Theme.hover : "transparent"
                 Text {
                   anchors.left: parent.left
                   anchors.leftMargin: 8
@@ -1673,9 +1833,9 @@ Pill {
                   text: "/" + parent.modelData.name
                       + (parent.modelData.description !== ""
                          ? "  —  " + parent.modelData.description : "")
-                  font.family: "Agave Nerd Font"
+                  font.family: Theme.font
                   font.pixelSize: 10
-                  color: root.cText
+                  color: Theme.text
                   elide: Text.ElideRight
                 }
                 MouseArea {
@@ -1699,12 +1859,15 @@ Pill {
         // ----- permission banner -----
         Rectangle {
           id: permBanner
+          transform: Translate { x: root.swipeOfs }
           width: parent.width
-          height: root.pendingPerm ? 46 : 0
-          visible: root.pendingPerm != null
+          height: root.pendingPerm && root.mode === "chat" ? 46 : 0
+          visible: height > 0
+          clip: true
+          Behavior on height { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
           radius: 6
-          color: root.cSurface
-          border.color: root.cBorder
+          color: Theme.surface
+          border.color: Theme.border
           border.width: 1
 
           Text {
@@ -1716,9 +1879,9 @@ Pill {
                 ? "permission: " + root.pendingPerm.action
                   + " — " + (root.pendingPerm.resources || []).join(", ")
                 : ""
-            font.family: "Agave Nerd Font"
+            font.family: Theme.font
             font.pixelSize: 10
-            color: root.cText
+            color: Theme.text
             elide: Text.ElideRight
           }
 
@@ -1738,16 +1901,16 @@ Pill {
                 width: permLabel.implicitWidth + 14
                 height: 24
                 radius: 5
-                color: permMa.containsMouse ? root.cHover : root.cBg
-                Behavior on color { ColorAnimation { duration: 150 } }
+                color: permMa.containsMouse ? Theme.hover : Theme.bg
+                Behavior on color { ColorAnimation { duration: 200 } }
                 Text {
                   id: permLabel
                   anchors.centerIn: parent
                   text: parent.modelData.l
-                  font.family: "Agave Nerd Font"
+                  font.family: Theme.font
                   font.pixelSize: 10
                   font.bold: parent.modelData.v !== "reject"
-                  color: parent.modelData.v === "reject" ? root.cErr : root.cAccent
+                  color: parent.modelData.v === "reject" ? Theme.err : Theme.accent
                 }
                 MouseArea {
                   id: permMa
@@ -1761,97 +1924,242 @@ Pill {
           }
         }
 
-        // ----- input row -----
-        Rectangle {
-          id: inputRow
-          width: parent.width
-          height: 38
-          radius: 6
-          color: root.cSurface
-          border.color: inputField.activeFocus || hiddenInput.activeFocus
-                       ? root.cMuted : root.cBorder
-          border.width: 1
+      }
+      // ----- input row -----
+      // floats: glides up to the middle of the panel when the chat is
+      // empty (TUI-style centered prompt), docks to the bottom otherwise
+      Rectangle {
+        id: inputRow
+        transform: Translate { x: root.swipeOfs }
+        x: 10
+        width: parent.width - 20
+        visible: root.mode === "chat"
+        y: panelContent.empty ? 44 + (parent.height - 120) / 2
+                              : parent.height - 48   // 10px bottom margin
+        height: 38
+        Behavior on y { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
+        radius: 6
+        color: Theme.surface
+        border.color: inputField.activeFocus || hiddenInput.activeFocus
+                     ? Theme.muted : Theme.border
+        border.width: 1
 
-          TextField {
-            id: inputField
-            anchors.left: parent.left
-            anchors.leftMargin: 10
-            anchors.right: sendBtn.left
-            anchors.rightMargin: 6
-            anchors.verticalCenter: parent.verticalCenter
-            background: null
-            placeholderText: root.busy ? "opencode is working…"
-                                       : "ask opencode…  (@file · /command)"
-            placeholderTextColor: root.cIdleText
-            color: root.cAccent
-            font.family: "Agave Nerd Font"
-            font.pixelSize: 12
-            selectionColor: root.cHover
-            selectedTextColor: root.cAccent
-            enabled: !root.busy && !root.sending
-            wrapMode: TextInput.Wrap
-            // the popup window is keyboard-less — the bar's hiddenInput is
-            // the real editor, so this field never gets real active focus
-            // (and with it, no caret). Mirror the cursor position and fake
-            // the blinking caret here while the panel is open.
-            cursorVisible: root.panelOpen && !root.busy && !root.sending
-            cursorDelegate: Item {
-              implicitWidth: 2
-              Rectangle {
-                anchors.fill: parent
-                radius: 1
-                color: root.cAccent
-                SequentialAnimation on opacity {
-                  running: root.panelOpen && !root.busy && !root.sending
-                  loops: Animation.Infinite
-                  NumberAnimation { to: 1; duration: 600 }
-                  NumberAnimation { to: 0; duration: 600 }
-                }
+        TextField {
+          id: inputField
+          anchors.left: parent.left
+          anchors.leftMargin: 10
+          anchors.right: micBtn.left
+          anchors.rightMargin: 4
+          anchors.verticalCenter: parent.verticalCenter
+          background: null
+          placeholderText: root.sttState === "rec"
+              ? "● gravando " + Math.floor(root.recSecs / 60) + ":"
+                + String(root.recSecs % 60).padStart(2, "0")
+                + " — mic de novo para parar"
+              : root.sttState === "stt" ? "◌ transcrevendo…"
+              : root.busy ? "opencode is working…"
+              : "ask opencode…  (@file · /command)"
+          placeholderTextColor: Theme.idleText
+          color: Theme.accent
+          font.family: Theme.font
+          font.pixelSize: 12
+          selectionColor: Theme.hover
+          selectedTextColor: Theme.accent
+          enabled: !root.busy && !root.sending
+          wrapMode: TextInput.Wrap
+          // the popup window is keyboard-less — the bar's hiddenInput is
+          // the real editor, so this field never gets real active focus
+          // (and with it, no caret). Mirror the cursor position and fake
+          // the blinking caret here while the panel is open.
+          cursorVisible: root.panelOpen && root.mode === "chat"
+                         && !root.busy && !root.sending
+          cursorDelegate: Item {
+            implicitWidth: 2
+            Rectangle {
+              anchors.fill: parent
+              radius: 1
+              color: Theme.accent
+              SequentialAnimation on opacity {
+                running: root.panelOpen && root.mode === "chat"
+                       && !root.busy && !root.sending
+                loops: Animation.Infinite
+                NumberAnimation { to: 1; duration: 600 }
+                NumberAnimation { to: 0; duration: 600 }
               }
             }
-            onTextEdited: root.updateFinder()
-            onTextChanged: if (!root.inputSyncing) {
-              root.inputSyncing = true;
-              hiddenInput.text = text;
-              root.inputSyncing = false;
-            }
-            onCursorPositionChanged: if (!root.inputSyncing) {
-              root.inputSyncing = true;
-              hiddenInput.cursorPosition = cursorPosition;
-              root.inputSyncing = false;
-            }
-            Keys.onReturnPressed: root.send()
-            Keys.onEnterPressed: root.send()
-            Keys.onEscapePressed: event => {
-              event.accepted = true;   // don't let the panel Shortcut also fire
-              root.closeMenuOrPanel();
+          }
+          onTextEdited: root.updateFinder()
+          onTextChanged: if (!root.inputSyncing) {
+            root.inputSyncing = true;
+            hiddenInput.text = text;
+            root.inputSyncing = false;
+          }
+          onCursorPositionChanged: if (!root.inputSyncing) {
+            root.inputSyncing = true;
+            hiddenInput.cursorPosition = cursorPosition;
+            root.inputSyncing = false;
+          }
+          Keys.onReturnPressed: root.send()
+          Keys.onEnterPressed: root.send()
+          Keys.onEscapePressed: event => {
+            event.accepted = true;   // don't let the panel Shortcut also fire
+            root.closeMenuOrPanel();
+          }
+        }
+
+        Rectangle {
+          id: micBtn
+          anchors.right: sendBtn.left
+          anchors.rightMargin: 4
+          anchors.verticalCenter: parent.verticalCenter
+          width: 28; height: 26; radius: 5
+          color: micMa.containsMouse && root.sttState === "idle"
+                 ? Theme.hover : Theme.bg
+          Behavior on color { ColorAnimation { duration: 200 } }
+          scale: micMa.containsMouse ? 1.07 : 1
+          Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+
+          Text {
+            anchors.centerIn: parent
+            text: root.sttState === "rec" ? "\uf111"
+                : root.sttState === "stt" ? "◌" : "\uf130"
+            font.family: Theme.font
+            font.pixelSize: root.sttState === "stt" ? 12 : 11
+            color: root.sttState === "rec" ? Theme.err
+                 : root.sttState === "stt" ? Theme.live : Theme.text
+            // pulsing dot while recording
+            SequentialAnimation on opacity {
+              running: root.sttState === "rec"; loops: Animation.Infinite
+              NumberAnimation { to: 0.25; duration: 500 }
+              NumberAnimation { to: 1; duration: 500 }
             }
           }
 
-          Rectangle {
-            id: sendBtn
-            anchors.right: parent.right
-            anchors.rightMargin: 6
-            anchors.verticalCenter: parent.verticalCenter
-            width: 28; height: 26; radius: 5
-            color: sendMa.containsMouse ? root.cHover : root.cBg
-            Behavior on color { ColorAnimation { duration: 150 } }
-            scale: sendMa.containsMouse ? 1.07 : 1
-            Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
-            Text {
-              anchors.centerIn: parent
-              text: root.busy || root.sending ? "\uf04d" : "➤"
-              font.family: "Agave Nerd Font"
-              font.pixelSize: 12
-              color: root.busy || root.sending ? root.cErr : root.cLive
+          MouseArea {
+            id: micMa
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.sttState === "idle" ? root.startRec() : root.stopRec()
+          }
+        }
+
+        Rectangle {
+          id: sendBtn
+          anchors.right: parent.right
+          anchors.rightMargin: 6
+          anchors.verticalCenter: parent.verticalCenter
+          width: 28; height: 26; radius: 5
+          color: sendMa.containsMouse ? Theme.hover : Theme.bg
+          Behavior on color { ColorAnimation { duration: 200 } }
+          scale: sendMa.containsMouse ? 1.07 : 1
+          Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+          Text {
+            anchors.centerIn: parent
+            text: root.busy || root.sending ? "\uf04d" : "➤"
+            font.family: Theme.font
+            font.pixelSize: 12
+            color: root.busy || root.sending ? Theme.err : Theme.live
+          }
+          MouseArea {
+            id: sendMa
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.busy || root.sending ? root.interrupt() : root.send()
+          }
+        }
+      }
+      // ----- empty state (TUI-style) -----
+      Item {
+        id: emptyState
+        transform: Translate { x: root.swipeOfs }
+        x: 10
+        width: parent.width - 20
+        y: panelContent.empty ? inputRow.y - 122 : inputRow.y
+        height: 120
+        visible: panelContent.empty
+        opacity: panelContent.empty ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+
+        Column {
+          anchors.horizontalCenter: parent.horizontalCenter
+          spacing: 8
+
+          Text {
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: "󰆍"
+            font.family: Theme.font
+            font.pixelSize: 40
+            color: Theme.muted
+          }
+
+          Text {
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: "ask opencode"
+            font.family: Theme.font
+            font.bold: true
+            font.pixelSize: 15
+            color: Theme.accent
+          }
+
+          Text {
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: "@file mention  ·  /command  ·  mic for voice"
+            font.family: Theme.font
+            font.pixelSize: 10
+            color: Theme.muted
+          }
+        }
+      }
+
+
+      // ----- translate / calculator tabs -----
+      Item {
+        id: modeBody
+        transform: Translate { x: root.swipeOfs }
+        x: 10
+        y: headerRow.height + 16
+        width: parent.width - 20
+        height: parent.height - headerRow.height - 26
+        visible: root.mode !== "chat"
+        opacity: root.mode !== "chat" ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+
+        IntelTranslate {
+          id: translateBox
+          anchors.fill: parent
+          visible: root.mode === "translate"
+          panelActive: root.panelOpen && root.mode === "translate"
+          // popup field edited directly (compositor focus moved there) →
+          // mirror back into the bar's real editor
+          onSourceTextChanged: if (root.mode === "translate" && !root.inputSyncing) {
+            root.inputSyncing = true;
+            hiddenInput.text = translateBox.sourceText;
+            root.inputSyncing = false;
+          }
+          onCursorMoved: pos => {
+            if (!root.inputSyncing) {
+              root.inputSyncing = true;
+              hiddenInput.cursorPosition = pos;
+              root.inputSyncing = false;
             }
-            MouseArea {
-              id: sendMa
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.busy || root.sending ? root.interrupt() : root.send()
-            }
+          }
+          onCopyRequested: text => {
+            if (text !== "") Quickshell.execDetached(["wl-copy", text]);
+            root.showToast("copiado");
+          }
+        }
+
+        Calc {
+          id: calcBox
+          anchors.centerIn: parent
+          width: 420
+          height: 540
+          visible: root.mode === "calc"
+          onCopyRequested: text => {
+            if (text !== "") Quickshell.execDetached(["wl-copy", text]);
+            root.showToast("copiado");
           }
         }
       }
@@ -1867,21 +2175,21 @@ Pill {
         anchors.bottomMargin: 54     // input row (38) + gap
         z: 5
         visible: opacity > 0
-        opacity: (!chatView.pinned && root.panelOpen) ? 1 : 0
+        opacity: (!chatView.pinned && root.panelOpen && root.mode === "chat") ? 1 : 0
         Behavior on opacity { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
         width: 30
         height: 22
         radius: 5
-        color: jumpMa.containsMouse ? root.cHover : root.cSurface
-        border.color: root.cBorder
+        color: jumpMa.containsMouse ? Theme.hover : Theme.surface
+        border.color: Theme.border
         border.width: 1
 
         Text {
           anchors.centerIn: parent
           text: "\uf103"           // angle-double-down
-          font.family: "Agave Nerd Font"
+          font.family: Theme.font
           font.pixelSize: 11
-          color: root.cText
+          color: Theme.text
         }
 
         MouseArea {
@@ -1906,8 +2214,8 @@ Pill {
         width: toastText.implicitWidth + 20
         height: 22
         radius: 5
-        color: root.cSurface
-        border.color: root.cBorder
+        color: Theme.surface
+        border.color: Theme.border
         border.width: 1
         opacity: toastTimer.running ? 1 : 0
         Behavior on opacity { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
@@ -1916,10 +2224,10 @@ Pill {
           id: toastText
           anchors.centerIn: parent
           text: "copied to clipboard"
-          font.family: "Agave Nerd Font"
+          font.family: Theme.font
           font.bold: true
           font.pixelSize: 10
-          color: root.cText
+          color: Theme.text
         }
 
         Timer {
@@ -1936,10 +2244,33 @@ Pill {
   }
 
   onPanelOpenChanged: {
-    if (panelOpen) return;   // open-side setup happens in the popup's
-                             // onVisibleChanged, on the real map
+    if (panelOpen) {          // open: cancel any pending close so the
+      hideAnim.stop();        // fade-in plays from fully transparent
+      return;
+    }
+    hideAnim.restart();       // close: keep mapped while fading out
     menu = "";
     stopStream();
+  }
+
+  // tab switch: the bar's hiddenInput is the single real editor — point
+  // it at the newly active tab's field (both directions stay in sync)
+  onModeChanged: {
+    // tab swipe: jump the bodies to the side (instant), then glide to 0
+    const t = mode === "chat" ? 0 : mode === "translate" ? 1 : 2;
+    const dir = t > prevTab ? 1 : -1;
+    prevTab = t;
+    swipeBehavior.enabled = false;
+    swipeOfs = dir * 48;
+    swipeBehavior.enabled = true;
+    Qt.callLater(() => root.swipeOfs = 0);
+    // the bar's hiddenInput is the single real editor — point
+    // it at the newly active tab's field (both directions stay in sync)
+    root.inputSyncing = true;
+    hiddenInput.text = mode === "translate" ? translateBox.sourceText
+                                            : inputField.text;
+    root.inputSyncing = false;
+    if (panelOpen) hiddenInput.forceActiveFocus();
   }
 
   // fallback polling only when the SSE stream is not delivering

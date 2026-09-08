@@ -1,5 +1,6 @@
 import Quickshell
 import QtQuick
+import "../hyprconf"
 
 Pill {
   id: root
@@ -15,10 +16,10 @@ Pill {
     id: clockText
     anchors.centerIn: parent
     text: Qt.formatDateTime(clock.date, "ddd dd, HH:mm")
-    font.family: "Agave Nerd Font"
+    font.family: Theme.font
     font.bold: true
     font.pixelSize: 12
-    color: "#dcdfe1"
+    color: Theme.accent
   }
 
   Component {
@@ -32,19 +33,19 @@ Pill {
       readonly property int daysIn: new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()
       readonly property int offset: (new Date(d.getFullYear(), d.getMonth(), 1).getDay() + 6) % 7
 
-      // palette (matches the bar/swaync theme)
-      readonly property color fg: "#dcdfe1"
-      readonly property color muted: "#6a6a6a"
-      readonly property color accent: "#ffcc66"
-      readonly property color highlight: "#2e2e2e"
+      // palette (bar/swaync theme)
+      readonly property color fg: Theme.text
+      readonly property color muted: Theme.muted
+      readonly property color accent: Theme.accent
+      readonly property color highlight: Theme.hover
 
       Text {
         anchors.horizontalCenter: parent.horizontalCenter
         text: Qt.formatDateTime(cal.d, "MMMM yyyy")
-        font.family: "Agave Nerd Font"
+        font.family: Theme.font
         font.bold: true
         font.pixelSize: 12
-        color: "#ffffff"
+        color: cal.accent
         bottomPadding: 2
       }
 
@@ -61,7 +62,7 @@ Pill {
             width: 22
             horizontalAlignment: Text.AlignHCenter
             text: modelData
-            font.family: "Agave Nerd Font"
+            font.family: Theme.font
             font.pixelSize: 10
             color: cal.muted
             bottomPadding: 2
@@ -92,7 +93,7 @@ Pill {
             Text {
               anchors.centerIn: parent
               text: cell.valid ? cell.day : ""
-              font.family: "Agave Nerd Font"
+              font.family: Theme.font
               font.bold: cell.isToday
               font.pixelSize: 11
               color: !cell.valid ? "transparent"

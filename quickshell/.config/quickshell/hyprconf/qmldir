@@ -13,3 +13,5 @@ SegRow 1.0 SegRow.qml
 MonCombo 1.0 MonCombo.qml
 PathRow 1.0 PathRow.qml
 PreviewBox 1.0 PreviewBox.qml
+StatusLine 1.0 StatusLine.qml
+WallpaperGrid 1.0 WallpaperGrid.qml
