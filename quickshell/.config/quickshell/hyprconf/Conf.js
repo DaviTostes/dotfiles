@@ -21,6 +21,9 @@ function splitKV(t) {
 function parse(text) {
     const cfg = { items: [], vars: {} };
     const lines = String(text).split("\n");
+    // a trailing newline terminates the file — it is not a blank line,
+    // otherwise every save round-trip would append a blank line
+    if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         const t = line.trim();

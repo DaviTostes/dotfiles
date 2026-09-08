@@ -5,21 +5,17 @@ import QtQuick
 Pill {
   id: root
 
-  property Item menuTarget: null
-
   implicitWidth: row.implicitWidth + 20
   visible: SystemTray.items.values.length > 0
 
-  QsMenuAnchor {
-    id: menuAnchor
+  // click-outside duty for the tray menu
+  Catcher {
+    active: trayMenu.open
+    onClicked: trayMenu.closeMenu()
+  }
 
-    anchor {
-      window: root.QsWindow.window
-      item: root.menuTarget
-      edges: Edges.Top
-      gravity: Edges.Bottom
-      margins.top: 6
-    }
+  TrayMenu {
+    id: trayMenu
   }
 
   Row {
@@ -55,10 +51,10 @@ Pill {
           cursorShape: Qt.PointingHandCursor
           onClicked: mouse => {
             const item = icon.modelData;
-            if ((mouse.button === Qt.RightButton || (mouse.button === Qt.LeftButton && item.onlyMenu)) && item.menu) {
-              root.menuTarget = icon;
-              menuAnchor.menu = item.menu;
-              menuAnchor.open();
+            // left and right click both open the menu; middle does the
+            // item's secondary action
+            if ((mouse.button === Qt.RightButton || mouse.button === Qt.LeftButton) && item.menu) {
+              trayMenu.openFor(icon, item.menu);
             } else if (mouse.button === Qt.MiddleButton) {
               item.secondaryActivate();
             } else if (mouse.button === Qt.LeftButton) {

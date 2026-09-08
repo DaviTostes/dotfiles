@@ -1,6 +1,7 @@
 import Quickshell
 import Quickshell.Services.UPower
 import QtQuick
+import "../hyprconf"
 
 Pill {
   id: root
@@ -16,10 +17,21 @@ Pill {
   Text {
     id: label
     anchors.centerIn: parent
-    font.family: "Agave Nerd Font"
+    font.family: Theme.font
     font.bold: true
     font.pixelSize: 12
-    color: root.charging || root.dev.percentage > 15 ? "#FAF9F6" : "#ff6666"
+    color: root.charging || root.dev.percentage > 15 ? Theme.accent : Theme.err
+    Behavior on color { ColorAnimation { duration: 200 } }
+
+    // soft pulse while discharging low
+    SequentialAnimation on opacity {
+      loops: Animation.Infinite
+      alwaysRunToEnd: true
+      running: root.dev.ready && !root.charging && root.dev.percentage <= 15
+      NumberAnimation { to: 0.35; duration: 600 }
+      NumberAnimation { to: 1; duration: 600 }
+    }
+
     text: {
       if (!root.dev.ready) return "";
       if (root.charging) return "󱐋";

@@ -23,6 +23,7 @@ PanelWindow {
   }
 
   margins {
+    top: 2
     left: 2
     right: 2
   }
@@ -36,7 +37,10 @@ PanelWindow {
   // layer below this overlay and its clicks must go through.
   Catcher {
     active: root.panelOpen && !HyprSettings.modalDialogOpen
-    onClicked: root.panelOpen = false
+    onClicked: {
+      root.panelOpen = false;
+      HyprSettings.galleryOpen = false;
+    }
   }
 
   Workspaces {
@@ -59,6 +63,8 @@ PanelWindow {
     Battery {}
     Pomodoro {}
     Opencode {
+      id: opencodePill
+
       // propagate into the bar's keyboard-focus decision (a plain binding
       // on the pill's property races object creation at load time)
       onPanelOpenChanged: root.chatPanelOpen = panelOpen
@@ -78,7 +84,7 @@ PanelWindow {
         font.family: Theme.font
         font.pixelSize: 13
         color: root.panelOpen ? Theme.accent : Theme.text
-        Behavior on color { ColorAnimation { duration: 300 } }
+        Behavior on color { ColorAnimation { duration: 200 } }
       }
 
       MouseArea {
@@ -95,4 +101,20 @@ PanelWindow {
     pill: settingsPill
     panelOpen: root.panelOpen
   }
+
+  // IPC bridge entry points — shell.qml routes keybind calls to the
+  // focused monitor's bar (the chat panel is per-bar, like its pill)
+  function toggleChat() {
+    opencodePill.panelOpen = !opencodePill.panelOpen;
+    if (opencodePill.panelOpen) opencodePill.ensureService();
+  }
+
+  function openChat() {
+    if (!opencodePill.panelOpen) {
+      opencodePill.panelOpen = true;
+      opencodePill.ensureService();
+    }
+  }
+
+  function closeChat() { opencodePill.panelOpen = false; }
 }

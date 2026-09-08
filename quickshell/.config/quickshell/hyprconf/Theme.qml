@@ -15,4 +15,11 @@ QtObject {
     readonly property color muted: "#5c6470"    // secondary text
     readonly property color accent: "#d3d9e0"   // selected / accent fills
     readonly property color accent2: "#8b95a3"  // secondary accent
+
+    // chrome + status colors shared with the bar pills
+    readonly property color pill: "#222222"     // pill background chrome
+    readonly property color live: "#a6e3a1"     // running / streaming
+    readonly property color err: "#d2686a"      // errors / destructive
+    readonly property color idleText: "#585f68" // idle / dimmed pill text
+    readonly property color paused: "#4a505a"   // dimmed state accent
 }

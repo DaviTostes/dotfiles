@@ -15,9 +15,22 @@ ColumnLayout {
     property string status: ""
     property var monitors: []
 
+    // unsaved-changes marker; cleared on save; reload is silent
+    property bool dirty: false
+    property bool silent: false
+
+    // owning HyprConfig panel (for the gallery popup state)
+    property var panel: null
+
     spacing: 10
 
+    function rowPath(i) {
+        if (i < 0 || i >= rows.count) return "";
+        return rows.get(i).path;
+    }
+
     function reload() {
+        root.silent = true;
         const cfg = Conf.parse(fileView.text());
         root.splash = Conf.get(cfg, "", "splash", "false") === "true";
         root.ipc = Conf.get(cfg, "", "ipc", "false") === "true";
@@ -40,6 +53,25 @@ ColumnLayout {
             for (const m of root.monitors) rows.append({ monitor: m, path: "", fit: "cover" });
         }
         root.status = "";
+        root.dirty = false;
+        root.silent = false;
+        root.syncGalleryPicked();
+    }
+
+    // mirror the picked path into the gallery popup (only when this
+    // panel is the one that opened it)
+    function syncGalleryPicked() {
+        if (root.panel !== null && HyprSettings.galleryHost === root.panel
+                && HyprSettings.galleryTab === 0)
+            HyprSettings.galleryPicked = rowPath(HyprSettings.galleryRow);
+    }
+
+    // gallery popup picked an image for the row it was opened from
+    function applyGalleryPick(p) {
+        const i = HyprSettings.galleryRow;
+        if (i < 0 || i >= rows.count) return;
+        rows.setProperty(i, "path", p);
+        HyprSettings.galleryPicked = p;
     }
 
     function save() {
@@ -55,6 +87,7 @@ ColumnLayout {
             cfg.items.push(Conf.item(Conf.SECTION_END, "}"));
         }
         fileView.setText(Conf.serialize(cfg));
+        root.dirty = false;
         root.status = "Saved hyprpaper.conf";
         if (root.restartAfterSave) {
             restartProc.command = ["sh", "-c",
@@ -64,7 +97,17 @@ ColumnLayout {
         }
     }
 
-    ListModel { id: rows }
+    ListModel {
+        id: rows
+        onDataChanged: {
+            if (!root.silent) root.dirty = true;
+            root.syncGalleryPicked();
+        }
+        onCountChanged: {
+            if (!root.silent) root.dirty = true;
+            root.syncGalleryPicked();
+        }
+    }
 
     FileView {
         id: fileView
@@ -75,50 +118,84 @@ ColumnLayout {
 
     Process { id: restartProc }
 
-    component WallpaperRow: Column {
+    component WallpaperRow: Item {
         id: wrow
         required property int index
         required property string monitor
         required property string path
         required property string fit
 
-        spacing: 6
-        width: parent.width
+        // collapse + fade while being removed, grow + fade on entry
+        readonly property bool dying: model.dying === true
+        property bool entered: false
 
-        Row {
+        width: parent.width
+        implicitHeight: col.implicitHeight
+        height: entered && !dying ? col.implicitHeight : 0
+        opacity: entered && !dying ? 1 : 0
+        clip: true
+        Behavior on height { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+        Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+
+        Component.onCompleted: wrow.entered = true
+
+        Timer {
+            running: wrow.dying
+            interval: 220
+            onTriggered: rows.remove(wrow.index)
+        }
+
+        Column {
+            id: col
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
             spacing: 6
 
-            MonCombo {
-                model: {
-                    const names = root.monitors.slice();
-                    if (wrow.monitor && names.indexOf(wrow.monitor) < 0)
-                        names.unshift(wrow.monitor);
-                    return names.length ? names : [wrow.monitor || "eDP-1"];
+            Row {
+                spacing: 6
+
+                MonCombo {
+                    model: {
+                        const names = root.monitors.slice();
+                        if (wrow.monitor && names.indexOf(wrow.monitor) < 0)
+                            names.unshift(wrow.monitor);
+                        return names.length ? names : [wrow.monitor || "eDP-1"];
+                    }
+                    Component.onCompleted: currentIndex = find(wrow.monitor)
+                    onActivated: rows.setProperty(wrow.index, "monitor", currentText)
                 }
-                Component.onCompleted: currentIndex = find(wrow.monitor)
-                onActivated: rows.setProperty(wrow.index, "monitor", currentText)
+
+                SegRow {
+                    options: ["cover", "contain", "tile"]
+                    value: wrow.fit
+                    onPicked: v => rows.setProperty(wrow.index, "fit", v)
+                }
+
+                TextButton {
+                    label: "\uf03e"
+                    textSize: 13
+                    tooltip: "Pick from gallery"
+                    onClicked: if (root.panel) root.panel.toggleGallery(0, wrow.index)
+                }
+
+                TextButton {
+                    label: "\uf1f8"
+                    textSize: 13
+                    tooltip: "Remove monitor"
+                    onClicked: rows.setProperty(wrow.index, "dying", true)
+                }
             }
 
-            SegRow {
-                options: ["cover", "contain", "tile"]
-                value: wrow.fit
-                onPicked: v => rows.setProperty(wrow.index, "fit", v)
+            PathRow {
+                path: wrow.path
+                onPicked: p => rows.setProperty(wrow.index, "path", p)
             }
 
-            TextButton {
-                label: "\uf1f8"
-                onClicked: rows.remove(wrow.index)
+            PreviewBox {
+                width: parent.width - 4
+                path: wrow.path
             }
-        }
-
-        PathRow {
-            path: wrow.path
-            onPicked: p => rows.setProperty(wrow.index, "path", p)
-        }
-
-        PreviewBox {
-            width: parent.width - 4
-            path: wrow.path
         }
     }
 
@@ -138,12 +215,12 @@ ColumnLayout {
                 CheckRow {
                     label: "Show splash logo on startup"
                     checked: root.splash
-                    onToggled: c => root.splash = c
+                    onToggled: c => { root.splash = c; root.dirty = true; }
                 }
                 CheckRow {
                     label: "Enable IPC socket (hyprctl hyprpaper)"
                     checked: root.ipc
-                    onToggled: c => root.ipc = c
+                    onToggled: c => { root.ipc = c; root.dirty = true; }
                 }
             }
 
@@ -161,6 +238,7 @@ ColumnLayout {
 
                     TextButton {
                         label: "\uf067 add monitor"
+                        tooltip: "Add monitor"
                         onClicked: rows.append({ monitor: root.monitors[0] || "", path: "", fit: "cover" })
                     }
 
@@ -174,8 +252,12 @@ ColumnLayout {
                         font.pixelSize: 11
                         elide: Text.ElideRight
                         width: 300
-                    }                }
+                    }
+                }
             }
+
+            // gallery lives in its own popup below the panel
+            // (WallpaperGallery in HyprConfig.qml)
         }
     }
 
@@ -192,18 +274,15 @@ ColumnLayout {
         TextButton {
             label: "\uf0c7 save"
             accent: true
+            dot: root.dirty
+            tooltip: "Save (Ctrl+S)"
             onClicked: root.save()
         }
 
-        Text {
-            height: 26
-            verticalAlignment: Text.AlignVCenter
+        StatusLine {
             text: root.status
-            color: Theme.muted
-            font.family: Theme.font
-            font.pixelSize: 11
-            elide: Text.ElideRight
-            width: 220
+            busy: restartProc.running
+            labelWidth: 220
         }
     }
 }

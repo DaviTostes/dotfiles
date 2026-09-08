@@ -21,18 +21,21 @@ Item {
         color: root.checked ? Theme.accent
                             : (ma.containsMouse ? Theme.hover : Theme.surface)
         border.color: root.checked ? Theme.accent : Theme.border
+        scale: ma.pressed ? 0.9 : 1
         Behavior on color { ColorAnimation { duration: 180 } }
         Behavior on border.color { ColorAnimation { duration: 180 } }
+        Behavior on scale { NumberAnimation { duration: 130; easing.type: Easing.OutCubic } }
 
         Text {
             anchors.centerIn: parent
-            visible: root.checked
             text: "\uf00c"
             color: Theme.deep
             font.family: Theme.font
             font.pixelSize: 9
             font.bold: true
-            Behavior on color { ColorAnimation { duration: 180 } }
+            // pops in with a little overshoot when checked
+            scale: root.checked ? 1 : 0
+            Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutBack } }
         }
     }
 

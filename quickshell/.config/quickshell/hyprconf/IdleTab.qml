@@ -16,6 +16,8 @@ ColumnLayout {
     property string afterSleep: "hyprctl dispatch dpms on"
     property bool restartAfterSave: true
     property string status: ""
+    // unsaved-changes marker; cleared on save
+    property bool dirty: false
 
     spacing: 10
 
@@ -43,6 +45,7 @@ ColumnLayout {
         Conf.set(cfg, "general", "after_sleep_cmd", root.afterSleep);
 
         fileView.setText(Conf.serialize(cfg));
+        root.dirty = false;
         root.status = "Saved hypridle.conf";
         if (root.restartAfterSave) {
             restartProc.command = ["sh", "-c",
@@ -100,7 +103,7 @@ ColumnLayout {
                         to: 86400
                         step: 30
                         value: root.lockTO
-                        onValueEdited: v => root.lockTO = v
+                        onValueEdited: v => { root.lockTO = v; root.dirty = true }
                     }
 
                     Text { text: "Screen off after (seconds)"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 12 }
@@ -109,7 +112,7 @@ ColumnLayout {
                         to: 86400
                         step: 30
                         value: root.dpmsTO
-                        onValueEdited: v => root.dpmsTO = v
+                        onValueEdited: v => { root.dpmsTO = v; root.dirty = true }
                     }
                 }
 
@@ -136,21 +139,21 @@ ColumnLayout {
                     TextEntry {
                         width: 320
                         text: root.lockCmd
-                        onEditingFinished: root.lockCmd = text
+                        onEditingFinished: { root.lockCmd = text; root.dirty = true }
                     }
 
                     Text { text: "Before sleep"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 12 }
                     TextEntry {
                         width: 320
                         text: root.beforeSleep
-                        onEditingFinished: root.beforeSleep = text
+                        onEditingFinished: { root.beforeSleep = text; root.dirty = true }
                     }
 
                     Text { text: "After sleep"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 12 }
                     TextEntry {
                         width: 320
                         text: root.afterSleep
-                        onEditingFinished: root.afterSleep = text
+                        onEditingFinished: { root.afterSleep = text; root.dirty = true }
                     }
                 }
             }
@@ -170,18 +173,15 @@ ColumnLayout {
         TextButton {
             label: "\uf0c7 save"
             accent: true
+            dot: root.dirty
+            tooltip: "Save (Ctrl+S)"
             onClicked: root.save()
         }
 
-        Text {
-            height: 26
-            verticalAlignment: Text.AlignVCenter
+        StatusLine {
             text: root.status
-            color: Theme.muted
-            font.family: Theme.font
-            font.pixelSize: 11
-            elide: Text.ElideRight
-            width: 200
+            busy: restartProc.running
+            labelWidth: 200
         }
     }
 }

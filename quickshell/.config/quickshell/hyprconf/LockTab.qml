@@ -10,6 +10,11 @@ ColumnLayout {
 
     property var cfg: null
     property string status: ""
+    // unsaved-changes marker; cleared on save
+    property bool dirty: false
+
+    // owning HyprConfig panel (for the gallery popup state)
+    property var panel: null
 
     // general
     property bool hideCursor: true
@@ -99,6 +104,7 @@ ColumnLayout {
         Conf.set(cfg, "input-field", "position", "0, " + Conf.fmtInt(root.inPosY));
 
         fileView.setText(Conf.serialize(cfg));
+        root.dirty = false;
         root.status = "Saved hyprlock.conf — applies on next lock";
     }
 
@@ -138,6 +144,21 @@ ColumnLayout {
         preload: true
     }
 
+    // mirror the picked path into the gallery popup (only when this
+    // panel is the one that opened it)
+    function syncGalleryPicked() {
+        if (root.panel !== null && HyprSettings.galleryHost === root.panel
+                && HyprSettings.galleryTab === 1)
+            HyprSettings.galleryPicked = root.bgPath;
+    }
+
+    // gallery popup picked an image for the lock screen background
+    function applyGalleryPick(p) {
+        root.bgPath = p;
+        root.dirty = true;
+        syncGalleryPicked();
+    }
+
     ScrollView {
         id: scroll
         Layout.fillWidth: true
@@ -160,7 +181,7 @@ ColumnLayout {
                     CheckRow {
                         label: "Hide cursor"
                         checked: root.hideCursor
-                        onToggled: c => root.hideCursor = c
+                        onToggled: c => { root.hideCursor = c; root.dirty = true }
                     }
                 }
             }
@@ -173,10 +194,22 @@ ColumnLayout {
                     spacing: 8
                     width: parent.width - 4
 
-                    PathRow {
-                        path: root.bgPath
-                        onPicked: p => root.bgPath = p
+                    Row {
+                        spacing: 6
+
+                        PathRow {
+                            path: root.bgPath
+                            onPicked: p => { root.bgPath = p; root.dirty = true }
+                        }
+
+                        TextButton {
+                            label: "\uf03e"
+                            textSize: 13
+                            tooltip: "Pick from gallery"
+                            onClicked: if (root.panel) root.panel.toggleGallery(1, -1)
+                        }
                     }
+
                     PreviewBox {
                         width: parent.width
                         path: root.bgPath
@@ -197,7 +230,7 @@ ColumnLayout {
                     TextEntry {
                         width: 300
                         text: root.fontFam
-                        onEditingFinished: root.fontFam = text
+                        onEditingFinished: { root.fontFam = text; root.dirty = true }
                     }
 
                     Text { text: "Time font size"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 12 }
@@ -205,14 +238,14 @@ ColumnLayout {
                         from: 8
                         to: 300
                         value: root.fontSize
-                        onValueEdited: v => root.fontSize = Math.round(v)
+                        onValueEdited: v => { root.fontSize = Math.round(v); root.dirty = true }
                     }
 
                     Text { text: "Time color"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 12 }
                     TextEntry {
                         width: 200
                         text: root.timeColor
-                        onEditingFinished: root.timeColor = text
+                        onEditingFinished: { root.timeColor = text; root.dirty = true }
                     }
 
                     Text { text: "Position"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 12 }
@@ -222,13 +255,13 @@ ColumnLayout {
                             from: -2000
                             to: 2000
                             value: root.posX
-                            onValueEdited: v => root.posX = v
+                            onValueEdited: v => { root.posX = v; root.dirty = true }
                         }
                         NumField {
                             from: -2000
                             to: 2000
                             value: root.posY
-                            onValueEdited: v => root.posY = v
+                            onValueEdited: v => { root.posY = v; root.dirty = true }
                         }
                     }
 
@@ -236,14 +269,14 @@ ColumnLayout {
                     SegRow {
                         options: ["left", "center", "right"]
                         value: root.halign
-                        onPicked: v => root.halign = v
+                        onPicked: v => { root.halign = v; root.dirty = true }
                     }
 
                     Text { text: "Vertical align"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 12 }
                     SegRow {
                         options: ["top", "center", "bottom"]
                         value: root.valign
-                        onPicked: v => root.valign = v
+                        onPicked: v => { root.valign = v; root.dirty = true }
                     }
                 }
             }
@@ -265,14 +298,14 @@ ColumnLayout {
                             to: 2000
                             step: 5
                             value: root.inW
-                            onValueEdited: v => root.inW = v
+                            onValueEdited: v => { root.inW = v; root.dirty = true }
                         }
                         NumField {
                             from: 10
                             to: 1000
                             step: 5
                             value: root.inH
-                            onValueEdited: v => root.inH = v
+                            onValueEdited: v => { root.inH = v; root.dirty = true }
                         }
                     }
 
@@ -281,7 +314,7 @@ ColumnLayout {
                         from: 0
                         to: 50
                         value: root.outline
-                        onValueEdited: v => root.outline = v
+                        onValueEdited: v => { root.outline = v; root.dirty = true }
                     }
 
                     Text { text: "Dots"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 12 }
@@ -293,7 +326,7 @@ ColumnLayout {
                             step: 0.05
                             decimals: 2
                             value: root.dotsSize
-                            onValueEdited: v => root.dotsSize = v
+                            onValueEdited: v => { root.dotsSize = v; root.dirty = true }
                         }
                         NumField {
                             from: 0
@@ -301,7 +334,7 @@ ColumnLayout {
                             step: 0.05
                             decimals: 2
                             value: root.dotsSpace
-                            onValueEdited: v => root.dotsSpace = v
+                            onValueEdited: v => { root.dotsSpace = v; root.dirty = true }
                         }
                     }
 
@@ -309,49 +342,49 @@ ColumnLayout {
                     TextEntry {
                         width: 200
                         text: root.outerColor
-                        onEditingFinished: root.outerColor = text
+                        onEditingFinished: { root.outerColor = text; root.dirty = true }
                     }
 
                     Text { text: "Inner color"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 12 }
                     TextEntry {
                         width: 200
                         text: root.innerColor
-                        onEditingFinished: root.innerColor = text
+                        onEditingFinished: { root.innerColor = text; root.dirty = true }
                     }
 
                     Text { text: "Font color"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 12 }
                     TextEntry {
                         width: 200
                         text: root.fontColor
-                        onEditingFinished: root.fontColor = text
+                        onEditingFinished: { root.fontColor = text; root.dirty = true }
                     }
 
                     Text { text: "Fail color"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 12 }
                     TextEntry {
                         width: 200
                         text: root.failColor
-                        onEditingFinished: root.failColor = text
+                        onEditingFinished: { root.failColor = text; root.dirty = true }
                     }
 
                     Text { text: "Caps lock color"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 12 }
                     TextEntry {
                         width: 200
                         text: root.capsColor
-                        onEditingFinished: root.capsColor = text
+                        onEditingFinished: { root.capsColor = text; root.dirty = true }
                     }
 
                     Text { text: "Fail text"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 12 }
                     TextEntry {
                         width: 200
                         text: root.failText
-                        onEditingFinished: root.failText = text
+                        onEditingFinished: { root.failText = text; root.dirty = true }
                     }
 
                     Text { text: "Options"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 12 }
                     CheckRow {
                         label: "Hide typed input"
                         checked: root.hideInput
-                        onToggled: c => root.hideInput = c
+                        onToggled: c => { root.hideInput = c; root.dirty = true }
                     }
 
                     Text { text: "Position Y (from bottom)"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 12 }
@@ -360,7 +393,7 @@ ColumnLayout {
                         to: 2000
                         step: 10
                         value: root.inPosY
-                        onValueEdited: v => root.inPosY = v
+                        onValueEdited: v => { root.inPosY = v; root.dirty = true }
                     }
                 }
             }
@@ -374,18 +407,14 @@ ColumnLayout {
         TextButton {
             label: "\uf0c7 save"
             accent: true
+            dot: root.dirty
+            tooltip: "Save (Ctrl+S)"
             onClicked: root.save()
         }
 
-        Text {
-            height: 26
-            verticalAlignment: Text.AlignVCenter
+        StatusLine {
             text: root.status
-            color: Theme.muted
-            font.family: Theme.font
-            font.pixelSize: 11
-            elide: Text.ElideRight
-            width: 380
+            labelWidth: 380
         }
     }
 }
