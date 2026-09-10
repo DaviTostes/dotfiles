@@ -563,7 +563,7 @@ Pill {
   // the only way to learn the job finished without reopening it
   function notifyDone(isErr) {
     const title = isErr ? "opencode — erro"
-        : "opencode — " + ((root.session && root.session.title) || "turno concluído");
+        : "opencode — " + ((root.session && root.session.title) || "turn complete");
     let body = isErr ? root.error : "";
     if (!isErr) {
       // tail of the newest assistant text (text.ended arrived first, so it
@@ -577,7 +577,7 @@ Pill {
       }
     }
     body = body.replace(/\n+/g, " ").trim();
-    if (body === "") body = isErr ? "falha desconhecida" : "turno concluído";
+    if (body === "") body = isErr ? "unknown error" : "turn complete";
     Quickshell.execDetached(["notify-send", "-u", isErr ? "normal" : "low",
                              "-a", "opencode", title, body]);
   }
@@ -973,7 +973,7 @@ Pill {
     root.sttState = "idle";
     const t = (sttProc.out || "").replace(/\s+/g, " ").trim();
     if (t === "") {
-      root.showToast(code !== 0 ? "stt falhou (exit " + code + ")" : "nada capturado");
+      root.showToast(code !== 0 ? "stt failed (exit " + code + ")" : "nothing captured");
       return;
     }
     // insert at the caret of the real editor (mirrors into the popup field)
@@ -1045,7 +1045,7 @@ Pill {
   Tip {
     target: root
     shown: mouse.containsMouse
-    text: "central de inteligência"
+    text: "intelligence central"
   }
 
   // keyboard: the chat input field lives in the popup window, but the
@@ -1953,10 +1953,10 @@ Pill {
           anchors.verticalCenter: parent.verticalCenter
           background: null
           placeholderText: root.sttState === "rec"
-              ? "● gravando " + Math.floor(root.recSecs / 60) + ":"
+              ? "● recording " + Math.floor(root.recSecs / 60) + ":"
                 + String(root.recSecs % 60).padStart(2, "0")
-                + " — mic de novo para parar"
-              : root.sttState === "stt" ? "◌ transcrevendo…"
+                + " — mic again to stop"
+              : root.sttState === "stt" ? "◌ transcribing…"
               : root.busy ? "opencode is working…"
               : "ask opencode…  (@file · /command)"
           placeholderTextColor: Theme.idleText
@@ -2147,7 +2147,7 @@ Pill {
           }
           onCopyRequested: text => {
             if (text !== "") Quickshell.execDetached(["wl-copy", text]);
-            root.showToast("copiado");
+            root.showToast("copied");
           }
         }
 
@@ -2159,7 +2159,7 @@ Pill {
           visible: root.mode === "calc"
           onCopyRequested: text => {
             if (text !== "") Quickshell.execDetached(["wl-copy", text]);
-            root.showToast("copiado");
+            root.showToast("copied");
           }
         }
       }

@@ -6,8 +6,8 @@
  *   surface #1e2126   cards, buttons, chips, views
  *   hover   #282c33   hover surface
  *   deep    #101216   text on accent fills
- *   text    #a9afb8   primary text
- *   muted   #5c6470   secondary text
+ *   text    #e4e8ee   primary text
+ *   muted   #949eab   secondary text
  *   accent  #d3d9e0   selected / accent fills (light gray)
  *   accent2 #8b95a3   secondary accent (mid gray)
  *   paused  #4a505a   dim gray (Pomodoro paused state)
@@ -21,8 +21,8 @@
 @define-color surface #1e2126;
 @define-color hover #282c33;
 @define-color deep #101216;
-@define-color text #a9afb8;
-@define-color muted #5c6470;
+@define-color text #e4e8ee;
+@define-color muted #949eab;
 @define-color accent #d3d9e0;
 @define-color accent2 #8b95a3;
 @define-color paused #4a505a;

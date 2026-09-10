@@ -11,8 +11,8 @@ QtObject {
     readonly property color surface: "#1e2126"  // cards / buttons / chips
     readonly property color hover: "#282c33"    // hover surface
     readonly property color deep: "#101216"     // text on accent fills
-    readonly property color text: "#a9afb8"     // primary text
-    readonly property color muted: "#5c6470"    // secondary text
+    readonly property color text: "#e4e8ee"     // primary text
+    readonly property color muted: "#949eab"    // secondary text
     readonly property color accent: "#d3d9e0"   // selected / accent fills
     readonly property color accent2: "#8b95a3"  // secondary accent
 
@@ -20,6 +20,6 @@ QtObject {
     readonly property color pill: "#222222"     // pill background chrome
     readonly property color live: "#a6e3a1"     // running / streaming
     readonly property color err: "#d2686a"      // errors / destructive
-    readonly property color idleText: "#585f68" // idle / dimmed pill text
+    readonly property color idleText: "#7d8791" // idle / dimmed pill text
     readonly property color paused: "#4a505a"   // dimmed state accent
 }

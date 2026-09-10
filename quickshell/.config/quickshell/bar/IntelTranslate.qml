@@ -57,7 +57,7 @@ Item {
     onExited: code => {
       root.busy = false;
       if (code !== 0 || curlProc.out === "") {
-        root.output = "tradução falhou";
+        root.output = "translation failed";
         root.detected = "";
         return;
       }
@@ -66,7 +66,7 @@ Item {
       let data;
       try { data = JSON.parse(curlProc.out); } catch (e) { data = null; }
       if (!data || !data.length) {
-        root.output = "tradução falhou";
+        root.output = "translation failed";
         root.detected = "";
         return;
       }
@@ -162,7 +162,7 @@ Item {
     // ----- output (response on top, like a chat) -----
     Rectangle {
       width: parent.width
-      height: parent.height - 110 - 20 - 8 - 8 - 8
+      height: parent.height - root.inputH - 20 - 8 - 8 - 8
       radius: 6
       color: Theme.bg
       border.color: Theme.border
@@ -187,7 +187,7 @@ Item {
         text: root.output
         textFormat: TextEdit.PlainText
         font.pixelSize: 13
-        color: root.output === "tradução falhou" ? Theme.err : Theme.accent
+        color: root.output === "translation failed" ? Theme.err : Theme.accent
         onCopied: root.copyRequested("")
       }
 
@@ -197,7 +197,7 @@ Item {
         anchors.left: parent.left
         anchors.top: parent.top
         anchors.margins: 10
-        text: "◌ traduzindo…"
+        text: "◌ translating…"
         font.family: Theme.font
         font.pixelSize: 9
         color: Theme.muted
@@ -217,7 +217,7 @@ Item {
         Text {
           id: copyLabel
           anchors.centerIn: parent
-          text: "copiar"
+          text: "copy"
           font.family: Theme.font
           font.pixelSize: 10
           color: Theme.text
@@ -239,7 +239,7 @@ Item {
     // ----- source field (input at the bottom, chat-style) -----
     Rectangle {
       width: parent.width
-      height: 110
+      height: root.inputH
       radius: 6
       color: Theme.surface
       border.color: root.panelActive ? Theme.muted : Theme.border
@@ -247,10 +247,13 @@ Item {
 
       TextField {
         id: sourceField
-        anchors.fill: parent
-        anchors.margins: 10
+        anchors.left: parent.left
+        anchors.leftMargin: 10
+        anchors.right: parent.right
+        anchors.rightMargin: 10
+        anchors.verticalCenter: parent.verticalCenter
         background: null
-        placeholderText: "digite o texto…  (detecta o idioma)"
+        placeholderText: "type text…  (auto-detect)"
         placeholderTextColor: Theme.idleText
         color: Theme.accent
         font.family: Theme.font
@@ -292,4 +295,7 @@ Item {
 
   // keyboard wiring handled by the host (Opencode.qml) — it owns the
   // hiddenInput that mirrors `sourceText` while this tab is open
-}
+
+  // height of the bottom input, subtracted from the output box
+  // (same height as the opencode chat input)
+  readonly property int inputH: 38}

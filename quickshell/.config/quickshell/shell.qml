@@ -35,7 +35,8 @@ Scope {
     }
   }
 
-  // global keybind bridge — hyprland.lua: SUPER+A → `qs ipc call opencode toggle`
+  // global keybind bridge — hyprland.lua: SUPER+A → `qs ipc call opencode toggle`,
+  // SUPER+N → `qs ipc call notifs toggle` (calendar panel w/ notifications)
   IpcHandler {
     target: "opencode"
 
@@ -54,5 +55,17 @@ Scope {
     function close() {
       for (const k in root.bars) root.bars[k].closeChat();
     }
+  }
+
+  IpcHandler {
+    target: "notifs"
+
+    function toggle() {
+      const m = Hyprland.focusedMonitor;
+      const bar = m ? root.bars[m.name] : null;
+      if (bar) bar.toggleNotifPanel();
+    }
+
+    function clear() { Notifs.clearAll(); }
   }
 }

@@ -50,6 +50,7 @@ PanelWindow {
   }
 
   Clock {
+    id: clockPill
     anchors.centerIn: parent
   }
 
@@ -58,10 +59,10 @@ PanelWindow {
     anchors.verticalCenter: parent.verticalCenter
     spacing: 7
 
-    Player {}
     Tray {}
+    // Player {}
     Battery {}
-    Pomodoro {}
+    // Pomodoro {}
     Opencode {
       id: opencodePill
 
@@ -69,7 +70,11 @@ PanelWindow {
       // on the pill's property races object creation at load time)
       onPanelOpenChanged: root.chatPanelOpen = panelOpen
     }
-    Notifications {}
+    // Notifications {}
+
+    // native toast popups for incoming notifications (Notifs server)
+    Toasts {}
+    Sound {}
 
     // hyprpaper / hyprlock / hypridle settings panel
     Pill {
@@ -117,4 +122,9 @@ PanelWindow {
   }
 
   function closeChat() { opencodePill.panelOpen = false; }
+
+  // notifications live in the clock pill's calendar panel (per-bar state)
+  function toggleNotifPanel() {
+    clockPill.calOpen = !clockPill.calOpen;
+  }
 }
