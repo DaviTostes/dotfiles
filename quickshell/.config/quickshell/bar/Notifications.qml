@@ -1,33 +1,10 @@
-import Quickshell
-import Quickshell.Io
 import QtQuick
 import "../hyprconf"
 
 Pill {
   id: root
 
-  property string state: "none"
-
   implicitWidth: label.implicitWidth + 20
-
-  Process {
-    id: sub
-    command: ["swaync-client", "-swb"]
-    running: true
-
-    stdout: SplitParser {
-      onRead: data => {
-        try { root.state = JSON.parse(data).class || "none"; } catch (e) {}
-      }
-    }
-
-    onExited: restartTimer.start()
-  }
-  Timer {
-    id: restartTimer
-    interval: 5000
-    onTriggered: sub.running = true
-  }
 
   Text {
     id: label
@@ -35,13 +12,9 @@ Pill {
     textFormat: Text.RichText
     font.family: Theme.font
     font.pixelSize: 14
-    color: Theme.accent
-    text: {
-      const dnd = root.state.indexOf("dnd") !== -1;
-      const has = root.state.indexOf("notification") !== -1;
-      return (dnd ? "\uf1f7" : "\uf0a2")
-          + (has ? "<span style=\"color:" + Theme.err + "\"><sup>\uf444</sup></span>" : "");
-    }
+    color: Notifs.dnd ? Theme.muted : Theme.accent
+    text: (Notifs.dnd ? "\uf1f7" : "\uf0a2")
+        + (Notifs.historyCount > 0 ? "<span style=\"color:" + Theme.err + "\"><sup>\uf444</sup></span>" : "");
   }
 
   MouseArea {
@@ -49,10 +22,20 @@ Pill {
     anchors.fill: parent
     cursorShape: Qt.PointingHandCursor
     acceptedButtons: Qt.LeftButton | Qt.RightButton
-    onClicked: mouse => Quickshell.execDetached([
-      "swaync-client",
-      mouse.button === Qt.RightButton ? "-d" : "-t",
-      "-sw"
-    ])
+    // left: toggle do-not-disturb · right: clear everything
+    onClicked: mouse => {
+      if (mouse.button === Qt.RightButton)
+        Notifs.clearAll();
+      else
+        Notifs.dnd = !Notifs.dnd;
+    }
+  }
+
+  Tip {
+    target: root
+    shown: mouse.containsMouse
+    text: Notifs.dnd ? "do not disturb"
+        : Notifs.historyCount + " notification" + (Notifs.historyCount === 1 ? "" : "s")
+    subtitle: "click: dnd · right-click: clear all"
   }
 }

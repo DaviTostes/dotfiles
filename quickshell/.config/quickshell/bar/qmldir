@@ -1,0 +1,18 @@
+singleton Notifs 1.0 Notifs.qml
+Bar 1.0 Bar.qml
+Battery 1.0 Battery.qml
+Calc 1.0 Calc.qml
+Catcher 1.0 Catcher.qml
+Clock 1.0 Clock.qml
+IntelTranslate 1.0 IntelTranslate.qml
+Notifications 1.0 Notifications.qml
+Opencode 1.0 Opencode.qml
+Pill 1.0 Pill.qml
+Player 1.0 Player.qml
+SelText 1.0 SelText.qml
+Sound 1.0 Sound.qml
+Tip 1.0 Tip.qml
+Toasts 1.0 Toasts.qml
+Tray 1.0 Tray.qml
+TrayMenu 1.0 TrayMenu.qml
+Workspaces 1.0 Workspaces.qml
