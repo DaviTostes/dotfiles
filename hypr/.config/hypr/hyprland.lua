@@ -30,7 +30,6 @@ local autostart = {
   "dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP",
   "systemctl --user import-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP",
   "quickshell",
-  "swaync",
   "hypridle",
   "hyprpaper",
   "swayosd-server",
@@ -133,7 +132,7 @@ hl.config({
   misc = {
     force_default_wallpaper = -1,
     disable_hyprland_logo   = false,
-    focus_on_activate       = false,
+    focus_on_activate       = true,
   },
 
   input = {
@@ -284,10 +283,10 @@ hl.bind(shift("B"), exec(btManager))
 hl.bind(shift("W"), exec(wifiManager))
 hl.bind(mod("I"), exec(termRun("btop")))
 hl.bind(mod("M"), exec(termRun("maily")))
-hl.bind(mod("W"), exec("pgrep -x quickshell && killall quickshell || quickshell"))
+hl.bind(mod("W"), exec("sh -c 'killall quickshell 2>/dev/null; sleep 0.5; setsid -f quickshell'"))
 hl.bind(mod("U"), exec("pavucontrol"))
-hl.bind(mod("N"), exec("swaync-client -t -sw"))
-hl.bind(shift("N"), exec("swaync-client -C"))
+hl.bind(mod("N"), exec("qs ipc call notifs toggle"))    -- calendar + notifications panel
+hl.bind(shift("N"), exec("qs ipc call notifs clear"))
 
 hl.bind(mod("A"), exec("qs ipc call opencode toggle"))  -- opencode chat panel
 
