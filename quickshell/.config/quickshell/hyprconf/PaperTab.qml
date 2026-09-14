@@ -126,7 +126,7 @@ ColumnLayout {
         required property string fit
 
         // collapse + fade while being removed, grow + fade on entry
-        readonly property bool dying: model.dying === true
+        property bool dying: false
         property bool entered: false
 
         width: parent.width
@@ -183,7 +183,7 @@ ColumnLayout {
                     label: "\uf1f8"
                     textSize: 13
                     tooltip: "Remove monitor"
-                    onClicked: rows.setProperty(wrow.index, "dying", true)
+                    onClicked: wrow.dying = true
                 }
             }
 
