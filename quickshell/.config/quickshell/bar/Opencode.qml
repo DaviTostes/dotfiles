@@ -63,7 +63,14 @@ Pill {
   property var agents: []
   property var models: []
   property var commands: []
-  property var fileHits: []
+  property var fileHits: []       // @-mention finder hits: {path, type}
+  property int fileSel: 0         // keyboard-selected finder hit
+  property int finderSeq: 0       // guards against out-of-order finder replies
+  property var pendingImages: []  // clipboard images awaiting send: {name, b64}
+  property bool pasteFallbackText: true  // Ctrl+V falls back to text paste
+  property var pendingForms: []   // pending select-questions (Form.Info)
+  property var formAnswers: ({})  // formID -> { fieldKey: answer }
+  property var formTextTarget: null  // { formID, key, title, form } while typing an answer
   property var expanded: ({})     // key -> bool, for tool/reasoning foldouts
   property bool sending: false
   property bool busy: false       // assistant turn in flight
@@ -235,8 +242,8 @@ Pill {
           if (d.finish && d.finish !== "tool-calls") {
             root.busy = false;
             root.execEndMs = Date.now();
-            // panel closed ⇒ nobody is watching: ping the desktop
-            if (!root.panelOpen) root.notifyDone(false);
+            // ping the desktop whenever a turn ends, panel open or not
+            root.notifyDone(false);
           } else {
             root.busy = true;
           }
@@ -261,7 +268,7 @@ Pill {
           const msg = typeof e === "string" ? e
               : (e && (e.message || e.name)) || "";
           root.error = msg !== "" ? msg : "model error";
-          if (!root.panelOpen) root.notifyDone(true);
+          root.notifyDone(true);
           refreshSoon();
         }
         return;
@@ -275,6 +282,15 @@ Pill {
         return;
       case "permission.replied":
         root.loadPerms();
+        return;
+      // select questions (the question tool) surface as forms
+      case "form.created":
+      case "form.updated":
+      case "form.replied":
+      case "form.cancelled":
+        root.loadForms();
+        root.loadPerms();
+        refreshSoon();
         return;
       case "server.connected":
         root.streamLive = true;
@@ -384,6 +400,7 @@ Pill {
       if (Date.now() - root.lastDeltaMs < 400) { restart(); return; }
       root.loadMessages();
       root.loadPerms();
+      root.loadForms();
       root.loadSessionInfo();
     }
   }
@@ -479,6 +496,7 @@ Pill {
       root.session = (here.length ? here : data.data)[0] || null;
       root.loadMessages();
       root.loadPerms();
+      root.loadForms();
     });
   }
 
@@ -524,7 +542,8 @@ Pill {
     return cut.slice(0, cut.lastIndexOf("\n") + 1) + " …";
   }
 
-  // unified diff → selectable HTML: +green, −red, hunk headers muted
+  // unified diff → selectable HTML: +green, −red, hunk headers muted.
+  // Wrapped as monospace lines (Qt's <pre> would clip instead of wrapping).
   function renderDiff(p) {
     if (!p) return "";
     const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
@@ -535,10 +554,164 @@ Pill {
       else if (l.startsWith("-")) c = Theme.err;
       else if (l.startsWith("@@") || l.startsWith("Index")
                || l.startsWith("---") || l.startsWith("+++")) c = Theme.muted;
-      return "<span style=\"color:" + c + "\">" + (esc(l) || "&nbsp;") + "</span>";
+      const m = l.match(/^(\s*)(.*)$/);
+      const indent = m[1].replace(/\t/g, "    ").replace(/ /g, "\u00a0");
+      return "<span style=\"color:" + c + "\">" + indent + esc(m[2]) + "</span>";
     });
-    return "<pre style=\"white-space:pre-wrap; margin:0\">"
-        + lines.join("\n") + "</pre>";
+    return "<p style=\"margin:0\"><code>" + lines.join("<br/>") + "</code></p>";
+  }
+
+  // ---------- markdown rendering ----------
+  // Qt's MarkdownText packs every block with no spacing, no code-block
+  // background and no wrapping inside <pre>. This converts the assistant
+  // markdown to the small RichText subset QTextDocument actually honors
+  // (margins, tables, block backgrounds), which reads much better.
+  function mdEsc(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function mdInline(s) {
+    s = mdEsc(s);
+    const tok = [];
+    const stash = html => { tok.push(html); return "\u0000" + (tok.length - 1) + "\u0000"; };
+    // code spans/links are stashed so emphasis never rewrites their contents
+    s = s.replace(/`([^`]+)`/g, (_, c) => stash("<code>" + c + "</code>"));
+    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g,
+                  (_, t, u) => stash('<a href="' + u + '">' + t + "</a>"));
+    s = s.replace(/\*\*(?=\S)([^*]+?\S)\*\*/g, "<b>$1</b>");
+    s = s.replace(/(^|\s)__(?=\S)([^_]+?\S)__(?=$|\s)/g, "$1<b>$2</b>");
+    s = s.replace(/(^|[^*])\*(?=\S)([^*]+?\S)\*(?=$|[^*\w])/g, "$1<i>$2</i>");
+    s = s.replace(/(^|\s)_(?=\S)([^_]+?\S)_(?=$|\s)/g, "$1<i>$2</i>");
+    s = s.replace(/~~([^~]+)~~/g, "<s>$1</s>");
+    s = s.replace(/\u0000(\d+)\u0000/g, (_, i) => tok[+i]);
+    return s;
+  }
+
+  function mdSplitRow(s) {
+    s = s.trim();
+    if (s.startsWith("|")) s = s.slice(1);
+    if (s.endsWith("|")) s = s.slice(0, -1);
+    return s.split("|").map(x => x.trim());
+  }
+
+  function mdIsTableSep(s) {
+    return s.indexOf("|") !== -1 && /^[\s|:-]+$/.test(s) && s.indexOf("-") !== -1;
+  }
+
+  function mdTable(header, rows) {
+    const th = header.map(c =>
+        '<th style="padding:5px 9px;">' + mdInline(c) + "</th>").join("");
+    const trs = rows.map(r => "<tr>" + r.map(c =>
+        '<td style="padding:5px 9px;">' + mdInline(c) + "</td>").join("") + "</tr>").join("");
+    return '<table width="100%" cellspacing="0" cellpadding="0" border="1" '
+         + 'style="border-color:' + Theme.border + '; margin-top:9px; margin-bottom:9px;">'
+         + "<tr>" + th + "</tr>" + trs + "</table>";
+  }
+
+  // code as a full-width block: background from the table cell, monospace
+  // from <code>, and leading spaces kept as nbsp so long lines still wrap
+  function mdCodeBlock(code) {
+    const lines = code.split("\n").map(l => {
+      const m = l.match(/^(\s*)(.*)$/);
+      const indent = m[1].replace(/\t/g, "    ").replace(/ /g, "\u00a0");
+      return indent + mdEsc(m[2]);
+    });
+    return '<table width="100%" cellspacing="0" cellpadding="0" '
+         + 'style="margin-top:9px; margin-bottom:9px;">'
+         + '<tr><td style="padding:9px 10px; background-color:' + Theme.surface + ';">'
+         + '<p style="margin:0;"><code>' + lines.join("<br/>") + "</code></p>"
+         + "</td></tr></table>";
+  }
+
+  function renderMarkdown(md) {
+    if (!md) return "";
+    md = md.replace(/\r\n?/g, "\n");
+    const lines = md.split("\n");
+    const out = [];
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      const fence = line.match(/^\s*(```+|~~~+)\s*(\S*)\s*$/);
+      if (fence) {
+        const marker = fence[1][0];
+        const code = [];
+        i++;
+        while (i < lines.length
+               && !new RegExp("^\\s*" + marker + "{3,}\\s*$").test(lines[i])) {
+          code.push(lines[i]); i++;
+        }
+        i++;
+        out.push(mdCodeBlock(code.join("\n")));
+        continue;
+      }
+      if (/^\s*$/.test(line)) { i++; continue; }
+      if (/^\s*([-*_])\s*\1\s*\1[\s\1]*$/.test(line)) {
+        out.push('<hr style="margin-top:10px; margin-bottom:10px;"/>');
+        i++; continue;
+      }
+      const h = line.match(/^(#{1,6})\s+(.*)$/);
+      if (h) {
+        const lvl = h[1].length;
+        out.push("<h" + lvl + ' style="margin-top:' + (lvl <= 2 ? 14 : 11)
+                 + 'px; margin-bottom:5px;">' + mdInline(h[2]) + "</h" + lvl + ">");
+        i++; continue;
+      }
+      if (/^\s*>\s?/.test(line)) {
+        const bq = [];
+        while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+          bq.push(lines[i].replace(/^\s*>\s?/, "")); i++;
+        }
+        out.push('<blockquote style="margin:7px 0 7px 0;">'
+                 + bq.map(mdInline).join("<br/>") + "</blockquote>");
+        continue;
+      }
+      if (line.indexOf("|") !== -1 && i + 1 < lines.length
+          && mdIsTableSep(lines[i + 1])) {
+        const header = mdSplitRow(line);
+        i += 2;
+        const rows = [];
+        while (i < lines.length && lines[i].indexOf("|") !== -1
+               && !/^\s*$/.test(lines[i])) {
+          rows.push(mdSplitRow(lines[i])); i++;
+        }
+        out.push(mdTable(header, rows)); continue;
+      }
+      if (/^\s*[-*+]\s+/.test(line)) {
+        const items = [];
+        while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
+          items.push(lines[i].replace(/^\s*[-*+]\s+/, "")); i++;
+        }
+        out.push('<ul style="margin:7px 0 7px 0;">'
+                 + items.map(t => "<li>" + mdInline(t) + "</li>").join("")
+                 + "</ul>");
+        continue;
+      }
+      if (/^\s*\d+[.)]\s+/.test(line)) {
+        const items = [];
+        while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) {
+          items.push(lines[i].replace(/^\s*\d+[.)]\s+/, "")); i++;
+        }
+        out.push('<ol style="margin:7px 0 7px 0;">'
+                 + items.map(t => "<li>" + mdInline(t) + "</li>").join("")
+                 + "</ol>");
+        continue;
+      }
+      const para = [line];
+      i++;
+      while (i < lines.length && !/^\s*$/.test(lines[i])
+             && !/^(#{1,6})\s+/.test(lines[i])
+             && !/^\s*(```|~~~)/.test(lines[i])
+             && !/^\s*>\s?/.test(lines[i])
+             && !/^\s*[-*+]\s+/.test(lines[i])
+             && !/^\s*\d+[.)]\s+/.test(lines[i])
+             && !(i + 1 < lines.length && lines[i].indexOf("|") !== -1
+                  && mdIsTableSep(lines[i + 1]))) {
+        para.push(lines[i]); i++;
+      }
+      out.push('<p style="margin-top:7px; margin-bottom:7px;">'
+               + para.map(mdInline).join("<br/>") + "</p>");
+    }
+    return out.join("");
   }
 
   // identity of the newest message including activity signals — changes on
@@ -558,6 +731,31 @@ Pill {
   function showToast(msg) { toastText.text = msg; toastTimer.restart(); }
 
   function showCopyToast() { root.showToast("copied to clipboard"); }
+
+  // ---------- clipboard image paste ----------
+  // The editor is a plain TextInput, so a copied image would otherwise be
+  // invisible to it. Ctrl+V is intercepted: the clipboard image is read
+  // through wl-paste, downscaled to the server's image limits with magick
+  // (so the server never has to resize it) and kept as base64 until send.
+  function addPendingImage(b64) {
+    const imgs = root.pendingImages.slice();
+    imgs.push({ name: "clipboard-" + (imgs.length + 1) + ".png", b64: b64 });
+    root.pendingImages = imgs;
+  }
+
+  function removePendingImage(i) {
+    const imgs = root.pendingImages.slice();
+    imgs.splice(i, 1);
+    root.pendingImages = imgs;
+  }
+
+  function imageUri(img) { return "data:image/png;base64," + img.b64; }
+
+  function pasteFromClipboard(fallbackText) {
+    root.pasteFallbackText = fallbackText !== false;
+    pasteImageProc.base64 = "";
+    pasteImageProc.running = true;
+  }
 
   // desktop notification for a turn that ends while the panel is closed —
   // the only way to learn the job finished without reopening it
@@ -745,6 +943,107 @@ Pill {
         { reply: reply }, () => root.loadPerms());
   }
 
+  // ---------- select questions (forms) ----------
+  // The question tool surfaces as a pending form; without rendering it the
+  // turn waits forever. Forms carry fields with options (single/multi).
+  function loadForms() {
+    if (!root.session) return;
+    api("GET", "/api/session/" + root.session.id + "/form", null, (ok, data) => {
+      const list = (ok && data && data.data) ? data.data : [];
+      root.pendingForms = list;
+      // seed/clean the answers map for the forms currently pending
+      const ans = Object.assign({}, root.formAnswers);
+      for (const f of list) if (!(f.id in ans)) ans[f.id] = {};
+      for (const k in ans) if (!list.some(f => f.id === k)) delete ans[k];
+      root.formAnswers = ans;
+    });
+  }
+
+  function formAnswer(fid, key) {
+    const f = root.formAnswers[fid];
+    return f ? f[key] : undefined;
+  }
+
+  function formSetAnswer(fid, key, value) {
+    const ans = Object.assign({}, root.formAnswers);
+    const f = Object.assign({}, ans[fid] || {});
+    f[key] = value;
+    ans[fid] = f;
+    root.formAnswers = ans;
+  }
+
+  function formOptionSelected(form, field, opt) {
+    const cur = root.formAnswer(form.id, field.key);
+    if (field.type === "multiselect") return Array.isArray(cur) && cur.indexOf(opt.value) >= 0;
+    return cur === opt.value;
+  }
+
+  function formToggleOption(form, field, opt) {
+    const cur = root.formAnswer(form.id, field.key);
+    if (field.type === "multiselect") {
+      const arr = Array.isArray(cur) ? cur.slice() : [];
+      const i = arr.indexOf(opt.value);
+      if (i >= 0) arr.splice(i, 1); else arr.push(opt.value);
+      root.formSetAnswer(form.id, field.key, arr);
+    } else {
+      root.formSetAnswer(form.id, field.key, opt.value);
+    }
+  }
+
+  function formSubmit(form) {
+    if (!root.session) return;
+    const ans = root.formAnswers[form.id] || {};
+    for (const fld of form.fields) {
+      if (!fld.required) continue;
+      const v = ans[fld.key];
+      if (v === undefined || v === null || v === ""
+          || (Array.isArray(v) && v.length === 0)) {
+        root.showToast("missing answer: " + (fld.title || fld.key));
+        return;
+      }
+    }
+    api("POST", "/api/session/" + root.session.id + "/form/" + form.id + "/reply",
+        { answer: ans }, () => root.loadForms());
+  }
+
+  function formCancel(form) {
+    if (!root.session) return;
+    api("POST", "/api/session/" + root.session.id + "/form/" + form.id + "/cancel",
+        {}, () => root.loadForms());
+  }
+
+  // the panel window is keyboard-less, so a form text field can't be typed
+  // into directly — route the answer through the main editor instead
+  function formBeginText(form, field) {
+    root.formTextTarget = { formID: form.id, key: field.key,
+                            title: field.title || field.key, form: form };
+    inputField.text = "";
+    hiddenInput.text = "";
+    hiddenInput.forceActiveFocus();
+    if (root.menu !== "") root.menu = "";
+  }
+
+  function formCommitText() {
+    const t = root.formTextTarget;
+    if (!t) return false;
+    const v = inputField.text.trim();
+    root.formTextTarget = null;
+    inputField.text = "";
+    if (v !== "") {
+      root.formSetAnswer(t.formID, t.key, v);
+      // single-field forms are answered as soon as the text is committed
+      if (t.form.fields.length === 1) root.formSubmit(t.form);
+    }
+    return true;
+  }
+
+  function formCancelText() {
+    if (!root.formTextTarget) return false;
+    root.formTextTarget = null;
+    inputField.text = "";
+    return true;
+  }
+
   // ---------- actions ----------
   function newChat() {
     // no title — the server auto-titles from the first message
@@ -754,6 +1053,9 @@ Pill {
       chatModel.clear();
       root.busy = false;
       root.pendingPerm = null;
+      root.pendingForms = [];
+      root.formAnswers = {};
+      root.formTextTarget = null;
       root.menu = "";
       // a fresh session carries no model/agent — apply the last used ones
       // server-side so the chips tell the truth
@@ -777,9 +1079,13 @@ Pill {
     root.session = s;
     chatModel.clear();
     root.pendingPerm = null;
+    root.pendingForms = [];
+    root.formAnswers = {};
+    root.formTextTarget = null;
     root.menu = "";
     root.loadMessages();
     root.loadPerms();
+    root.loadForms();
   }
 
   function switchModel(m) {
@@ -816,13 +1122,19 @@ Pill {
     const files = [];
     const dir = root.session && root.session.location
         ? root.session.location.directory : Quickshell.env("HOME");
+    const home = Quickshell.env("HOME");
     const re = /(^|\s)@([^\s,;]+)/g;
     let m;
     while ((m = re.exec(text)) !== null) {
       const start = m.index + m[1].length;
       const tok = m[2];
+      // absolute and ~-anchored mentions must not be glued to the session dir
+      let uri;
+      if (tok.startsWith("/")) uri = "file://" + tok;
+      else if (tok.startsWith("~/")) uri = "file://" + home + tok.slice(1);
+      else uri = "file://" + dir + "/" + tok;
       files.push({
-        uri: "file://" + dir + "/" + tok,
+        uri: uri,
         name: tok,
         mention: { start: start, end: start + 1 + tok.length, text: "@" + tok }
       });
@@ -831,9 +1143,10 @@ Pill {
   }
 
   function send() {
+    if (root.formTextTarget !== null) { root.formCommitText(); return; }
     if (root.sending || root.busy) return;
     const text = inputField.text.trim();
-    if (text === "") return;
+    if (text === "" && root.pendingImages.length === 0) return;
     inputField.text = "";
     root.error = "";
     root.sending = true;
@@ -860,6 +1173,9 @@ Pill {
     }
 
     const files = collectFiles(text);
+    for (const img of root.pendingImages)
+      files.push({ uri: root.imageUri(img), name: img.name });
+    root.pendingImages = [];
     const prompt = sid =>
       api("POST", "/api/session/" + sid + "/prompt",
           files.length ? { text: text, files: files } : { text: text },
@@ -891,44 +1207,78 @@ Pill {
   // ---------- mention / command finders ----------
   function updateFinder() {
     const text = inputField.text;
+    if (root.formTextTarget !== null) {
+      root.fileHits = [];
+      if (root.menu === "files") root.menu = "";
+      return;
+    }
     // "/" at start with no space yet → command menu
     if (text.length > 0 && text[0] === "/" && text.indexOf(" ") === -1) {
       root.fileHits = [];
       root.menu = "commands";
       return;
     }
-    // trailing @token → file finder
+    // trailing @token → file finder (works before a session exists too)
     const m = text.match(/@([^\s,;]*)$/);
-    if (m && root.session) {
+    if (m) {
       const q = m[1];
+      if (q.length === 0) {
+        root.fileHits = [];
+        root.fileSel = 0;
+        if (root.menu === "files") root.menu = "";
+        return;
+      }
       root.menu = "files";
-      if (q.length === 0) { root.fileHits = []; return; }
+      const seq = ++root.finderSeq;
       api("GET", "/api/fs/find?query=" + encodeURIComponent(q)
-          + "&type=file&limit=8", null, (ok, data) => {
-        if (!ok || !data || !data.data) { root.fileHits = []; return; }
+          + "&limit=12", null, (ok, data) => {
+        if (seq !== root.finderSeq) return;   // a newer query superseded this one
+        if (!ok || !data || !data.data) { root.fileHits = []; root.fileSel = 0; return; }
         root.fileHits = data.data.map(f =>
-          typeof f === "string" ? f : (f.path || f.name || ""));
+          typeof f === "string" ? { path: f, type: "file" }
+                                : { path: f.path || f.name || "", type: f.type || "file" });
+        root.fileSel = 0;
       });
       return;
     }
     if (root.menu === "files") root.menu = "";
   }
 
-  function pickFile(path) {
+  // keyboard navigation of the @ file finder (the bar's hiddenInput owns
+  // the keys, so the panel can't rely on mouse clicks alone)
+  function finderMove(dir) {
+    if (root.menu !== "files" || root.fileHits.length === 0) return;
+    const n = root.fileHits.length;
+    root.fileSel = (root.fileSel + dir + n) % n;
+  }
+
+  function finderPickSelected() {
+    if (root.menu === "files" && root.fileHits.length > 0) {
+      root.pickFile(root.fileHits[root.fileSel]);
+      return true;
+    }
+    return false;
+  }
+
+  function pickFile(entry) {
+    const path = typeof entry === "string" ? entry : entry.path;
+    const type = typeof entry === "string" ? "file" : (entry.type || "file");
     const text = inputField.text;
     const m = text.match(/@([^\s,;]*)$/);
     if (m) {
-      // fs/find returns paths relative to the session directory — mention
-      // the relative form (like the TUI does)
       const dir = root.session && root.session.location
           ? root.session.location.directory : Quickshell.env("HOME");
       let rel = path;
       if (rel.indexOf(dir + "/") === 0) rel = rel.slice(dir.length + 1);
-      inputField.text = text.slice(0, m.index) + "@" + rel;
+      // files get a trailing space so the mention ends; directories keep the
+      // finder open, now scoped to that folder
+      const suffix = type === "directory" ? "/" : " ";
+      inputField.text = text.slice(0, m.index) + "@" + rel + suffix;
       inputField.cursorPosition = inputField.text.length;
     }
-    root.menu = "";
+    root.menu = type === "directory" ? "files" : "";
     inputField.forceActiveFocus();
+    if (type === "directory") root.updateFinder();
   }
 
   function toggleFold(key) {
@@ -940,6 +1290,29 @@ Pill {
   function closeMenuOrPanel() {
     if (root.menu !== "") { root.menu = ""; return; }
     root.panelOpen = false;
+  }
+
+  // Ctrl+V: read a PNG from the Wayland clipboard, shrink it to the server's
+  // 2000x2000 limit and keep it as base64. Empty output means the clipboard
+  // holds no image, so the editor's native text paste runs instead.
+  Process {
+    id: pasteImageProc
+    property string base64: ""
+    command: ["sh", "-c",
+      "if command -v magick >/dev/null 2>&1; then " +
+      "wl-paste -t image/png 2>/dev/null | magick png:- -resize '2000x2000>' png:- 2>/dev/null | base64 -w0; " +
+      "else wl-paste -t image/png 2>/dev/null | base64 -w0; fi"]
+    stdout: StdioCollector {
+      // handle here (not onExited): the collector owns the bytes, and the
+      // process may exit before the pipe is fully drained
+      onStreamFinished: {
+        const b64 = text.trim();
+        pasteImageProc.base64 = b64;
+        if (b64 !== "") root.addPendingImage(b64);
+        else if (root.pasteFallbackText) hiddenInput.paste();   // no image → text paste
+        else root.showToast("no image in clipboard");
+      }
+    }
   }
 
   // ---------- voice (whisper.cpp STT) ----------
@@ -1087,17 +1460,35 @@ Pill {
         root.selEdit.copy();
         root.showCopyToast();
         event.accepted = true;
+        return;
+      }
+      // Ctrl+V: attach a clipboard image when there is one, else paste text
+      if (root.mode === "chat" && root.formTextTarget === null
+          && event.key === Qt.Key_V && (event.modifiers & Qt.ControlModifier)) {
+        root.pasteFromClipboard(true);
+        event.accepted = true;
+        return;
+      }
+      // @-mention finder: arrows move the selection, Enter picks it
+      if (root.menu === "files" && root.fileHits.length > 0) {
+        if (event.key === Qt.Key_Down) { root.finderMove(1); event.accepted = true; return; }
+        if (event.key === Qt.Key_Up) { root.finderMove(-1); event.accepted = true; return; }
       }
     }
     Keys.onReturnPressed: {
+      if (root.formCommitText()) return;
       if (root.mode === "translate") translateBox.translate();
-      else root.send();
+      else if (!root.finderPickSelected()) root.send();
     }
     Keys.onEnterPressed: {
+      if (root.formCommitText()) return;
       if (root.mode === "translate") translateBox.translate();
-      else root.send();
+      else if (!root.finderPickSelected()) root.send();
     }
-    Keys.onEscapePressed: root.closeMenuOrPanel()
+    Keys.onEscapePressed: {
+      if (root.formCancelText()) return;
+      root.closeMenuOrPanel();
+    }
   }
 
   // ---------- panel ----------
@@ -1149,6 +1540,7 @@ Pill {
       root.clearBusyNextLoad = true;
       root.loadMessages();
       root.loadPerms();
+      root.loadForms();
     }
 
     anchor {
@@ -1193,7 +1585,7 @@ Pill {
 
       // chat is empty (and no menu open) → TUI-style centered prompt
       property bool empty: root.mode === "chat" && chatModel.count === 0
-                           && root.menu === ""
+                           && root.menu === "" && root.pendingImages.length === 0
 
       Column {
         anchors.fill: parent
@@ -1414,8 +1806,8 @@ Pill {
           width: parent.width
           height: root.mode === "chat"
               ? parent.height - headerRow.height - menuBox.height
-                - errorLine.height - permBanner.height - inputRow.height
-                - 8 * 4 - 10
+                - errorLine.height - permBanner.height - formBanner.height
+                - inputRow.height - 8 * 5 - 10
               : 0
           clip: true
           contentWidth: width
@@ -1512,10 +1904,10 @@ Pill {
                     anchors.verticalCenter: parent.verticalCenter
                     width: parent.width
                     height: contentHeight
-                    // markdown live during streaming too — safe now that
-                    // tokens are batched (~12 updates/s), no re-parse storm
-                    textFormat: TextEdit.MarkdownText
-                    text: msgDel.text
+                    // rendered to a controlled RichText subset (spacing,
+                    // code blocks, tables) — see renderMarkdown
+                    textFormat: TextEdit.RichText
+                    text: root.renderMarkdown(msgDel.text)
                     font.pixelSize: 12
                     color: Theme.accent
                     onSelectedTextChanged: if (selectedText !== "") root.selEdit = asstText
@@ -1664,6 +2056,20 @@ Pill {
               function onMenuChanged() { menuFlick.contentY = 0; }
             }
 
+            // keep the keyboard-selected finder hit in view
+            Connections {
+              target: root
+              function onFileSelChanged() {
+                if (root.menu !== "files") return;
+                const rowH = 26;
+                const top = root.fileSel * rowH;
+                const bottom = top + rowH;
+                if (top < menuFlick.contentY) menuFlick.contentY = top;
+                else if (bottom > menuFlick.contentY + menuFlick.height)
+                  menuFlick.contentY = bottom - menuFlick.height;
+              }
+            }
+
             Column {
               id: menuCol
               x: 6
@@ -1676,28 +2082,35 @@ Pill {
               model: root.menu === "files" ? root.fileHits : []
 
               Rectangle {
-                required property string modelData
+                id: fileRow
+                required property var modelData
+                required property int index
+                readonly property bool sel: index === root.fileSel
                 width: menuCol.width - 4
                 height: 24
                 radius: 4
-                color: fileMa.containsMouse ? Theme.hover : "transparent"
+                color: sel ? Theme.hover
+                     : fileMa.containsMouse ? Theme.hover : "transparent"
                 Text {
                   anchors.left: parent.left
                   anchors.leftMargin: 8
+                  anchors.right: parent.right
+                  anchors.rightMargin: 8
                   anchors.verticalCenter: parent.verticalCenter
-                  text: parent.modelData
+                  text: (fileRow.modelData.type === "directory"
+                         ? "\uf07b  " : "\uf15b  ") + fileRow.modelData.path
                   font.family: Theme.font
                   font.pixelSize: 10
-                  color: Theme.text
+                  color: fileRow.sel ? Theme.accent : Theme.text
                   elide: Text.ElideMiddle
-                  width: parent.width - 16
                 }
                 MouseArea {
                   id: fileMa
                   anchors.fill: parent
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
-                  onClicked: root.pickFile(parent.modelData)
+                  onEntered: root.fileSel = fileRow.index
+                  onClicked: root.pickFile(fileRow.modelData)
                 }
               }
             }
@@ -1924,6 +2337,251 @@ Pill {
           }
         }
 
+        // ----- select questions (forms) -----
+        Rectangle {
+          id: formBanner
+          transform: Translate { x: root.swipeOfs }
+          width: parent.width
+          height: root.pendingForms.length > 0 && root.mode === "chat"
+              ? Math.min(320, formCol.implicitHeight + 16) : 0
+          visible: height > 0
+          clip: true
+          Behavior on height { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+          radius: 6
+          color: Theme.surface
+          border.color: Theme.border
+          border.width: 1
+
+          Flickable {
+            id: formFlick
+            anchors.fill: parent
+            contentWidth: width
+            contentHeight: formCol.implicitHeight + 16
+            interactive: contentHeight > height
+            clip: true
+
+            Column {
+              id: formCol
+              x: 8
+              y: 8
+              width: formFlick.width - 16
+              spacing: 10
+
+              Repeater {
+                model: root.pendingForms
+
+                Column {
+                  id: formBox
+                  required property var modelData
+                  width: formCol.width
+                  spacing: 6
+
+                  Row {
+                    width: parent.width
+                    spacing: 6
+
+                    Text {
+                      width: parent.width - closeForm.width - 6
+                      text: formBox.modelData.title || "question"
+                      font.family: Theme.font
+                      font.bold: true
+                      font.pixelSize: 11
+                      color: Theme.accent
+                      elide: Text.ElideRight
+                    }
+
+                    Rectangle {
+                      id: closeForm
+                      width: 22; height: 20; radius: 4
+                      color: closeFormMa.containsMouse ? Theme.hover : Theme.bg
+                      Behavior on color { ColorAnimation { duration: 150 } }
+                      Text {
+                        anchors.centerIn: parent
+                        text: "✕"
+                        font.family: Theme.font
+                        font.pixelSize: 10
+                        color: Theme.err
+                      }
+                      MouseArea {
+                        id: closeFormMa
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.formCancel(formBox.modelData)
+                      }
+                    }
+                  }
+
+                  Repeater {
+                    model: formBox.modelData.fields
+
+                    Column {
+                      id: fieldBox
+                      required property var modelData
+                      width: formBox.width
+                      spacing: 5
+
+                      Text {
+                        width: parent.width
+                        text: (fieldBox.modelData.title || fieldBox.modelData.key)
+                              + (fieldBox.modelData.required ? "  *" : "")
+                        font.family: Theme.font
+                        font.pixelSize: 10
+                        color: Theme.text
+                        wrapMode: Text.WordWrap
+                      }
+
+                      Text {
+                        width: parent.width
+                        visible: text !== ""
+                        text: fieldBox.modelData.description || ""
+                        font.family: Theme.font
+                        font.pixelSize: 9
+                        color: Theme.muted
+                        wrapMode: Text.WordWrap
+                      }
+
+                      // boolean yes/no
+                      Row {
+                        visible: fieldBox.modelData.type === "boolean"
+                        spacing: 5
+                        Repeater {
+                          model: [{ l: "yes", v: true }, { l: "no", v: false }]
+                          Rectangle {
+                            required property var modelData
+                            readonly property bool on: root.formAnswer(formBox.modelData.id,
+                                                                        fieldBox.modelData.key) === modelData.v
+                            width: boolLabel.implicitWidth + 16
+                            height: 22; radius: 4
+                            color: on ? Theme.accent
+                                 : boolMa.containsMouse ? Theme.hover : Theme.bg
+                            Behavior on color { ColorAnimation { duration: 150 } }
+                            Text {
+                              id: boolLabel
+                              anchors.centerIn: parent
+                              text: modelData.l
+                              font.family: Theme.font
+                              font.pixelSize: 10
+                              color: on ? Theme.deep : Theme.text
+                            }
+                            MouseArea {
+                              id: boolMa
+                              anchors.fill: parent
+                              hoverEnabled: true
+                              cursorShape: Qt.PointingHandCursor
+                              onClicked: root.formSetAnswer(formBox.modelData.id,
+                                                            fieldBox.modelData.key, modelData.v)
+                            }
+                          }
+                        }
+                      }
+
+                      // options: single or multi select
+                      Flow {
+                        visible: (fieldBox.modelData.options || []).length > 0
+                        width: parent.width
+                        spacing: 5
+                        Repeater {
+                          model: fieldBox.modelData.options || []
+                          Rectangle {
+                            required property var modelData
+                            readonly property bool on: root.formOptionSelected(formBox.modelData,
+                                                                               fieldBox.modelData, modelData)
+                            width: optLabel.implicitWidth + 16
+                            height: 22; radius: 4
+                            color: on ? Theme.accent
+                                 : optMa.containsMouse ? Theme.hover : Theme.bg
+                            Behavior on color { ColorAnimation { duration: 150 } }
+                            Text {
+                              id: optLabel
+                              anchors.centerIn: parent
+                              text: modelData.label
+                              font.family: Theme.font
+                              font.pixelSize: 10
+                              color: on ? Theme.deep : Theme.text
+                            }
+                            MouseArea {
+                              id: optMa
+                              anchors.fill: parent
+                              hoverEnabled: true
+                              cursorShape: Qt.PointingHandCursor
+                              onClicked: root.formToggleOption(formBox.modelData,
+                                                               fieldBox.modelData, modelData)
+                            }
+                          }
+                        }
+                      }
+
+                      // free text / custom answer, typed in the main editor
+                      Rectangle {
+                        id: typeBtn
+                        visible: ((fieldBox.modelData.type === "string"
+                                   || fieldBox.modelData.type === "number"
+                                   || fieldBox.modelData.type === "integer")
+                                  && (fieldBox.modelData.options || []).length === 0)
+                                 || fieldBox.modelData.custom === true
+                        readonly property bool active: root.formTextTarget !== null
+                            && root.formTextTarget.formID === formBox.modelData.id
+                            && root.formTextTarget.key === fieldBox.modelData.key
+                        width: Math.min(formBox.width, typeLabel.implicitWidth + 16)
+                        height: 22; radius: 4
+                        color: active ? Theme.accent
+                             : typeMa.containsMouse ? Theme.hover : Theme.bg
+                        Behavior on color { ColorAnimation { duration: 150 } }
+                        Text {
+                          id: typeLabel
+                          width: parent.width - 16
+                          anchors.centerIn: parent
+                          text: {
+                            if (typeBtn.active) return "typing… (Enter to set)";
+                            const v = root.formAnswer(formBox.modelData.id, fieldBox.modelData.key);
+                            return (typeof v === "string" && v !== "")
+                                   ? ("✎ " + v) : "✎ type answer…";
+                          }
+                          font.family: Theme.font
+                          font.pixelSize: 10
+                          color: typeBtn.active ? Theme.deep : Theme.text
+                          elide: Text.ElideRight
+                        }
+                        MouseArea {
+                          id: typeMa
+                          anchors.fill: parent
+                          hoverEnabled: true
+                          cursorShape: Qt.PointingHandCursor
+                          onClicked: root.formBeginText(formBox.modelData, fieldBox.modelData)
+                        }
+                      }
+                    }
+                  }
+
+                  Rectangle {
+                    width: submitFormLabel.implicitWidth + 20
+                    height: 24; radius: 4
+                    color: submitFormMa.containsMouse ? Theme.hover : Theme.accent
+                    Behavior on color { ColorAnimation { duration: 150 } }
+                    Text {
+                      id: submitFormLabel
+                      anchors.centerIn: parent
+                      text: "answer"
+                      font.family: Theme.font
+                      font.bold: true
+                      font.pixelSize: 10
+                      color: Theme.deep
+                    }
+                    MouseArea {
+                      id: submitFormMa
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: root.formSubmit(formBox.modelData)
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+
       }
       // ----- input row -----
       // floats: glides up to the middle of the panel when the chat is
@@ -1948,17 +2606,19 @@ Pill {
           id: inputField
           anchors.left: parent.left
           anchors.leftMargin: 10
-          anchors.right: micBtn.left
+          anchors.right: pasteBtn.left
           anchors.rightMargin: 4
           anchors.verticalCenter: parent.verticalCenter
           background: null
-          placeholderText: root.sttState === "rec"
+          placeholderText: root.formTextTarget !== null
+              ? "answer: " + root.formTextTarget.title + " …"
+              : root.sttState === "rec"
               ? "● recording " + Math.floor(root.recSecs / 60) + ":"
                 + String(root.recSecs % 60).padStart(2, "0")
                 + " — mic again to stop"
               : root.sttState === "stt" ? "◌ transcribing…"
               : root.busy ? "opencode is working…"
-              : "ask opencode…  (@file · /command)"
+              : "ask opencode…  (@file · /command · Ctrl+V image)"
           placeholderTextColor: Theme.idleText
           color: Theme.accent
           font.family: Theme.font
@@ -1999,11 +2659,45 @@ Pill {
             hiddenInput.cursorPosition = cursorPosition;
             root.inputSyncing = false;
           }
-          Keys.onReturnPressed: root.send()
-          Keys.onEnterPressed: root.send()
+          Keys.onReturnPressed: if (!root.formCommitText()
+                                     && !root.finderPickSelected()) root.send()
+          Keys.onEnterPressed: if (!root.formCommitText()
+                                   && !root.finderPickSelected()) root.send()
+          Keys.onUpPressed: root.finderMove(-1)
+          Keys.onDownPressed: root.finderMove(1)
           Keys.onEscapePressed: event => {
             event.accepted = true;   // don't let the panel Shortcut also fire
+            if (root.formCancelText()) return;
             root.closeMenuOrPanel();
+          }
+        }
+
+        // attach clipboard image
+        Rectangle {
+          id: pasteBtn
+          anchors.right: micBtn.left
+          anchors.rightMargin: 4
+          anchors.verticalCenter: parent.verticalCenter
+          width: 28; height: 26; radius: 5
+          color: pasteMa.containsMouse ? Theme.hover : Theme.bg
+          Behavior on color { ColorAnimation { duration: 200 } }
+          scale: pasteMa.containsMouse ? 1.07 : 1
+          Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+
+          Text {
+            anchors.centerIn: parent
+            text: "\uf03e"
+            font.family: Theme.font
+            font.pixelSize: 11
+            color: Theme.text
+          }
+
+          MouseArea {
+            id: pasteMa
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.pasteFromClipboard(false)
           }
         }
 
@@ -2070,6 +2764,80 @@ Pill {
           }
         }
       }
+      // ----- attached clipboard images (chips above the input row) -----
+      Row {
+        id: imageChips
+        transform: Translate { x: root.swipeOfs }
+        x: inputRow.x
+        y: inputRow.y - 34
+        spacing: 6
+        opacity: visible ? 1 : 0
+        visible: root.mode === "chat" && root.pendingImages.length > 0
+                 && root.menu === ""
+        Behavior on y { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
+        Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+
+        Repeater {
+          model: root.pendingImages
+
+          Rectangle {
+            id: chip
+            required property var modelData
+            required property int index
+            width: chipRow.implicitWidth + 18
+            height: 28
+            radius: 5
+            color: Theme.surface
+            border.color: Theme.border
+            border.width: 1
+
+            Row {
+              id: chipRow
+              anchors.centerIn: parent
+              spacing: 6
+
+              Image {
+                width: 20; height: 20
+                anchors.verticalCenter: parent.verticalCenter
+                source: root.imageUri(chip.modelData)
+                sourceSize: Qt.size(40, 40)
+                asynchronous: true
+                fillMode: Image.PreserveAspectCrop
+              }
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "[Image " + (chip.index + 1) + "]"
+                font.family: Theme.font
+                font.pixelSize: 10
+                color: Theme.text
+              }
+
+              Item {
+                width: 12; height: 12
+                anchors.verticalCenter: parent.verticalCenter
+
+                Text {
+                  anchors.centerIn: parent
+                  text: "\uf00d"
+                  font.family: Theme.font
+                  font.pixelSize: 10
+                  color: delMa.containsMouse ? Theme.err : Theme.muted
+                }
+
+                MouseArea {
+                  id: delMa
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.removePendingImage(chip.index)
+                }
+              }
+            }
+          }
+        }
+      }
+
       // ----- empty state (TUI-style) -----
       Item {
         id: emptyState
@@ -2105,7 +2873,7 @@ Pill {
 
           Text {
             anchors.horizontalCenter: parent.horizontalCenter
-            text: "@file mention  ·  /command  ·  mic for voice"
+            text: "@file mention  ·  /command  ·  Ctrl+V image  ·  mic for voice"
             font.family: Theme.font
             font.pixelSize: 10
             color: Theme.muted
@@ -2281,6 +3049,7 @@ Pill {
     onTriggered: {
       root.loadMessages();
       root.loadPerms();
+      root.loadForms();
       // stream-dead escape: a missed execution-end must not wedge us busy
       if (root.busy && Date.now() - root.lastChangeMs > 30000) root.busy = false;
     }
