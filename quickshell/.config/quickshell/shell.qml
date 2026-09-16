@@ -35,6 +35,18 @@ Scope {
     }
   }
 
+  // Super+Space app launcher. One instance for all monitors — it moves
+  // itself to the focused monitor when opened (see Launcher.openFocused),
+  // so unlike the bars it is not part of the Variants above.
+  Launcher {
+    id: launcher
+  }
+
+  // Super+Alt+Space clipboard history (same fullscreen-overlay trick).
+  ClipHistory {
+    id: clipboard
+  }
+
   // global keybind bridge — hyprland.lua: SUPER+A → `qs ipc call opencode toggle`,
   // SUPER+N → `qs ipc call notifs toggle` (calendar panel w/ notifications)
   IpcHandler {
@@ -67,5 +79,43 @@ Scope {
     }
 
     function clear() { Notifs.clearAll(); }
+  }
+
+  // SUPER+Space — app launcher (replaces wofi --show drun)
+  IpcHandler {
+    target: "launcher"
+
+    function toggle() { launcher.toggle(); }
+
+    function close() { launcher.close(); }
+
+    // wipes the frecency history (usage ordering)
+    function clearUsage() { launcher.clearUsage(); }
+  }
+
+  // SUPER+ALT+Space — clipboard history (replaces wofi -S dmenu)
+  IpcHandler {
+    target: "clipboard"
+
+    function toggle() { clipboard.toggle(); }
+
+    function close() { clipboard.close(); }
+  }
+
+  // settings dropdown, straight on a tab by name: `qs ipc call settings open
+  // bluetooth` (SUPER+SHIFT+B) / `open wifi` (SUPER+SHIFT+W). Tab names live
+  // in HyprConfig.tabs.
+  IpcHandler {
+    target: "settings"
+
+    function open(tab: string) {
+      const m = Hyprland.focusedMonitor;
+      const bar = m ? root.bars[m.name] : null;
+      if (bar) bar.openSettings(tab);
+    }
+
+    function close() {
+      for (const k in root.bars) root.bars[k].closeSettings();
+    }
   }
 }

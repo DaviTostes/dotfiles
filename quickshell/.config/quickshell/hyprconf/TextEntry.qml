@@ -6,6 +6,10 @@ TextField {
 
     // 0 = neutral, 1 = valid (ok border), 2 = invalid (error border)
     property int validity: 0
+    // hides what is typed (wi-fi passphrases)
+    property bool password: false
+
+    echoMode: root.password ? TextInput.Password : TextInput.Normal
 
     color: Theme.text
     placeholderTextColor: Theme.muted

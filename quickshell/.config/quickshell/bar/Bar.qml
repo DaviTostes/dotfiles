@@ -8,6 +8,8 @@ PanelWindow {
 
   // panel state is per-bar (per monitor), like the Pomodoro's panelOpen
   property bool panelOpen: false
+  // which tab the settings dropdown opens on (see openSettings below)
+  property int settingsTab: 0
   // set by the opencode pill when its chat panel opens (see its instance)
   property bool chatPanelOpen: false
 
@@ -102,6 +104,7 @@ PanelWindow {
 
   // opens anchored under the pill, on this bar's monitor
   HyprConfig {
+    id: hyprConfig
     barWindow: root
     pill: settingsPill
     panelOpen: root.panelOpen
@@ -122,6 +125,16 @@ PanelWindow {
   }
 
   function closeChat() { opencodePill.panelOpen = false; }
+
+  // SUPER+SHIFT+B / SUPER+SHIFT+W → settings dropdown, straight on a tab
+  // (name resolved by HyprConfig, which owns the tab list)
+  function openSettings(name) {
+    const i = hyprConfig.tabIndex(name);
+    root.settingsTab = i >= 0 ? i : 0;
+    root.panelOpen = true;
+  }
+
+  function closeSettings() { root.panelOpen = false; }
 
   // notifications live in the clock pill's calendar panel (per-bar state)
   function toggleNotifPanel() {

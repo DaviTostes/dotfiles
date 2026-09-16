@@ -4,6 +4,8 @@ HyprConfig 1.0 HyprConfig.qml
 PaperTab 1.0 PaperTab.qml
 LockTab 1.0 LockTab.qml
 IdleTab 1.0 IdleTab.qml
+BluetoothTab 1.0 BluetoothTab.qml
+WifiTab 1.0 WifiTab.qml
 SectionCard 1.0 SectionCard.qml
 TextEntry 1.0 TextEntry.qml
 NumField 1.0 NumField.qml

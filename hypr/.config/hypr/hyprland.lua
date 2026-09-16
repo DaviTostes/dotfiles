@@ -36,7 +36,11 @@ local autostart = {
   "wl-paste --watch cliphist store",
   "ollama serve",
   "goytn",
-  "maily"
+  "maily",
+  -- XEmbed tray host: Wine/Proton (Battle.net) shows a stray 160x20
+  -- "Shell_TrayWnd" window when nothing owns _NET_SYSTEM_TRAY_S0, and
+  -- quickshell's tray speaks StatusNotifier, not XEmbed.
+  "setsid -f $HOME/.local/bin/xembed-tray",
 }
 
 hl.on("hyprland.start", function()
@@ -53,11 +57,11 @@ local primaryMonitor   = "DP-2"
 local secondaryMonitor = "HDMI-A-1"
 local resolution       = "1920x1080"
 
-hl.monitor({ output = primaryMonitor, mode = resolution .. "@120", position = "0x0", scale = 1 })
-hl.monitor({ output = secondaryMonitor, mode = resolution .. "@75", position = "1920x0", scale = 1 })
+hl.monitor({ output = primaryMonitor, mode = resolution .. "@144", position = "0x0", scale = 1 })
+hl.monitor({ output = secondaryMonitor, mode = resolution .. "@75", position = "-1920x0", scale = 1 })
 
-hl.workspace_rule({ workspace = "1", monitor = primaryMonitor, default = false })
-hl.workspace_rule({ workspace = "2", monitor = secondaryMonitor, default = true })
+hl.workspace_rule({ workspace = "2", monitor = primaryMonitor, default = false })
+hl.workspace_rule({ workspace = "1", monitor = secondaryMonitor, default = true })
 
 ---------------------
 ---- MY PROGRAMS ----
@@ -65,12 +69,12 @@ hl.workspace_rule({ workspace = "2", monitor = secondaryMonitor, default = true 
 
 local terminal    = "kitty"
 local fileManager = "pcmanfm"
-local menu        = "wofi --width 750 --height 355 --show drun"
-local clipHistory = "cliphist list | wofi -S dmenu | cliphist decode | wl-copy"
+local menu        = "qs ipc call launcher toggle"
+local clipHistory = "qs ipc call clipboard toggle"
 local browser     = "helium-browser"
 local discord     = "vesktop"
-local btManager   = "bzmenu -l custom --launcher-command 'wofi --show dmenu'"
-local wifiManager = "iwmenu -l custom --launcher-command 'wofi --show dmenu'"
+local btManager   = "qs ipc call settings open bluetooth"
+local wifiManager = "qs ipc call settings open wifi"
 
 local function termRun(cmd) return terminal .. " --title \"" .. cmd .. "\" " .. cmd end
 
