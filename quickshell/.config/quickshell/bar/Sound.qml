@@ -145,12 +145,18 @@ Pill {
 
     readonly property bool muted: audios.length > 0
         && audios.every(a => a.muted)
-    // display the loudest stream so a silent one doesn't halve the readout
+    // display the loudest stream so a silent one doesn't halve the readout.
+    // Computed once and shared by frac/pct — the previous version allocated
+    // two mapped arrays on every volume tick (i.e. on every drag step).
+    readonly property real maxVol: {
+      let m = 0;
+      for (let i = 0; i < audios.length; i++)
+        if (audios[i].volume > m) m = audios[i].volume;
+      return m;
+    }
     readonly property real frac: audios.length
-        ? Math.max(0, Math.min(1.5, Math.max(...audios.map(a => a.volume))) / 1.5)
-        : 0
-    readonly property int pct: audios.length
-        ? Math.round(Math.max(...audios.map(a => a.volume)) * 100) : 0
+        ? Math.max(0, Math.min(1.5, maxVol) / 1.5) : 0
+    readonly property int pct: audios.length ? Math.round(maxVol * 100) : 0
 
     implicitWidth: 34 + 10 + 150 + 10 + 34
     implicitHeight: 28

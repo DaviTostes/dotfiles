@@ -51,14 +51,27 @@ Item {
     pyProc.running = true;
   }
 
+  // Live evaluation spawns python3, so debounce it: typing "123+456" used to
+  // fork a process per keystroke. The result still updates as you pause.
   function liveEval() {
-    // live result while typing
     if (root.expr === "" || !/^[0-9+\-*/(). %]*$/.test(root.expr)) {
       if (root.expr !== "") root.result = "";
+      liveTimer.stop();
       return;
     }
+    liveTimer.restart();
+  }
+
+  function runLiveEval() {
+    if (root.expr === "" || !/^[0-9+\-*/(). %]*$/.test(root.expr)) return;
     liveProc.expr = root.expr;
     liveProc.running = true;
+  }
+
+  Timer {
+    id: liveTimer
+    interval: 160
+    onTriggered: root.runLiveEval()
   }
 
   Process {

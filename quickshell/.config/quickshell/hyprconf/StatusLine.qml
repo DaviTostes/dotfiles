@@ -44,7 +44,10 @@ Row {
         font.family: Theme.font
         font.pixelSize: 11
 
+        // gate the animation: an always-running infinite animation burns a
+        // frame timer even while the (invisible) spinner is off screen
         RotationAnimation on rotation {
+            running: root.spinShown
             loops: Animation.Infinite
             from: 0
             to: 360

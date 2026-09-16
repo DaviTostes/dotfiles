@@ -54,20 +54,33 @@ PopupWindow {
         }
     }
 
-    onVisibleChanged: {
-        if (visible) {
-            anchor.updateAnchor();
-            paperTab.reload();
-            lockTab.reload();
-            idleTab.reload();
-            bluetoothTab.reload();
-            wifiTab.reload();
-            // the bar stores which tab was requested (0 unless the IPC
-            // opened the panel on a specific one)
-            root.tab = Math.max(0, Math.min(root.barWindow.settingsTab, root.tabs.length - 1));
-            HyprSettings.galleryOpen = false;
-        }
+    // The Wi-Fi tab shells out to iwctl (several processes per load). Only
+    // load it when its tab is actually shown, instead of on every dropdown
+    // open regardless of the tab the user is looking at.
+    function loadWifiIfVisible() {
+        if (root.tab === 4) wifiTab.reload();
     }
+
+    onVisibleChanged: {
+        if (!visible) return;
+        anchor.updateAnchor();
+        paperTab.reload();
+        lockTab.reload();
+        idleTab.reload();
+        bluetoothTab.reload();
+        // the bar stores which tab was requested (0 unless the IPC opened
+        // the panel on a specific one)
+        const want = Math.max(0, Math.min(root.barWindow.settingsTab,
+                                          root.tabs.length - 1));
+        const changed = want !== root.tab;
+        root.tab = want;
+        // onTabChanged only fires on an actual change; cover the reopen-on-
+        // the-same-tab case explicitly
+        if (!changed) root.loadWifiIfVisible();
+        HyprSettings.galleryOpen = false;
+    }
+
+    onTabChanged: root.loadWifiIfVisible()
 
     // re-opening on another tab while the dropdown is already visible does
     // not go through onVisibleChanged, so follow the bar's request too

@@ -81,10 +81,13 @@ PopupWindow {
       tip.contentH = implicitHeight;
     }
 
+    // instantiate the content component only while the tip is on screen:
+    // otherwise a heavy tip body (the clock's calendar + notification list)
+    // is built at shell start even though it is never shown
     Loader {
       id: loader
       anchors.centerIn: parent
-      active: tip.content != null
+      active: tip.content != null && tip.visible
       sourceComponent: tip.content
     }
 
