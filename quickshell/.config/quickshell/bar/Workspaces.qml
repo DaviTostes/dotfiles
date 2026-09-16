@@ -11,12 +11,13 @@ Pill {
 
   implicitWidth: wsArea.implicitWidth + 12
 
-  // 0.56 routes hyprctl dispatch through Lua eval, so plain dispatcher
-  // strings fail — focus a workspace via the Lua API instead
+  // 0.56 evaluates the argument of `hyprctl dispatch` as Lua, so legacy
+  // dispatcher strings fail — pass the Lua focus() form instead.
+  // (`hyprctl eval` only evaluates the expression, it does not execute it.)
   Process {
     id: wsProc
     property int target: 0
-    command: ["hyprctl", "eval", "hl.dsp.focus({ workspace = " + target + " })"]
+    command: ["hyprctl", "dispatch", "hl.dsp.focus({ workspace = " + target + " })"]
   }
 
   Item {

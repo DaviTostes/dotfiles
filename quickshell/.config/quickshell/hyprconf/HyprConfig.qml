@@ -15,6 +15,21 @@ PopupWindow {
 
     property int tab: 0
 
+    // Tab names, in the same order as the StackLayout below. The bar's
+    // `settingsTab` lets the IPC (SUPER+SHIFT+B / SUPER+SHIFT+W) open the
+    // dropdown directly on a tab.
+    readonly property var tabs: ["Wallpaper", "Lock Screen", "Idle", "Bluetooth", "Wi-Fi"]
+
+    // Accepts "wifi", "wi-fi", "Wi-Fi", "lock screen", "lockscreen", …
+    function tabIndex(name) {
+        const norm = s => (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        const n = norm(name);
+        for (let i = 0; i < root.tabs.length; i++) {
+            if (norm(root.tabs[i]) === n) return i;
+        }
+        return -1;
+    }
+
     // stays mapped briefly while closing so the fade can play
     visible: root.panelOpen || hideTimer.running
     color: "transparent"
@@ -45,8 +60,21 @@ PopupWindow {
             paperTab.reload();
             lockTab.reload();
             idleTab.reload();
-            root.tab = 0;
+            bluetoothTab.reload();
+            wifiTab.reload();
+            // the bar stores which tab was requested (0 unless the IPC
+            // opened the panel on a specific one)
+            root.tab = Math.max(0, Math.min(root.barWindow.settingsTab, root.tabs.length - 1));
             HyprSettings.galleryOpen = false;
+        }
+    }
+
+    // re-opening on another tab while the dropdown is already visible does
+    // not go through onVisibleChanged, so follow the bar's request too
+    Connections {
+        target: root.barWindow
+        function onSettingsTabChanged() {
+            if (root.panelOpen) root.tab = root.barWindow.settingsTab;
         }
     }
 
@@ -127,7 +155,7 @@ PopupWindow {
                 spacing: 6
 
                 Repeater {
-                    model: ["Wallpaper", "Lock Screen", "Idle"]
+                    model: root.tabs
 
                     TextButton {
                         required property string modelData
@@ -135,6 +163,7 @@ PopupWindow {
 
                         label: modelData
                         accent: root.tab === index
+                        tooltip: ""
                         onClicked: root.tab = index
                     }
                 }
@@ -148,6 +177,8 @@ PopupWindow {
                 PaperTab { id: paperTab; panel: root }
                 LockTab { id: lockTab; panel: root }
                 IdleTab { id: idleTab }
+                BluetoothTab { id: bluetoothTab }
+                WifiTab { id: wifiTab }
             }
         }
 
@@ -159,9 +190,10 @@ PopupWindow {
         Shortcut {
             sequence: "Ctrl+S"
             onActivated: {
+                // only the conf-file tabs have something to save
                 if (root.tab === 0) paperTab.save();
                 else if (root.tab === 1) lockTab.save();
-                else idleTab.save();
+                else if (root.tab === 2) idleTab.save();
             }
         }
     }
