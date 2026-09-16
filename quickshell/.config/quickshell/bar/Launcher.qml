@@ -105,11 +105,19 @@ PanelWindow {
 
   function update() {
     const q = field.text.trim();
+    // resolve frecency once per entry up front: usageRank() reads Date.now()
+    // and the usage map, and the comparators below run O(n log n) times
+    const now = Date.now();
+    const rank = ({});
+    for (let i = 0; i < root.apps.length; i++) {
+      const e = root.apps[i];
+      rank[e.id] = root.usageRank(e, now);
+    }
 
     if (q === "") {
       // no query → frecency: most used first, alphabetical for the rest
       const ranked = root.apps.slice();
-      ranked.sort((a, b) => (root.usageRank(b) - root.usageRank(a))
+      ranked.sort((a, b) => (rank[b.id] - rank[a.id])
                             || a.name.localeCompare(b.name));
       root.results = ranked.slice(0, root.maxResults);
       root.selected = 0;
@@ -124,7 +132,7 @@ PanelWindow {
       // usage is a capped bonus, not a replacement for match quality: it
       // breaks ties between similar matches without letting a stale
       // favourite jump over a much better one
-      if (s > 0) hits.push({ s: s + Math.min(root.usageRank(e), 15), e: e });
+      if (s > 0) hits.push({ s: s + Math.min(rank[e.id], 15), e: e });
     }
     hits.sort((a, b) => b.s - a.s);
 
@@ -140,12 +148,14 @@ PanelWindow {
 
   // Launch count (capped) plus a recency bonus. 0..15, so it can reorder
   // the list but never outweigh a clearly better match.
-  function usageRank(entry) {
+  // `now` is passed in by update() so a whole ranking pass shares one clock
+  // read instead of calling Date.now() inside a sort comparator
+  function usageRank(entry, now) {
     const u = entry ? root.usage[entry.id] : null;
     if (!u) return 0;
 
     const day = 86400000;
-    const age = Math.max(Date.now() - (u.t || 0), 0);
+    const age = Math.max((now === undefined ? Date.now() : now) - (u.t || 0), 0);
     const recency = age < day ? 3
                   : age < 7 * day ? 2
                   : age < 30 * day ? 1 : 0;

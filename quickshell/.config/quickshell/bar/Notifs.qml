@@ -27,6 +27,12 @@ Item {
   // hiddenTick re-evaluates toastList when the (plain) object is mutated
   readonly property var hiddenIds: ({})
   property int hiddenTick: 0
+
+  // Last opencode event id that produced a "turn finished" desktop
+  // notification. Each monitor has its own opencode panel and they all see
+  // the same SSE events, so this shared marker keeps the notification from
+  // firing once per bar.
+  property string lastOpencodeDoneEvent: ""
   readonly property var toastList: {
     root.hiddenTick;
     return server.trackedNotifications.values.filter(n => !root.hiddenIds[n.id]);

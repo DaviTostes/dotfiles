@@ -22,7 +22,8 @@ import "../hyprconf"
 //
 // API map (v2, discovered via GET /openapi.json):
 //   GET  /api/health                              service up?
-//   GET  /api/session                             list (newest first)
+//   GET  /api/session?parentID=null               root sessions (newest first)
+//   GET  /api/session/active                      { sessionID: {type} } running
 //   POST /api/session                             new chat
 //   GET  /api/session/{id}/message                history
 //   POST /api/session/{id}/prompt  {text, files}  send (files = @-mentions)
@@ -60,13 +61,17 @@ Pill {
   // ---------- chat state ----------
   property var session: null      // Session.Info or null
   property var sessionList: []
+  property var activeSessions: ({})  // sessionID -> true while a turn is running
+  property bool newChatPending: false  // "+" pressed, session not created yet
   property var agents: []
   property var models: []
   property var commands: []
   property var fileHits: []       // @-mention finder hits: {path, type}
   property int fileSel: 0         // keyboard-selected finder hit
   property int finderSeq: 0       // guards against out-of-order finder replies
+  property string finderQuery: "" // latest @-token, requested after a debounce
   property var pendingImages: []  // clipboard images awaiting send: {name, b64}
+  property int imageSeq: 0        // monotonic, so chip names never collide
   property bool pasteFallbackText: true  // Ctrl+V falls back to text paste
   property var pendingForms: []   // pending select-questions (Form.Info)
   property var formAnswers: ({})  // formID -> { fieldKey: answer }
@@ -89,6 +94,21 @@ Pill {
   property real lastDeltaMs: 0            // last streaming token received
   property bool clearBusyNextLoad: false  // panel (re)opened: all-complete ⇒ idle
   property bool rebuilding: false         // chatModel rebuild in progress (guards scroll state)
+  property bool chatLoading: false        // switching chats: history still arriving
+  property var rebuildQueue: []            // chunked structural rebuild (see startRebuild)
+  property int rebuildAt: 0
+  readonly property int rebuildChunkSize: 8  // delegates built per frame
+  // chatModel row index: "key|kind" -> row. The model is append-only between
+  // rebuilds, so this stays valid and turns the streaming hot path (flush /
+  // applyEnded) from an O(n) row scan into an O(1) lookup.
+  property var modelKeyMap: ({})
+  property var modelKeys: []               // row -> "key|kind" (mirrors the model)
+  property var textByKey: ({})             // "key|kind" -> text, guards against shrink
+  // rendered-markdown memo: session switches / rebuilds recreate delegates
+  // with identical text, so the expensive parse is done once per text
+  property var mdCache: ({})
+  property var mdCacheOrder: []
+  readonly property int mdCacheMax: 128
 
   // the message TextEdit that last got a mouse selection — Ctrl+C is
   // pressed on the BAR's hidden input (it owns the keyboard), which
@@ -106,6 +126,7 @@ Pill {
   // The watchdog restarts the stream if no bytes (not even the
   // ": heartbeat") arrive for 30s.
   property bool streamLive: false
+  property int streamFails: 0     // consecutive failed connects while closed
   property string sseBuf: ""
   property string rawBuf: ""
 
@@ -129,6 +150,9 @@ Pill {
       if (cb) cb(ok, data, x.status);
     };
     x.open(method, root.svcUrl + path);
+    // a hung request must not wedge `sending` forever — XHR fires
+    // readyState 4 (status 0) on timeout, which is handled like a failure
+    x.timeout = 20000;
     x.setRequestHeader("Authorization", "Basic " + Qt.btoa("opencode:" + root.svcPw));
     x.setRequestHeader("Content-Type", "application/json");
     x.send(body === null ? null : JSON.stringify(body));
@@ -136,7 +160,7 @@ Pill {
 
   // ---------- SSE stream ----------
   function connectStream() {
-    if (root.svcUrl === "" || !root.panelOpen) return;
+    if (root.svcUrl === "" || !root.svcUp || sseProc.running) return;
     root.sseBuf = "";
     root.rawBuf = "";
     sseProc.command = [
@@ -149,26 +173,25 @@ Pill {
     root.streamLive = true;
   }
 
+  // the stream is intentionally not torn down when the panel closes (it
+  // drives "turn finished" notifications); this only bounces a dead one
   function restartStream() {
     sseProc.running = false;
     connectStream();
-  }
-
-  function stopStream() {
-    sseProc.running = false;
-    root.streamLive = false;
   }
 
   function streamLine(chunk) {
     watchdog.restart();
     // SplitParser's segments are not reliably newline-aligned (chunks can
     // contain or start mid-line), so re-frame lines here from raw chunks.
+    // One split instead of repeated indexOf+slice keeps this cheap under the
+    // token-rate delta stream.
     root.rawBuf += chunk;
-    let nl;
-    while ((nl = root.rawBuf.indexOf("\n")) !== -1) {
-      const line = root.rawBuf.slice(0, nl).replace(/\r$/, "");
-      root.rawBuf = root.rawBuf.slice(nl + 1);
-      root.sseLine(line);
+    const parts = root.rawBuf.split("\n");
+    root.rawBuf = parts.pop();          // trailing partial line, if any
+    for (let i = 0; i < parts.length; i++) {
+      const line = parts[i];
+      root.sseLine(line.endsWith("\r") ? line.slice(0, -1) : line);
     }
   }
 
@@ -201,8 +224,22 @@ Pill {
     }
 
     onExited: {
+      // flush a final event that arrived without a trailing line
+      root.dispatchSse();
       root.streamLive = false;
-      if (root.panelOpen && root.svcUp) streamRetry.restart();
+      if (!root.svcUp) return;
+      // the stream is no longer tied to panel visibility (it feeds background
+      // notifications), so reconnect while the service is up
+      if (root.panelOpen) {
+        root.streamFails = 0;
+        streamRetry.restart();
+        return;
+      }
+      // while closed, bound the reconnect loop so a server that accepts
+      // connections but drops them cannot hammer it forever
+      root.streamFails += 1;
+      if (root.streamFails > 10) return;
+      retryTimer.restart();
     }
   }
 
@@ -211,12 +248,16 @@ Pill {
     const d = ev.data || {};
     const mine = d.sessionID === sid;
     switch (ev.type) {
-      // token-level chunks — applied directly, no reload
+      // token-level chunks — applied directly, no reload. Skipped while the
+      // panel is closed: the delegate bindings still run (the popup content
+      // exists) so every flush would re-parse live markdown for something
+      // nobody sees. The final text arrives via *.ended and the history is
+      // reloaded on open.
       case "session.text.delta":
-        if (mine) applyDelta(d, "assistant");
+        if (mine && root.panelOpen) applyDelta(d, "assistant");
         return;
       case "session.reasoning.delta":
-        if (mine) applyDelta(d, "reasoning");
+        if (mine && root.panelOpen) applyDelta(d, "reasoning");
         return;
       // part finalized: the FULL text rides in the event itself — apply it
       // directly (the GET /message reload lags the stream and would drop
@@ -242,13 +283,23 @@ Pill {
           if (d.finish && d.finish !== "tool-calls") {
             root.busy = false;
             root.execEndMs = Date.now();
-            // ping the desktop whenever a turn ends, panel open or not
-            root.notifyDone(false);
+            // ping the desktop only when the panel is CLOSED (while it is
+            // open you can see the turn finish — a popup is just noise)
+            if (!root.panelOpen) root.notifyDone(false, ev.id);
           } else {
             root.busy = true;
           }
           refreshSoon();
         }
+        // a step ending is the cheapest signal to refresh the running dots —
+        // only useful while they are on screen
+        if (root.panelOpen) root.loadActive();
+        return;
+      // a failed step may not be followed by a step.ended — clear busy here
+      // so the turn cannot wedge the input disabled
+      case "session.step.failed":
+        if (mine) { root.busy = false; root.execEndMs = Date.now(); refreshSoon(); }
+        if (root.panelOpen) root.loadActive();
         return;
       case "session.execution.started":
         if (mine) { root.busy = true; root.turnStartMs = Date.now(); }
@@ -268,13 +319,30 @@ Pill {
           const msg = typeof e === "string" ? e
               : (e && (e.message || e.name)) || "";
           root.error = msg !== "" ? msg : "model error";
-          root.notifyDone(true);
+          if (!root.panelOpen) root.notifyDone(true, ev.id);
           refreshSoon();
         }
         return;
       case "session.inbox.enqueued":
       case "session.inbox.delivered":
         if (mine) refreshSoon();
+        return;
+      // the session list itself changed (created elsewhere, moved, deleted,
+      // gone idle) — refetch it so the sessions menu never goes stale
+      case "session.created":
+      case "session.deleted":
+      case "session.moved":
+      case "session.forked":
+        // the picker is only on screen with the panel; opening refreshes it
+        if (root.panelOpen) root.loadSession();
+        return;
+      case "session.idle":
+      case "session.active":
+        if (root.panelOpen) root.loadActive();
+        return;
+      case "session.agent.selected":
+      case "session.model.selected":
+        if (mine) { root.loadSessionInfo(); refreshSoon(); }
         return;
       case "permission.asked":
         root.loadPerms();
@@ -294,6 +362,7 @@ Pill {
         return;
       case "server.connected":
         root.streamLive = true;
+        root.streamFails = 0;
         return;
     }
     // everything else belonging to this session (tool lifecycle, errors,
@@ -325,21 +394,22 @@ Pill {
     if (!d || typeof d.text !== "string") return;
     const key = (d.assistantMessageID || "") + ":"
         + (kind === "reasoning" ? "reasoning" : "text") + ":" + (d.ordinal || 0);
-    delete root.pendingDeltas[key + "|" + kind];
-    for (let i = 0; i < chatModel.count; i++) {
-      const it = chatModel.get(i);
-      if (it.key !== key || it.kind !== kind) continue;
-      if (d.text.length >= it.text.length) {
+    const k = key + "|" + kind;
+    delete root.pendingDeltas[k];
+    const i = root.modelIndex(key, kind);
+    if (i >= 0) {
+      // never let the authoritative full text shrink what is on screen
+      if (d.text.length >= (root.textByKey[k] || "").length) {
+        root.textByKey[k] = d.text;
         chatModel.setProperty(i, "text", d.text);
       }
       chatModel.setProperty(i, "live", false);
-      if (chatView.pinned) Qt.callLater(chatView.stick);
-      return;
+    } else {
+      // part was never streamed to us — add it settled
+      root.modelAppend({ key: key, kind: kind, text: d.text,
+                         name: "", state: "", toolIn: "", toolOut: "",
+                         diff: "", live: false });
     }
-    // part was never streamed to us — add it settled
-    chatModel.append({ key: key, kind: kind, text: d.text,
-                       name: "", state: "", toolIn: "", toolOut: "",
-                       diff: "", live: false });
     if (chatView.pinned) Qt.callLater(chatView.stick);
   }
 
@@ -351,18 +421,15 @@ Pill {
       const sep = mapKey.lastIndexOf("|");
       const key = mapKey.slice(0, sep);
       const kind = mapKey.slice(sep + 1);
-      const text = pend[mapKey];
-      let found = false;
-      for (let i = 0; i < chatModel.count; i++) {
-        const it = chatModel.get(i);
-        if (it.key !== key || it.kind !== kind) continue;
-        chatModel.setProperty(i, "text", it.text + text);
+      const add = pend[mapKey];
+      const i = root.modelIndex(key, kind);
+      if (i >= 0) {
+        const t = (root.textByKey[mapKey] || "") + add;
+        root.textByKey[mapKey] = t;
+        chatModel.setProperty(i, "text", t);
         chatModel.setProperty(i, "live", true);
-        found = true;
-        break;
-      }
-      if (!found) {
-        chatModel.append({ key: key, kind: kind, text: text,
+      } else {
+        root.modelAppend({ key: key, kind: kind, text: add,
                            name: "", state: "", toolIn: "", toolOut: "",
                            diff: "", live: true });
       }
@@ -382,7 +449,109 @@ Pill {
     }
   }
 
-  function refreshSoon() { refreshTimer.restart(); }
+  // ---------- model index ----------
+  // All appends/clears go through here so the key index and text map stay in
+  // lockstep with the ListModel.
+  function modelAppend(d) {
+    const k = d.key + "|" + d.kind;
+    root.modelKeyMap[k] = root.modelKeys.length;
+    root.modelKeys.push(k);
+    root.textByKey[k] = d.text === undefined ? "" : d.text;
+    chatModel.append(d);
+  }
+
+  function modelClear() {
+    chatModel.clear();
+    root.modelKeyMap = ({});
+    root.modelKeys = [];
+    root.textByKey = ({});
+    // deltas queued for the model being dropped must not flush into the
+    // replacement (they would append the old chat's tokens as new rows)
+    root.pendingDeltas = ({});
+  }
+
+  function modelIndex(key, kind) {
+    const i = root.modelKeyMap[key + "|" + kind];
+    return i === undefined ? -1 : i;
+  }
+
+  // ---------- chunked structural rebuild ----------
+  // A session switch (or any reorder) replaces the whole model. Doing
+  // clear() + append(everything) in one call makes Qt create every delegate
+  // and parse every markdown block on the main thread in a single frame:
+  // animations freeze and the chat then pops in fully formed. Appending in
+  // small batches across frames keeps the event loop responsive.
+  function startRebuild(items) {
+    root.modelClear();
+    root.startAppend(items);
+    if (items.length === 0) root.chatLoading = false;
+  }
+
+  // append-only variant (new messages / a large tail): no clear, so the
+  // already-visible history is not re-created
+  function startAppend(items) {
+    root.rebuildQueue = items;
+    root.rebuildAt = 0;
+    if (items.length === 0) { root.rebuilding = false; return; }
+    rebuildTimer.running = true;
+  }
+
+  function rebuildChunk() {
+    const q = root.rebuildQueue;
+    let n = 0;
+    while (root.rebuildAt < q.length && n < root.rebuildChunkSize) {
+      root.modelAppend(q[root.rebuildAt]);
+      root.rebuildAt += 1;
+      n += 1;
+    }
+    if (root.rebuildAt >= q.length) {
+      rebuildTimer.running = false;
+      root.rebuildQueue = [];
+      root.rebuilding = false;
+      root.chatLoading = false;
+      if (chatView.pinned) Qt.callLater(chatView.stick);
+    }
+  }
+
+  // interval 1ms (not 0) so the render pass gets a chance between batches
+  Timer {
+    id: rebuildTimer
+    interval: 1
+    repeat: true
+    onTriggered: root.rebuildChunk()
+  }
+
+  // coalesced server reload. While the panel is closed there is nothing to
+  // repaint and deltas still land on the model, so the reload is skipped —
+  // a full reload happens on the next open anyway.
+  function refreshSoon() { if (root.panelOpen) refreshTimer.restart(); }
+
+  // everything the panel must do when it becomes (or stays) visible. Called
+  // from onPanelOpenChanged, NOT from PopupWindow.onVisibleChanged, so a
+  // rapid close→reopen still reconnects: `visible` never dropped to false,
+  // but panelOpen did change.
+  function panelShown() {
+    // the BAR window holds compositor keyboard focus (its OnDemand grab was
+    // taken by the pill's click) — focus the hidden TextInput that lives
+    // there; the popup's field mirrors its text (see hiddenInput).
+    // Re-asserted shortly after, once the keyboard mode change and map have
+    // settled.
+    hiddenInput.forceActiveFocus();
+    refocusTimer.restart();
+    root.streamFails = 0;      // reopening the panel re-arms background retries
+    if (root.svcUp) root.connectStream();
+    // events missed while closed may not have been reconciled — reload now
+    // (also reconciles a stale `busy` via loadMessages)
+    root.lastChangeMs = Date.now();
+    root.clearBusyNextLoad = true;
+    root.loadSession();
+    root.loadExtras();       // agents/models/commands may have appeared
+    root.loadMessages();
+    root.loadPerms();
+    root.loadForms();
+    root.loadSessionInfo();
+    activePoll.restart();
+  }
 
   Timer {
     id: refocusTimer
@@ -411,6 +580,16 @@ Pill {
     onTriggered: root.connectStream()
   }
 
+  // while the panel is open, poll the set of running sessions so the
+  // sessions menu can show which agents are working (SSE step events also
+  // refresh it, this just covers missed/replayed events)
+  Timer {
+    id: activePoll
+    interval: 4000
+    repeat: true
+    onTriggered: root.loadActive()
+  }
+
   // no bytes at all (not even the heartbeat) for 30s → restart the stream.
   // Must be well above the server's heartbeat interval.
   Timer {
@@ -425,8 +604,10 @@ Pill {
     readService();
   }
 
-  // (re)read service.json and health-check — also the respawn path,
-  // driven by retryTimer
+  // read the already-loaded service.json and health-check. The file itself
+  // is (re)loaded by svcFile (watchChanges) and retryTimer via reload() —
+  // text() alone returns the cached copy, so a restarted service would keep
+  // the stale port/password forever.
   function readService() {
     try {
       const svc = JSON.parse(svcFile.text());
@@ -441,6 +622,7 @@ Pill {
     api("GET", "/api/health", null, ok => {
       if (ok) {
         root.svcUp = true;
+        root.svcTries = 0;         // recovered: allow future respawns again
         root.error = "";
         loadSession();
         loadExtras();
@@ -467,45 +649,118 @@ Pill {
     path: Quickshell.env("HOME") + "/.local/state/opencode/service.json"
     blockAllReads: true
     preload: true
+    // the service rewrites this file on every (re)start with a new port and
+    // password — watch it so the widget reconnects instead of talking to
+    // the dead server forever
+    watchChanges: true
     onLoaded: root.readService()
     onLoadFailed: root.checkService()
+    onFileChanged: svcFile.reload()
   }
 
   Timer {
     id: retryTimer
     interval: 1200
-    onTriggered: root.readService()
+    // reload() forces a fresh disk read; its onLoaded then runs readService()
+    onTriggered: svcFile.reload()
   }
 
   // ---------- data loaders ----------
+  // one place owns the session list + the running-session map; it runs on
+  // service connect, on panel open and whenever the server reports the list
+  // changed (session.created/moved/deleted). `parentID=null` keeps subagent
+  // child sessions out of the picker — they are not chats you pick.
   function loadSession() {
-    api("GET", "/api/session?limit=20", null, (ok, data) => {
-      if (!ok || !data || !data.data) return;
-      root.sessionList = data.data;
-      // remember the model/agent last used anywhere — new chats start
-      // with them instead of showing the placeholder chips
-      for (const s of data.data) {
-        if (!root.lastModel && s.model) root.lastModel = s.model;
-        if (root.lastAgent === "" && s.agent) root.lastAgent = s.agent;
-        if (root.lastModel && root.lastAgent !== "") break;
-      }
-      if (root.session) return;      // already chatting
-      // continue the latest session of this directory (opencode2 --continue)
-      const here = data.data.filter(s =>
-        s.location && s.location.directory === Quickshell.env("HOME"));
-      root.session = (here.length ? here : data.data)[0] || null;
-      root.loadMessages();
-      root.loadPerms();
-      root.loadForms();
+    api("GET", "/api/session/active", null, (okA, a) => {
+      root.activeSessions = (okA && a && a.data) ? a.data : {};
+      api("GET", "/api/session?limit=30&parentID=null", null, (ok, data) => {
+        if (!ok || !data || !data.data) return;
+        root.sessionList = data.data;
+        // remember the model/agent last used anywhere — new chats start
+        // with them instead of showing the placeholder chips
+        for (const s of data.data) {
+          if (!root.lastModel && s.model) root.lastModel = s.model;
+          if (root.lastAgent === "" && s.agent) root.lastAgent = s.agent;
+          if (root.lastModel && root.lastAgent !== "") break;
+        }
+        // already chatting (or a "+" is pending): never yank the view
+        if (root.session || root.newChatPending) return;
+        root.session = root.pickSession(data.data);
+        root.chatLoading = root.session !== null;
+        chatView.pinned = true;
+        root.resetTurnState();
+        root.loadMessages();
+        root.loadPerms();
+        root.loadForms();
+        root.loadSessionInfo();
+      });
     });
+  }
+
+  // which chat to open when the panel has no session yet: the one actually
+  // running, else the newest of this directory, else the newest overall
+  function pickSession(list) {
+    if (!list || list.length === 0) return null;
+    const active = root.activeSessions || ({});
+    for (const s of list) if (active[s.id] !== undefined) return s;
+    const here = list.filter(s =>
+      s.location && s.location.directory === Quickshell.env("HOME"));
+    return (here.length ? here : list)[0] || null;
+  }
+
+  // just the running map — polled while the panel is open and refreshed on
+  // every step boundary, so the sessions menu can show who is working
+  function loadActive() {
+    api("GET", "/api/session/active", null, (ok, d) => {
+      if (ok && d && d.data) root.activeSessions = d.data;
+    });
+  }
+
+  // wipe everything tied to "the turn currently in flight". Called whenever
+  // the displayed session changes — otherwise a turn in flight on session A
+  // keeps the pill green, shows "thinking…" and disables input on session B
+  function resetTurnState() {
+    root.busy = false;
+    root.sending = false;
+    root.error = "";
+    root.turnStartMs = 0;
+    root.execEndMs = 0;
+    root.lastChangeMs = Date.now();
+    root.prevTopKey = "";
+    root.clearBusyNextLoad = false;
+  }
+
+  // untitled sessions are common (integrations, never-used new chats);
+  // never render the raw ses_… id in the picker
+  function sessionLabel(s) {
+    if (!s) return "opencode";
+    if (s.title) return s.title;
+    const base = root.locationLabel(s);
+    return base ? "novo chat · " + base : "novo chat";
+  }
+
+  // a short, human location for an untitled session: last path segment of
+  // subpath/directory, skipping a bare numeric segment (nvim's
+  // /tmp/nvim.<user>/<hash>/0 should read "nvim.<user>", not "0")
+  function locationLabel(s) {
+    const loc = s.location || {};
+    const parts = (s.subpath || loc.directory || "")
+        .replace(/\/+$/, "").split("/").filter(x => x !== "");
+    let last = parts[parts.length - 1] || "";
+    if (/^\d+$/.test(last) && parts.length > 1) last = parts[parts.length - 2];
+    return last;
   }
 
   // refresh the open session's live fields (title, cost, model, agent) —
   // the server re-titles the session after the first prompt
   function loadSessionInfo() {
     if (!root.session) return;
-    api("GET", "/api/session/" + root.session.id, null, (ok, d) => {
-      if (ok && d && d.data) root.session = d.data;
+    const sid = root.session.id;
+    api("GET", "/api/session/" + sid, null, (ok, d) => {
+      // a slow reply from the previous session must not overwrite the one
+      // the user just switched to
+      if (ok && d && d.data && root.session && root.session.id === sid)
+        root.session = d.data;
     });
   }
 
@@ -533,6 +788,15 @@ Pill {
         .filter(c => c.type === "text" && (c.text || "") !== "")
         .map(c => c.text).join("\n");
     return "";
+  }
+
+  // pretty-print a tool's input only on demand: the model stores the raw
+  // object and this runs when the fold-out is opened, not on every reload
+  // (JSON.stringify of every tool input on every reload added up)
+  function toolInputText(v) {
+    if (v === null || v === undefined || v === "") return "";
+    if (typeof v === "string") return v;
+    try { return JSON.stringify(v, null, 1); } catch (e) { return ""; }
   }
 
   // cap a joined unified diff, keeping whole lines
@@ -623,7 +887,25 @@ Pill {
          + "</td></tr></table>";
   }
 
-  function renderMarkdown(md) {
+  // Memoized wrapper. The parser is called from a per-delegate binding and
+  // would otherwise re-run every time a delegate is re-created (session
+  // switch, chunked rebuild). `useCache === false` is for live/streaming
+  // text, whose every intermediate value is unique and would only churn the
+  // cache — settled text is cached and reused on rebuilds.
+  function renderMarkdown(md, useCache) {
+    if (!md) return "";
+    if (useCache === false) return root.renderMarkdownUncached(md);
+    const hit = root.mdCache[md];
+    if (hit !== undefined) return hit;
+    const html = root.renderMarkdownUncached(md);
+    root.mdCache[md] = html;
+    root.mdCacheOrder.push(md);
+    if (root.mdCacheOrder.length > root.mdCacheMax)
+      delete root.mdCache[root.mdCacheOrder.shift()];
+    return html;
+  }
+
+  function renderMarkdownUncached(md) {
     if (!md) return "";
     md = md.replace(/\r\n?/g, "\n");
     const lines = md.split("\n");
@@ -635,9 +917,10 @@ Pill {
       if (fence) {
         const marker = fence[1][0];
         const code = [];
+        // compile the closing-fence matcher once, not once per code line
+        const closeRe = new RegExp("^\\s*" + marker + "{3,}\\s*$");
         i++;
-        while (i < lines.length
-               && !new RegExp("^\\s*" + marker + "{3,}\\s*$").test(lines[i])) {
+        while (i < lines.length && !closeRe.test(lines[i])) {
           code.push(lines[i]); i++;
         }
         i++;
@@ -739,7 +1022,13 @@ Pill {
   // (so the server never has to resize it) and kept as base64 until send.
   function addPendingImage(b64) {
     const imgs = root.pendingImages.slice();
-    imgs.push({ name: "clipboard-" + (imgs.length + 1) + ".png", b64: b64 });
+    // a monotonic counter, not imgs.length: removing a chip would otherwise
+    // reuse a name and produce duplicate entries
+    root.imageSeq += 1;
+    // build the data URI once: the chip's Image binding would otherwise
+    // rebuild the whole base64 string on every re-evaluation
+    imgs.push({ name: "clipboard-" + root.imageSeq + ".png", b64: b64,
+                uri: "data:image/png;base64," + b64 });
     root.pendingImages = imgs;
   }
 
@@ -749,7 +1038,7 @@ Pill {
     root.pendingImages = imgs;
   }
 
-  function imageUri(img) { return "data:image/png;base64," + img.b64; }
+  function imageUri(img) { return img.uri || ("data:image/png;base64," + img.b64); }
 
   function pasteFromClipboard(fallbackText) {
     root.pasteFallbackText = fallbackText !== false;
@@ -758,18 +1047,26 @@ Pill {
   }
 
   // desktop notification for a turn that ends while the panel is closed —
-  // the only way to learn the job finished without reopening it
-  function notifyDone(isErr) {
+  // the only way to learn the job finished without reopening it. `evId` is
+  // the SSE event id: every monitor's panel receives the same event, so the
+  // shared marker in the Notifs singleton keeps it to a single notification.
+  function notifyDone(isErr, evId) {
+    if (evId !== undefined && evId !== "") {
+      if (Notifs.lastOpencodeDoneEvent === evId) return;
+      Notifs.lastOpencodeDoneEvent = evId;
+    }
     const title = isErr ? "opencode — erro"
         : "opencode — " + ((root.session && root.session.title) || "turn complete");
     let body = isErr ? root.error : "";
     if (!isErr) {
       // tail of the newest assistant text (text.ended arrived first, so it
-      // is already in the model)
-      for (let i = chatModel.count - 1; i >= 0; i--) {
-        const it = chatModel.get(i);
-        if (it.kind === "assistant" && it.text !== "") {
-          body = it.text.length > 120 ? "…" + it.text.slice(-120) : it.text;
+      // is already in the model). Walk the key index — no per-row get().
+      for (let i = root.modelKeys.length - 1; i >= 0; i--) {
+        const k = root.modelKeys[i];
+        if (!k.endsWith("|assistant")) continue;
+        const t = root.textByKey[k] || "";
+        if (t !== "") {
+          body = t.length > 120 ? "…" + t.slice(-120) : t;
           break;
         }
       }
@@ -782,27 +1079,37 @@ Pill {
 
   function loadMessages() {
     if (!root.session) return;
-    api("GET", "/api/session/" + root.session.id + "/message", null, (ok, data) => {
-      if (!ok || !data || !data.data) return;
+    const sid = root.session.id;
+    api("GET", "/api/session/" + sid + "/message", null, (ok, data, status) => {
+      // the displayed session was deleted elsewhere (TUI, another panel):
+      // drop it and let loadSession pick a live one instead of showing a
+      // permanently frozen history
+      if (status === 404 && root.session && root.session.id === sid) {
+        root.session = null;
+        root.modelClear();
+        root.resetTurnState();
+        root.loadSession();
+        return;
+      }
+      if (!ok || !data || !data.data) { root.chatLoading = false; return; }
+      if (!root.session || root.session.id !== sid) return;  // switched mid-flight
       const wasPinned = chatView.pinned;
       // rebuild atomically: intermediate contentHeight collapses clamp
       // contentY and would clobber the pinned/scroll state mid-rebuild
       root.rebuilding = true;
+      let deferred = false;   // structural rebuild handed to rebuildTimer
       try {
-      // the API returns messages newest-first; chat order is oldest-first
+      // the API returns messages newest-first; chat order is oldest-first.
+      // Walk it backwards instead of copying + reversing the whole array.
       const raw = data.data;
-      const ms = raw.slice().reverse();
-      // snapshot the current items: the API copy can lag the live deltas,
-      // so streamed text must never shrink
-      const prev = {};
-      for (let i = 0; i < chatModel.count; i++) {
-        const it = chatModel.get(i);
-        prev[it.key + "|" + it.kind] = it.text;
-      }
+      // streamed text must never shrink (the API copy can lag the live
+      // deltas): root.textByKey mirrors the model's text, so it is read
+      // directly instead of snapshotting every row on each reload
 
       // build the desired item list WITHOUT touching the model
       const desired = [];
-      for (const m of ms) {
+      for (let mi = raw.length - 1; mi >= 0; mi--) {
+        const m = raw[mi];
         if (m.type === "user") {
           desired.push({ key: m.id, kind: "user", text: m.text || "",
                          name: "", state: "", toolIn: "", toolOut: "",
@@ -822,15 +1129,15 @@ Pill {
             const key = m.id + ":" + c.type + ":" + (counts[c.type] - 1);
             if (c.type === "text" && (c.text || "").trim() !== "") {
               const k = key + "|assistant";
-              const t = (c.text || "").length >= (prev[k] || "").length
-                  ? c.text : prev[k];
+              const t = (c.text || "").length >= (root.textByKey[k] || "").length
+                  ? c.text : root.textByKey[k];
               desired.push({ key: key, kind: "assistant", text: t,
                              name: "", state: "", toolIn: "", toolOut: "",
                              diff: "", live: !done });
             } else if (c.type === "reasoning") {
               const k = key + "|reasoning";
-              const t = (c.text || "").length >= (prev[k] || "").length
-                  ? (c.text || "") : (prev[k] || "");
+              const t = (c.text || "").length >= (root.textByKey[k] || "").length
+                  ? (c.text || "") : (root.textByKey[k] || "");
               desired.push({ key: key, kind: "reasoning", text: t,
                              name: "", state: "", toolIn: "", toolOut: "",
                              diff: "", live: !done });
@@ -851,7 +1158,9 @@ Pill {
               desired.push({
                 key: key, kind: "tool", name: name,
                 state: (st.status || "") + (st.title ? " · " + st.title : running ? " · running…" : ""),
-                toolIn: st.input ? JSON.stringify(st.input, null, 1) : "",
+                // keep the raw input; it is only pretty-printed when the
+                // fold-out is actually opened (see toolInputText)
+                toolIn: st.input || null,
                 toolOut: toolOutText(st),
                 diff: diff,
                 live: false
@@ -861,25 +1170,42 @@ Pill {
         }
       }
 
+      // a load that arrives mid chunked-rebuild supersedes it: the partial
+      // model is not a safe prefix (appending in place would duplicate), so
+      // cancel and rebuild from scratch below
+      const wasBuilding = rebuildTimer.running;
+      if (wasBuilding) {
+        rebuildTimer.running = false;
+        root.rebuildQueue = [];
+        root.rebuildAt = 0;
+      }
+
       // apply with the smallest possible surgery: destroying delegates
       // re-creates and re-parses every markdown text — visible flicker.
       // Same shape → field updates in place; new parts → append-only;
       // full rebuild only on structural changes (session switch, reorder).
-      const n = Math.min(chatModel.count, desired.length);
+      const n = wasBuilding ? 0 : Math.min(chatModel.count, desired.length);
       let prefix = 0;
       for (; prefix < n; prefix++) {
         const it = chatModel.get(prefix);
         if (it.key !== desired[prefix].key || it.kind !== desired[prefix].kind) break;
       }
 
-      if (prefix === chatModel.count || prefix === desired.length) {
-        // shape preserved: update in place; trailing streamed extras not
-        // persisted yet simply stay (they merge in on a later reload)
+      const inPlace = !wasBuilding
+          && (prefix === chatModel.count || prefix === desired.length);
+      const tail = inPlace ? desired.slice(prefix) : desired;
+
+      if (inPlace) {
+        // shape preserved: update the common prefix in place; trailing
+        // streamed extras not persisted yet simply stay (merged later)
         const upto = Math.min(chatModel.count, desired.length);
         for (let i = 0; i < upto; i++) {
           const d = desired[i];
           const it = chatModel.get(i);
-          if (it.text !== d.text) chatModel.setProperty(i, "text", d.text);
+          if (it.text !== d.text) {
+            chatModel.setProperty(i, "text", d.text);
+            root.textByKey[d.key + "|" + d.kind] = d.text;
+          }
           if (it.name !== d.name) chatModel.setProperty(i, "name", d.name);
           if (it.state !== d.state) chatModel.setProperty(i, "state", d.state);
           if (it.toolIn !== d.toolIn) chatModel.setProperty(i, "toolIn", d.toolIn);
@@ -888,11 +1214,21 @@ Pill {
           // `live` only ever settles true → false (part finished)
           if (it.live && !d.live) chatModel.setProperty(i, "live", false);
         }
-        for (let i = chatModel.count; i < desired.length; i++)
-          chatModel.append(desired[i]);
+        if (tail.length > root.rebuildChunkSize) {
+          // a large tail is appended across frames, not in one blocking loop.
+          // This only grows the content, so `rebuilding` is left clear and
+          // `pinned` keeps tracking the user's scroll during the append.
+          root.startAppend(tail);
+        } else {
+          for (const d of tail) root.modelAppend(d);
+          root.chatLoading = false;
+        }
       } else {
-        chatModel.clear();
-        for (const d of desired) chatModel.append(d);
+        // different shape (session switch / reorder) or a superseded rebuild:
+        // clear and rebuild across frames, hidden behind the loading state
+        if (!wasBuilding) root.chatLoading = true;
+        root.startRebuild(desired);
+        deferred = true;
       }
 
       // busy reconciliation: an incomplete assistant message anywhere means
@@ -920,7 +1256,11 @@ Pill {
       } catch (e) {
         // never swallow a failed rebuild silently — it halves the chat
         console.warn("chat rebuild failed:", e);
-      } finally { root.rebuilding = false; }
+        root.chatLoading = false;
+      } finally {
+        // a deferred rebuild keeps `rebuilding` set until rebuildChunk ends
+        if (!deferred) root.rebuilding = false;
+      }
       // restore the scroll exactly where the rebuild found it
       chatView.pinned = wasPinned;
       if (wasPinned) Qt.callLater(chatView.stick);
@@ -929,7 +1269,9 @@ Pill {
 
   function loadPerms() {
     if (!root.session) return;
-    api("GET", "/api/session/" + root.session.id + "/permission", null, (ok, data) => {
+    const sid = root.session.id;
+    api("GET", "/api/session/" + sid + "/permission", null, (ok, data) => {
+      if (!root.session || root.session.id !== sid) return;  // switched
       root.pendingPerm = (ok && data && data.data && data.data.length)
           ? data.data[data.data.length - 1] : null;
     });
@@ -948,7 +1290,9 @@ Pill {
   // turn waits forever. Forms carry fields with options (single/multi).
   function loadForms() {
     if (!root.session) return;
-    api("GET", "/api/session/" + root.session.id + "/form", null, (ok, data) => {
+    const sid = root.session.id;
+    api("GET", "/api/session/" + sid + "/form", null, (ok, data) => {
+      if (!root.session || root.session.id !== sid) return;  // switched
       const list = (ok && data && data.data) ? data.data : [];
       root.pendingForms = list;
       // seed/clean the answers map for the forms currently pending
@@ -990,11 +1334,23 @@ Pill {
     }
   }
 
+  // a field is shown (and required) only while every `when` condition holds
+  // against the answers given so far (Form.When: {key, op: eq|neq, value})
+  function formFieldVisible(form, field) {
+    const conds = field.when || [];
+    for (const c of conds) {
+      const cur = root.formAnswer(form.id, c.key);
+      const eq = (cur === undefined ? "" : cur) === c.value;
+      if (!(c.op === "eq" ? eq : !eq)) return false;
+    }
+    return true;
+  }
+
   function formSubmit(form) {
     if (!root.session) return;
     const ans = root.formAnswers[form.id] || {};
     for (const fld of form.fields) {
-      if (!fld.required) continue;
+      if (!fld.required || !root.formFieldVisible(form, fld)) continue;
       const v = ans[fld.key];
       if (v === undefined || v === null || v === ""
           || (Array.isArray(v) && v.length === 0)) {
@@ -1026,11 +1382,27 @@ Pill {
   function formCommitText() {
     const t = root.formTextTarget;
     if (!t) return false;
-    const v = inputField.text.trim();
+    const raw = inputField.text.trim();
+    const fld = (t.form.fields || []).find(f => f.key === t.key);
+    // number/integer answers must be sent as Form.Value numbers, not text
+    if (fld && (fld.type === "number" || fld.type === "integer")) {
+      const n = Number(raw);
+      if (raw === "" || isNaN(n)) {
+        root.showToast("invalid number");
+        inputField.text = "";
+        return true;              // stay on the field so it can be retyped
+      }
+      root.formTextTarget = null;
+      inputField.text = "";
+      root.formSetAnswer(t.formID, t.key,
+                         fld.type === "integer" ? Math.trunc(n) : n);
+      if (t.form.fields.length === 1) root.formSubmit(t.form);
+      return true;
+    }
     root.formTextTarget = null;
     inputField.text = "";
-    if (v !== "") {
-      root.formSetAnswer(t.formID, t.key, v);
+    if (raw !== "") {
+      root.formSetAnswer(t.formID, t.key, raw);
       // single-field forms are answered as soon as the text is committed
       if (t.form.fields.length === 1) root.formSubmit(t.form);
     }
@@ -1045,39 +1417,39 @@ Pill {
   }
 
   // ---------- actions ----------
+  // "+" only clears the view — the session is created server-side on the
+  // first send. Creating it here would leave an empty untitled chat behind
+  // every time the button is tapped (or the panel is poked by accident).
   function newChat() {
-    // no title — the server auto-titles from the first message
-    api("POST", "/api/session", {}, (ok, data) => {
-      if (!ok || !data || !data.data) { root.error = "could not create session"; return; }
-      root.session = data.data;
-      chatModel.clear();
-      root.busy = false;
-      root.pendingPerm = null;
-      root.pendingForms = [];
-      root.formAnswers = {};
-      root.formTextTarget = null;
-      root.menu = "";
-      // a fresh session carries no model/agent — apply the last used ones
-      // server-side so the chips tell the truth
-      if (root.lastModel)
-        api("POST", "/api/session/" + root.session.id + "/model",
-            { model: root.lastModel }, ok2 => {
-              if (ok2 && root.session)
-                root.session = Object.assign({}, root.session, { model: root.lastModel });
-            });
-      if (root.lastAgent !== "")
-        api("POST", "/api/session/" + root.session.id + "/agent",
-            { agent: root.lastAgent }, ok2 => {
-              if (ok2 && root.session)
-                root.session = Object.assign({}, root.session, { agent: root.lastAgent });
-            });
-      inputField.forceActiveFocus();
-    });
+    root.session = null;
+    root.newChatPending = true;   // survive a close/reopen without a reload
+    root.modelClear();
+    root.chatLoading = false;     // genuinely empty, not loading
+    root.expanded = ({});         // fold-outs belong to the old chat
+    root.resetTurnState();
+    root.pendingPerm = null;
+    root.pendingForms = [];
+    root.formAnswers = {};
+    root.formTextTarget = null;
+    root.menu = "";
+    inputField.text = "";
+    hiddenInput.text = "";
+    if (root.panelOpen) hiddenInput.forceActiveFocus();
+    else inputField.forceActiveFocus();
   }
 
   function switchSession(s) {
     root.session = s;
-    chatModel.clear();
+    root.newChatPending = false;
+    root.modelClear();
+    // show a loading state instead of the empty "ask opencode" splash while
+    // the history arrives, and open the new chat pinned to the bottom
+    root.chatLoading = true;
+    chatView.pinned = true;
+    root.expanded = ({});   // fold-outs are keyed by message id, but start clean
+    // the previous chat's busy/error/scroll state must not bleed into this
+    // one (a busy session A left the input disabled on an idle session B)
+    root.resetTurnState();
     root.pendingPerm = null;
     root.pendingForms = [];
     root.formAnswers = {};
@@ -1086,26 +1458,44 @@ Pill {
     root.loadMessages();
     root.loadPerms();
     root.loadForms();
+    root.loadSessionInfo();
+  }
+
+  // remove a chat from the server (the picker's hover ✕). If it is the one
+  // being viewed, clear the view and let loadSession pick another one.
+  function deleteSession(s) {
+    if (!s || !s.id) return;
+    api("DELETE", "/api/session/" + s.id, null, ok => {
+      if (!ok) { root.showToast("could not delete chat"); return; }
+      if (root.session && root.session.id === s.id) {
+        root.session = null;
+        root.newChatPending = false;
+        root.modelClear();
+        root.resetTurnState();
+      }
+      root.loadSession();
+    });
   }
 
   function switchModel(m) {
-    if (!root.session) return;
+    const ref = { id: m.id, providerID: m.providerID };
+    root.lastModel = ref;
+    if (!root.session) { root.menu = ""; return; }  // applied on creation
     api("POST", "/api/session/" + root.session.id + "/model",
-        { model: { id: m.id, providerID: m.providerID } }, ok => {
-          if (ok && root.session) {
-            root.lastModel = { id: m.id, providerID: m.providerID };
-            root.session = Object.assign({}, root.session,
-              { model: { id: m.id, providerID: m.providerID } });
-          }
+        { model: ref }, ok => {
+          if (ok && root.session)
+            root.session = Object.assign({}, root.session, { model: ref });
           root.menu = "";
         });
   }
 
   function switchAgent(a) {
-    if (!root.session) return;
+    root.lastAgent = a.id;
+    if (!root.session) { root.menu = ""; return; }  // applied on creation
     api("POST", "/api/session/" + root.session.id + "/agent",
         { agent: a.id }, ok => {
-          if (ok) root.lastAgent = a.id;
+          if (ok && root.session)
+            root.session = Object.assign({}, root.session, { agent: a.id });
           root.menu = "";
         });
   }
@@ -1128,11 +1518,12 @@ Pill {
     while ((m = re.exec(text)) !== null) {
       const start = m.index + m[1].length;
       const tok = m[2];
-      // absolute and ~-anchored mentions must not be glued to the session dir
+      // absolute and ~-anchored mentions must not be glued to the session
+      // dir; encodeURI keeps `/` and `:` but escapes spaces and `#`
       let uri;
-      if (tok.startsWith("/")) uri = "file://" + tok;
-      else if (tok.startsWith("~/")) uri = "file://" + home + tok.slice(1);
-      else uri = "file://" + dir + "/" + tok;
+      if (tok.startsWith("/")) uri = "file://" + encodeURI(tok);
+      else if (tok.startsWith("~/")) uri = "file://" + encodeURI(home + tok.slice(1));
+      else uri = "file://" + encodeURI(dir + "/" + tok);
       files.push({
         uri: uri,
         name: tok,
@@ -1140,6 +1531,25 @@ Pill {
       });
     }
     return files;
+  }
+
+  // a not-yet-created chat is only materialised here, on the first real
+  // action (message or slash command), carrying the last used model/agent
+  function createSession(title, cb) {
+    const body = { title: title };
+    if (root.lastAgent !== "") body.agent = root.lastAgent;
+    if (root.lastModel) body.model = root.lastModel;
+    api("POST", "/api/session", body, (ok, data) => {
+      if (!ok || !data || !data.data) {
+        root.sending = false;
+        root.error = "could not create session";
+        return;
+      }
+      root.session = data.data;
+      root.newChatPending = false;
+      root.loadSession();         // the new chat must appear in the picker
+      cb(data.data.id);
+    });
   }
 
   function send() {
@@ -1163,12 +1573,15 @@ Pill {
         root.error = "unknown command: /" + name;
         return;
       }
-      api("POST", "/api/session/" + root.session.id + "/command",
+      const run = sid => api("POST", "/api/session/" + sid + "/command",
           { command: name, text: args }, (ok, d, status) => {
             root.sending = false;
             if (!ok) root.error = "command failed (" + status + ")";
             else { root.busy = true; root.turnStartMs = Date.now(); root.loadMessages(); }
           });
+      // a command also needs a session: materialise the pending new chat
+      if (root.session) run(root.session.id);
+      else createSession(text.slice(0, 60), run);
       return;
     }
 
@@ -1197,23 +1610,21 @@ Pill {
             root.loadMessages();
           });
     if (root.session) prompt(root.session.id);
-    else api("POST", "/api/session", { title: text.slice(0, 60) }, (ok, data) => {
-      if (!ok || !data || !data.data) { root.sending = false; root.error = "could not create session"; return; }
-      root.session = data.data;
-      prompt(data.data.id);
-    });
+    else createSession(text.slice(0, 60), prompt);
   }
 
   // ---------- mention / command finders ----------
   function updateFinder() {
     const text = inputField.text;
     if (root.formTextTarget !== null) {
+      finderTimer.stop();
       root.fileHits = [];
       if (root.menu === "files") root.menu = "";
       return;
     }
     // "/" at start with no space yet → command menu
     if (text.length > 0 && text[0] === "/" && text.indexOf(" ") === -1) {
+      finderTimer.stop();
       root.fileHits = [];
       root.menu = "commands";
       return;
@@ -1223,25 +1634,43 @@ Pill {
     if (m) {
       const q = m[1];
       if (q.length === 0) {
+        finderTimer.stop();
+        root.finderSeq++;          // cancel any in-flight reply
         root.fileHits = [];
         root.fileSel = 0;
         if (root.menu === "files") root.menu = "";
         return;
       }
       root.menu = "files";
-      const seq = ++root.finderSeq;
-      api("GET", "/api/fs/find?query=" + encodeURIComponent(q)
-          + "&limit=12", null, (ok, data) => {
-        if (seq !== root.finderSeq) return;   // a newer query superseded this one
-        if (!ok || !data || !data.data) { root.fileHits = []; root.fileSel = 0; return; }
-        root.fileHits = data.data.map(f =>
-          typeof f === "string" ? { path: f, type: "file" }
-                                : { path: f.path || f.name || "", type: f.type || "file" });
-        root.fileSel = 0;
-      });
+      root.finderSeq++;            // older in-flight replies are now stale
+      root.finderQuery = q;
+      // debounce: one request once typing settles, not one per keystroke
+      finderTimer.restart();
       return;
     }
+    finderTimer.stop();
     if (root.menu === "files") root.menu = "";
+  }
+
+  function runFinder() {
+    if (root.menu !== "files" || root.finderQuery === "") return;
+    const q = root.finderQuery;
+    const seq = ++root.finderSeq;
+    api("GET", "/api/fs/find?query=" + encodeURIComponent(q)
+        + "&limit=12", null, (ok, data) => {
+      if (seq !== root.finderSeq) return;   // a newer query superseded this one
+      if (!ok || !data || !data.data) { root.fileHits = []; root.fileSel = 0; return; }
+      root.fileHits = data.data.map(f =>
+        typeof f === "string" ? { path: f, type: "file" }
+                              : { path: f.path || f.name || "", type: f.type || "file" });
+      root.fileSel = 0;
+    });
+  }
+
+  Timer {
+    id: finderTimer
+    interval: 140
+    onTriggered: root.runFinder()
   }
 
   // keyboard navigation of the @ file finder (the bar's hiddenInput owns
@@ -1475,15 +1904,17 @@ Pill {
         if (event.key === Qt.Key_Up) { root.finderMove(-1); event.accepted = true; return; }
       }
     }
+    // Enter only sends in the CHAT tab — otherwise a leftover draft would
+    // be submitted from the calculator (which has no text field of its own)
     Keys.onReturnPressed: {
       if (root.formCommitText()) return;
       if (root.mode === "translate") translateBox.translate();
-      else if (!root.finderPickSelected()) root.send();
+      else if (root.mode === "chat" && !root.finderPickSelected()) root.send();
     }
     Keys.onEnterPressed: {
       if (root.formCommitText()) return;
       if (root.mode === "translate") translateBox.translate();
-      else if (!root.finderPickSelected()) root.send();
+      else if (root.mode === "chat" && !root.finderPickSelected()) root.send();
     }
     Keys.onEscapePressed: {
       if (root.formCancelText()) return;
@@ -1516,31 +1947,17 @@ Pill {
 
     Timer { id: hideAnim; interval: 220 }
 
+    // Open-side work lives in root.panelShown(), called from
+    // root.onPanelOpenChanged. Doing it here would miss the rapid
+    // close→reopen case: `visible` stays true (hideAnim is stopped), so this
+    // signal never fires and the panel would come back with no stream.
     onVisibleChanged: {
-      if (!visible) {
-        // panel closed mid-recording: discard the take
-        if (root.sttState !== "idle") {
-          root.sttCancel = true;
-          recProc.running = false;
-        }
-        return;
+      if (visible) return;
+      // panel closed mid-recording: discard the take
+      if (root.sttState !== "idle") {
+        root.sttCancel = true;
+        recProc.running = false;
       }
-      if (!root.panelOpen) return;
-      // the BAR window holds compositor keyboard focus (its OnDemand grab
-      // was taken by the pill's click) — focus the hidden TextInput that
-      // lives there; the popup's field mirrors its text (see hiddenInput).
-      // Re-asserted shortly after, once the keyboard mode change and map
-      // have fully settled.
-      hiddenInput.forceActiveFocus();
-      refocusTimer.restart();
-      if (root.svcUp) root.connectStream();
-      // events missed while closed are never replayed by the stream —
-      // reload now (also reconciles a stale `busy` via loadMessages)
-      root.lastChangeMs = Date.now();
-      root.clearBusyNextLoad = true;
-      root.loadMessages();
-      root.loadPerms();
-      root.loadForms();
     }
 
     anchor {
@@ -1586,6 +2003,7 @@ Pill {
       // chat is empty (and no menu open) → TUI-style centered prompt
       property bool empty: root.mode === "chat" && chatModel.count === 0
                            && root.menu === "" && root.pendingImages.length === 0
+                           && !root.chatLoading
 
       Column {
         anchors.fill: parent
@@ -1693,7 +2111,10 @@ Pill {
             Text {
               id: modelText
               anchors.centerIn: parent
-              text: root.session && root.session.model ? root.session.model.id : "model"
+              // a not-yet-created chat has no session.model — show the model
+              // it will be created with instead of a bare placeholder
+              text: root.session && root.session.model ? root.session.model.id
+                    : root.lastModel ? root.lastModel.id : "model"
               font.family: Theme.font
               font.pixelSize: 10
               color: Theme.text
@@ -1720,7 +2141,8 @@ Pill {
             Text {
               id: agentText
               anchors.centerIn: parent
-              text: root.session && root.session.agent ? root.session.agent : "agent"
+              text: root.session && root.session.agent ? root.session.agent
+                    : root.lastAgent !== "" ? root.lastAgent : "agent"
               font.family: Theme.font
               font.pixelSize: 10
               color: Theme.text
@@ -1813,6 +2235,10 @@ Pill {
           contentWidth: width
           contentHeight: chatCol.implicitHeight + (height > chatCol.implicitHeight
             ? chatCol.y : 0)
+          // hidden while history loads, so the chunked rebuild is not seen as
+          // content assembling itself; it fades in once complete
+          opacity: root.chatLoading ? 0 : 1
+          Behavior on opacity { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
 
           // chat flow: messages hug the bottom; history scrolls up.
           // `rebuilding` guards pinned: during a model rebuild contentY is
@@ -1843,11 +2269,15 @@ Pill {
                 required property string text
                 required property string name
                 required property string state
-                required property string toolIn
+                // toolIn carries the raw input object (pretty-printed lazily)
+                required property var toolIn
                 required property string toolOut
+                // diff was used but never declared, so the tool diff/input never
+                // actually rendered — declare the role to bind it
+                required property string diff
                 required property bool live
                 readonly property bool open: root.expanded[key] === true
-                width: chatCol.width
+                width: chatView.width
                 height: msgRect.implicitHeight + 4
 
                 Rectangle {
@@ -1878,7 +2308,7 @@ Pill {
                   Text {
                     id: userMeasure
                     visible: false
-                    width: Math.min(chatCol.width - 60, implicitWidth)
+                    width: Math.min(chatView.width - 60, implicitWidth)
                     text: msgDel.text
                     textFormat: Text.PlainText
                     font.family: Theme.font
@@ -1907,7 +2337,7 @@ Pill {
                     // rendered to a controlled RichText subset (spacing,
                     // code blocks, tables) — see renderMarkdown
                     textFormat: TextEdit.RichText
-                    text: root.renderMarkdown(msgDel.text)
+                    text: root.renderMarkdown(msgDel.text, !msgDel.live)
                     font.pixelSize: 12
                     color: Theme.accent
                     onSelectedTextChanged: if (selectedText !== "") root.selEdit = asstText
@@ -1953,10 +2383,11 @@ Pill {
                       id: toolInEdit
                       // with a diff shown, the raw JSON input only duplicates
                       // it and clutters the foldout
-                      visible: msgDel.toolIn !== "" && msgDel.diff === ""
+                      visible: !!msgDel.toolIn && msgDel.diff === ""
                       width: parent.width
                       height: contentHeight
-                      text: msgDel.toolIn
+                      // materialize (and pretty-print) only while it is open
+                      text: msgDel.open ? root.toolInputText(msgDel.toolIn) : ""
                       textFormat: TextEdit.PlainText
                       font.pixelSize: 9
                       color: Theme.idleText
@@ -1970,7 +2401,7 @@ Pill {
                       visible: msgDel.kind === "reasoning" && msgDel.text !== ""
                       width: parent.width
                       height: contentHeight
-                      text: msgDel.text
+                      text: msgDel.open ? msgDel.text : ""
                       textFormat: TextEdit.PlainText
                       font.pixelSize: 9
                       color: Theme.muted
@@ -1984,7 +2415,8 @@ Pill {
                       visible: msgDel.diff !== ""
                       width: parent.width
                       height: contentHeight
-                      text: renderDiff(msgDel.diff)
+                      // renderDiff is not free — skip it while collapsed
+                      text: msgDel.open ? renderDiff(msgDel.diff) : ""
                       textFormat: TextEdit.RichText
                       font.pixelSize: 9
                       color: Theme.text
@@ -1997,7 +2429,8 @@ Pill {
                       visible: msgDel.toolOut !== ""
                       width: parent.width
                       height: contentHeight
-                      text: msgDel.toolOut.length > 4000
+                      text: !msgDel.open || msgDel.toolOut === "" ? ""
+                          : msgDel.toolOut.length > 4000
                             ? msgDel.toolOut.slice(0, 4000) + " …"
                             : msgDel.toolOut
                       textFormat: TextEdit.PlainText
@@ -2120,32 +2553,41 @@ Pill {
               model: root.menu === "sessions" ? root.sessionList : []
 
               Rectangle {
+                id: sesRow
                 required property var modelData
                 readonly property bool cur: root.session && root.session.id === modelData.id
+                readonly property bool running: root.activeSessions[modelData.id] !== undefined
                 width: menuCol.width - 4
                 height: 24
                 radius: 4
-                color: sesMa.containsMouse ? Theme.hover : "transparent"
+                // a handler (not a MouseArea) so hovering the ✕ child does
+                // not report the row as un-hovered and hide the button
+                HoverHandler { id: sesHover }
+                color: sesHover.hovered ? Theme.hover : "transparent"
                 Text {
                   anchors.left: parent.left
                   anchors.leftMargin: 8
                   anchors.verticalCenter: parent.verticalCenter
-                  width: parent.width - 90
-                  text: (parent.cur ? "● " : "") + (parent.modelData.title || parent.modelData.id)
+                  width: parent.width - 118
+                  // running agents get a live dot, the open one a filled dot;
+                  // untitled sessions show a friendly label, never the ses_ id
+                  text: (parent.cur ? "● " : parent.running ? "◌ " : "")
+                        + root.sessionLabel(parent.modelData)
                   font.family: Theme.font
                   font.pixelSize: 10
                   font.bold: parent.cur
-                  color: parent.cur ? Theme.accent : Theme.text
+                  color: parent.cur ? Theme.accent
+                       : parent.running ? Theme.live : Theme.text
                   elide: Text.ElideRight
                 }
                 Text {
-                  anchors.right: parent.right
-                  anchors.rightMargin: 8
+                  anchors.right: sesDel.left
+                  anchors.rightMargin: 6
                   anchors.verticalCenter: parent.verticalCenter
-                  text: parent.modelData.agent || ""
+                  text: parent.running ? "running" : (parent.modelData.agent || "")
                   font.family: Theme.font
                   font.pixelSize: 9
-                  color: Theme.muted
+                  color: parent.running ? Theme.live : Theme.muted
                 }
                 MouseArea {
                   id: sesMa
@@ -2153,6 +2595,32 @@ Pill {
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
                   onClicked: root.switchSession(parent.modelData)
+                }
+                // delete (hover only) — clears empty/abandoned chats, which
+                // otherwise pile up in the picker as untitled rows
+                Rectangle {
+                  id: sesDel
+                  anchors.right: parent.right
+                  anchors.rightMargin: 4
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: 18; height: 18; radius: 4
+                  visible: sesHover.hovered
+                  color: sesDelMa.containsMouse ? Theme.hover : "transparent"
+                  Behavior on color { ColorAnimation { duration: 150 } }
+                  Text {
+                    anchors.centerIn: parent
+                    text: "\uf00d"
+                    font.family: Theme.font
+                    font.pixelSize: 10
+                    color: sesDelMa.containsMouse ? Theme.err : Theme.muted
+                  }
+                  MouseArea {
+                    id: sesDelMa
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.deleteSession(sesRow.modelData)
+                  }
                 }
               }
             }
@@ -2420,6 +2888,9 @@ Pill {
                       required property var modelData
                       width: formBox.width
                       spacing: 5
+                      // conditional fields (Form.When) hide until their
+                      // dependencies are answered; Column skips invisible kids
+                      visible: root.formFieldVisible(formBox.modelData, fieldBox.modelData)
 
                       Text {
                         width: parent.width
@@ -2551,6 +3022,38 @@ Pill {
                           onClicked: root.formBeginText(formBox.modelData, fieldBox.modelData)
                         }
                       }
+
+                      // external: a link out (auth page, docs, …). There is
+                      // nothing to answer here — open it in the browser.
+                      Rectangle {
+                        id: extBtn
+                        visible: fieldBox.modelData.type === "external"
+                        readonly property string url: fieldBox.modelData.url || ""
+                        width: Math.min(formBox.width, extLabel.implicitWidth + 16)
+                        height: 22; radius: 4
+                        color: extMa.containsMouse ? Theme.hover : Theme.bg
+                        Behavior on color { ColorAnimation { duration: 150 } }
+                        Text {
+                          id: extLabel
+                          width: parent.width - 16
+                          anchors.centerIn: parent
+                          text: "↗ " + (fieldBox.modelData.title || "abrir link")
+                          font.family: Theme.font
+                          font.pixelSize: 10
+                          color: Theme.text
+                          elide: Text.ElideRight
+                        }
+                        MouseArea {
+                          id: extMa
+                          anchors.fill: parent
+                          hoverEnabled: true
+                          cursorShape: Qt.PointingHandCursor
+                          onClicked: {
+                            if (extBtn.url !== "")
+                              Quickshell.execDetached(["xdg-open", extBtn.url]);
+                          }
+                        }
+                      }
                     }
                   }
 
@@ -2659,9 +3162,12 @@ Pill {
             hiddenInput.cursorPosition = cursorPosition;
             root.inputSyncing = false;
           }
+          // only ever submit from the chat tab (same guard as hiddenInput)
           Keys.onReturnPressed: if (!root.formCommitText()
-                                     && !root.finderPickSelected()) root.send()
+                                    && root.mode === "chat"
+                                    && !root.finderPickSelected()) root.send()
           Keys.onEnterPressed: if (!root.formCommitText()
+                                   && root.mode === "chat"
                                    && !root.finderPickSelected()) root.send()
           Keys.onUpPressed: root.finderMove(-1)
           Keys.onDownPressed: root.finderMove(1)
@@ -2881,6 +3387,18 @@ Pill {
         }
       }
 
+      // ----- history loading (session switch / first load) -----
+      Text {
+        id: chatLoadingLabel
+        transform: Translate { x: root.swipeOfs }
+        anchors.horizontalCenter: parent.horizontalCenter
+        y: inputRow.y - 56
+        visible: root.chatLoading && root.mode === "chat"
+        text: "◌ loading chat…"
+        font.family: Theme.font
+        font.pixelSize: 11
+        color: Theme.muted
+      }
 
       // ----- translate / calculator tabs -----
       Item {
@@ -3014,16 +3532,20 @@ Pill {
   onPanelOpenChanged: {
     if (panelOpen) {          // open: cancel any pending close so the
       hideAnim.stop();        // fade-in plays from fully transparent
-      return;
+      panelShown();           // connect + reload (also on a rapid reopen,
+      return;                 // where PopupWindow.visible never changed)
     }
     hideAnim.restart();       // close: keep mapped while fading out
     menu = "";
-    stopStream();
+    activePoll.stop();
+    // the SSE stream deliberately keeps running while closed: it feeds the
+    // "turn finished" desktop notification and keeps the model warm
   }
 
   // tab switch: the bar's hiddenInput is the single real editor — point
   // it at the newly active tab's field (both directions stay in sync)
   onModeChanged: {
+    menu = "";                // a finder/menu from the old tab must not linger
     // tab swipe: jump the bodies to the side (instant), then glide to 0
     const t = mode === "chat" ? 0 : mode === "translate" ? 1 : 2;
     const dir = t > prevTab ? 1 : -1;
