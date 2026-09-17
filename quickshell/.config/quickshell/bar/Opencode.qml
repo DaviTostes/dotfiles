@@ -51,6 +51,11 @@ Pill {
     NumberAnimation { duration: 200; easing.type: Easing.OutCubic }
   }
   property string menu: ""        // "" | "sessions" | "models" | "agents" | "commands" | "files"
+  property int menuSel: 0         // keyboard selection in the searchable menus
+  property string menuSavedInput: ""  // chat draft parked while a menu searches
+  // models / agents / sessions take the keyboard over as a search box
+  readonly property bool menuSearchOpen: root.menu === "models"
+      || root.menu === "agents" || root.menu === "sessions"
 
   // ---------- service ----------
   property string svcUrl: ""
@@ -62,6 +67,12 @@ Pill {
   property var session: null      // Session.Info or null
   property var sessionList: []
   property var activeSessions: ({})  // sessionID -> true while a turn is running
+  // sessions this panel created or opened on purpose: only these are picked
+  // automatically and only these show up in the picker. A session running in
+  // the TUI (or nvim) must never be dragged into the panel just because it is
+  // the active one. Persisted in Quickshell.stateDir.
+  property var panelSessions: ({})  // sessionID -> true
+  property bool panelSessionsLoaded: false  // store read from disk (guards prune)
   property bool newChatPending: false  // "+" pressed, session not created yet
   property var agents: []
   property var models: []
@@ -533,10 +544,9 @@ Pill {
   function panelShown() {
     // the BAR window holds compositor keyboard focus (its OnDemand grab was
     // taken by the pill's click) — focus the hidden TextInput that lives
-    // there; the popup's field mirrors its text (see hiddenInput).
-    // Re-asserted shortly after, once the keyboard mode change and map have
-    // settled.
-    hiddenInput.forceActiveFocus();
+    // there and mirror the active tab's field into it; re-asserted shortly
+    // after, once the keyboard mode change and map have settled
+    focusPanelField();
     refocusTimer.restart();
     root.streamFails = 0;      // reopening the panel re-arms background retries
     if (root.svcUp) root.connectStream();
@@ -551,6 +561,17 @@ Pill {
     root.loadForms();
     root.loadSessionInfo();
     activePoll.restart();
+  }
+
+  // focus the single real editor (the bar's hiddenInput) and mirror the
+  // active tab's field into it
+  function focusPanelField() {
+    if (!root.panelOpen) return;
+    root.inputSyncing = true;
+    hiddenInput.text = root.mode === "translate" ? translateBox.sourceText
+                                                 : inputField.text;
+    root.inputSyncing = false;
+    hiddenInput.forceActiveFocus();
   }
 
   Timer {
@@ -658,6 +679,31 @@ Pill {
     onFileChanged: svcFile.reload()
   }
 
+  // the panel's own chat store (see panelSessions). stateDir is created by
+  // quickshell itself; FileView caches the text, so a hand-edit only takes
+  // effect after a config reload — otherwise the next write clobbers it.
+  FileView {
+    id: panelSessionsFile
+    path: Quickshell.stateDir + "/opencode-panel-sessions.json"
+    blockAllReads: true
+    preload: true
+    printErrors: false
+    watchChanges: false
+    onLoaded: {
+      root.panelSessionsLoaded = true;
+      const raw = panelSessionsFile.text();
+      if (!raw) return;
+      let parsed = null;
+      try { parsed = JSON.parse(raw); } catch (e) { return; }
+      if (!parsed || typeof parsed !== "object") return;
+      const next = {};
+      for (const id in parsed) if (parsed[id]) next[id] = true;
+      root.panelSessions = next;
+    }
+    // no store yet (first run) — an empty store is a valid, loaded one
+    onLoadFailed: root.panelSessionsLoaded = true
+  }
+
   Timer {
     id: retryTimer
     interval: 1200
@@ -666,6 +712,45 @@ Pill {
   }
 
   // ---------- data loaders ----------
+  // remember/forget a session the panel owns (created here or opened from the
+  // picker). Persisted so a restart doesn't make the panel adopt whatever the
+  // TUI happens to be running.
+  function rememberPanelSession(id) {
+    if (!id || root.panelSessions[id]) return;
+    const next = Object.assign({}, root.panelSessions);
+    next[id] = true;
+    root.panelSessions = next;
+    panelSessionsFile.setText(JSON.stringify(next));
+  }
+
+  function forgetPanelSession(id) {
+    if (!id || !root.panelSessions[id]) return;
+    const next = Object.assign({}, root.panelSessions);
+    delete next[id];
+    root.panelSessions = next;
+    panelSessionsFile.setText(JSON.stringify(next));
+  }
+
+  // drop ids that no longer exist on the server, so the store (and the
+  // picker) can't grow forever. `known` must be the FULL session list — a
+  // truncated page would wrongly forget panel chats that fell off the end.
+  function prunePanelSessions(known) {
+    // never prune before the store was read from disk: the first server
+    // reply could otherwise wipe every remembered id
+    if (!root.panelSessionsLoaded) return;
+    const alive = {};
+    for (const s of (known || [])) alive[s.id] = true;
+    let changed = false;
+    const next = {};
+    for (const id in root.panelSessions) {
+      if (alive[id]) next[id] = true;
+      else changed = true;
+    }
+    if (!changed) return;
+    root.panelSessions = next;
+    panelSessionsFile.setText(JSON.stringify(next));
+  }
+
   // one place owns the session list + the running-session map; it runs on
   // service connect, on panel open and whenever the server reports the list
   // changed (session.created/moved/deleted). `parentID=null` keeps subagent
@@ -673,9 +758,13 @@ Pill {
   function loadSession() {
     api("GET", "/api/session/active", null, (okA, a) => {
       root.activeSessions = (okA && a && a.data) ? a.data : {};
-      api("GET", "/api/session?limit=30&parentID=null", null, (ok, data) => {
+      api("GET", "/api/session?limit=200&parentID=null", null, (ok, data) => {
         if (!ok || !data || !data.data) return;
-        root.sessionList = data.data;
+        root.prunePanelSessions(data.data);
+        // the picker and the auto-pick only ever see panel-owned chats; the
+        // full server list is used above to prune dead ids
+        const own = data.data.filter(s => root.panelSessions[s.id]);
+        root.sessionList = own;
         // remember the model/agent last used anywhere — new chats start
         // with them instead of showing the placeholder chips
         for (const s of data.data) {
@@ -685,7 +774,7 @@ Pill {
         }
         // already chatting (or a "+" is pending): never yank the view
         if (root.session || root.newChatPending) return;
-        root.session = root.pickSession(data.data);
+        root.session = root.pickSession(own);
         root.chatLoading = root.session !== null;
         chatView.pinned = true;
         root.resetTurnState();
@@ -697,12 +786,11 @@ Pill {
     });
   }
 
-  // which chat to open when the panel has no session yet: the one actually
-  // running, else the newest of this directory, else the newest overall
+  // which chat to open when the panel has no session yet: the newest of this
+  // directory among the panel's own chats, else the newest overall. Sessions
+  // running elsewhere (TUI, nvim) are never adopted automatically.
   function pickSession(list) {
     if (!list || list.length === 0) return null;
-    const active = root.activeSessions || ({});
-    for (const s of list) if (active[s.id] !== undefined) return s;
     const here = list.filter(s =>
       s.location && s.location.directory === Quickshell.env("HOME"));
     return (here.length ? here : list)[0] || null;
@@ -1191,7 +1279,11 @@ Pill {
         if (it.key !== desired[prefix].key || it.kind !== desired[prefix].kind) break;
       }
 
-      const inPlace = !wasBuilding
+      // `chatModel.count > 0` keeps an empty model (a fresh switch, which
+      // arrives here already cleared) on the structural path: the append-only
+      // path leaves `rebuilding` clear, and a multi-frame append would flip
+      // `pinned` off between chunks so the final stick-to-end is dropped.
+      const inPlace = !wasBuilding && chatModel.count > 0
           && (prefix === chatModel.count || prefix === desired.length);
       const tail = inPlace ? desired.slice(prefix) : desired;
 
@@ -1376,7 +1468,8 @@ Pill {
     inputField.text = "";
     hiddenInput.text = "";
     hiddenInput.forceActiveFocus();
-    if (root.menu !== "") root.menu = "";
+    // closing any menu must not restore a parked draft into this field
+    if (root.menu !== "") { root.menuSavedInput = ""; root.menu = ""; }
   }
 
   function formCommitText() {
@@ -1431,16 +1524,17 @@ Pill {
     root.pendingForms = [];
     root.formAnswers = {};
     root.formTextTarget = null;
-    root.menu = "";
+    root.closeMenu();
+    root.menuSavedInput = "";
     inputField.text = "";
     hiddenInput.text = "";
-    if (root.panelOpen) hiddenInput.forceActiveFocus();
-    else inputField.forceActiveFocus();
+    hiddenInput.forceActiveFocus();
   }
 
   function switchSession(s) {
     root.session = s;
     root.newChatPending = false;
+    if (s && s.id) root.rememberPanelSession(s.id);  // opened here → panel owns it
     root.modelClear();
     // show a loading state instead of the empty "ask opencode" splash while
     // the history arrives, and open the new chat pinned to the bottom
@@ -1454,7 +1548,7 @@ Pill {
     root.pendingForms = [];
     root.formAnswers = {};
     root.formTextTarget = null;
-    root.menu = "";
+    root.closeMenu();       // also restores a draft parked by the search menus
     root.loadMessages();
     root.loadPerms();
     root.loadForms();
@@ -1473,6 +1567,7 @@ Pill {
         root.modelClear();
         root.resetTurnState();
       }
+      root.forgetPanelSession(s.id);
       root.loadSession();
     });
   }
@@ -1480,23 +1575,23 @@ Pill {
   function switchModel(m) {
     const ref = { id: m.id, providerID: m.providerID };
     root.lastModel = ref;
-    if (!root.session) { root.menu = ""; return; }  // applied on creation
+    if (!root.session) { root.closeMenu(); return; }  // applied on creation
     api("POST", "/api/session/" + root.session.id + "/model",
         { model: ref }, ok => {
           if (ok && root.session)
             root.session = Object.assign({}, root.session, { model: ref });
-          root.menu = "";
+          root.closeMenu();
         });
   }
 
   function switchAgent(a) {
     root.lastAgent = a.id;
-    if (!root.session) { root.menu = ""; return; }  // applied on creation
+    if (!root.session) { root.closeMenu(); return; }  // applied on creation
     api("POST", "/api/session/" + root.session.id + "/agent",
         { agent: a.id }, ok => {
           if (ok && root.session)
             root.session = Object.assign({}, root.session, { agent: a.id });
-          root.menu = "";
+          root.closeMenu();
         });
   }
 
@@ -1547,6 +1642,7 @@ Pill {
       }
       root.session = data.data;
       root.newChatPending = false;
+      root.rememberPanelSession(data.data.id);   // the panel owns this chat
       root.loadSession();         // the new chat must appear in the picker
       cb(data.data.id);
     });
@@ -1554,6 +1650,9 @@ Pill {
 
   function send() {
     if (root.formTextTarget !== null) { root.formCommitText(); return; }
+    // the send button while a search menu is open should pick, not send the
+    // search query as a message
+    if (root.menuSearchable()) { root.menuPickSelected(); return; }
     if (root.sending || root.busy) return;
     const text = inputField.text.trim();
     if (text === "" && root.pendingImages.length === 0) return;
@@ -1616,6 +1715,13 @@ Pill {
   // ---------- mention / command finders ----------
   function updateFinder() {
     const text = inputField.text;
+    // the searchable list menus own the input as their filter box; typing
+    // just re-filters (the Repeaters bind to inputField.text) and resets the
+    // keyboard selection to the top
+    if (root.menuSearchable()) {
+      root.menuSel = 0;
+      return;
+    }
     if (root.formTextTarget !== null) {
       finderTimer.stop();
       root.fileHits = [];
@@ -1706,7 +1812,7 @@ Pill {
       inputField.cursorPosition = inputField.text.length;
     }
     root.menu = type === "directory" ? "files" : "";
-    inputField.forceActiveFocus();
+    hiddenInput.forceActiveFocus();
     if (type === "directory") root.updateFinder();
   }
 
@@ -1716,8 +1822,120 @@ Pill {
     root.expanded = e;
   }
 
+  // ---------- list menus (models / agents / sessions) ----------
+  // These open a search box inside the panel overlay; the bar's hiddenInput
+  // mirror keeps both editors in sync whichever has the keyboard, and the
+  // chat draft is parked in menuSavedInput while the menu is open.
+  function menuSearchable() {
+    return root.menu === "models" || root.menu === "agents"
+        || root.menu === "sessions";
+  }
+
+  function menuQuery() { return menuSearchField.text.trim().toLowerCase(); }
+
+  function modelMatches(m) {
+    const q = root.menuQuery();
+    if (q === "") return true;
+    return (m.name || "").toLowerCase().indexOf(q) !== -1
+        || (m.providerID || "").toLowerCase().indexOf(q) !== -1
+        || (m.id || "").toLowerCase().indexOf(q) !== -1;
+  }
+
+  function filteredModels() {
+    if (root.menu !== "models") return [];
+    return root.models.filter(root.modelMatches);
+  }
+
+  function filteredAgents() {
+    if (root.menu !== "agents") return [];
+    const q = root.menuQuery();
+    if (q === "") return root.agents;
+    return root.agents.filter(a =>
+      (a.name || "").toLowerCase().indexOf(q) !== -1
+      || (a.id || "").toLowerCase().indexOf(q) !== -1);
+  }
+
+  function filteredSessions() {
+    if (root.menu !== "sessions") return [];
+    const q = root.menuQuery();
+    if (q === "") return root.sessionList;
+    return root.sessionList.filter(s =>
+      root.sessionLabel(s).toLowerCase().indexOf(q) !== -1
+      || (s.agent || "").toLowerCase().indexOf(q) !== -1);
+  }
+
+  function menuCount() {
+    if (root.menu === "models") return root.filteredModels().length;
+    if (root.menu === "agents") return root.filteredAgents().length;
+    if (root.menu === "sessions") return root.filteredSessions().length;
+    return 0;
+  }
+
+  function menuMove(dir) {
+    const n = root.menuCount();
+    if (n === 0) { root.menuSel = 0; return; }
+    root.menuSel = ((root.menuSel + dir) % n + n) % n;
+  }
+
+  function menuPickSelected() {
+    if (!root.menuSearchable()) return false;
+    const i = root.menuSel;
+    if (root.menu === "models") {
+      const l = root.filteredModels();
+      if (i >= 0 && i < l.length) root.switchModel(l[i]); else root.closeMenu();
+    } else if (root.menu === "agents") {
+      const l = root.filteredAgents();
+      if (i >= 0 && i < l.length) root.switchAgent(l[i]); else root.closeMenu();
+    } else {
+      const l = root.filteredSessions();
+      if (i >= 0 && i < l.length) root.switchSession(l[i]); else root.closeMenu();
+    }
+    return true;
+  }
+
+  // open a search menu. The chat draft stays visible (and disabled) in the
+  // bottom input; the menu's own field is the editor. The bar's editor is
+  // cleared and kept in sync so closing restores the draft cleanly.
+  function openMenu(name) {
+    if (root.menu !== name) {
+      if (root.menu === "") root.menuSavedInput = inputField.text;
+      root.inputSyncing = true;
+      hiddenInput.text = "";
+      menuSearchField.text = "";
+      root.inputSyncing = false;
+    }
+    root.menu = name;
+    root.menuSel = 0;
+    if (root.panelOpen) hiddenInput.forceActiveFocus();
+  }
+
+  function closeMenu() {
+    if (root.menu === "") return;
+    root.menu = "";
+    root.menuSel = 0;
+    root.inputSyncing = true;
+    menuSearchField.text = "";
+    // the bar's editor goes back to the parked draft shown in the field
+    hiddenInput.text = inputField.text;
+    root.inputSyncing = false;
+    root.menuSavedInput = "";
+    // hand the keyboard back to the chat editor
+    if (root.panelOpen) hiddenInput.forceActiveFocus();
+  }
+
+  // keep the keyboard-selected row in view (the search row is first)
+  function ensureMenuSelVisible() {
+    if (!root.menuSearchable()) return;
+    const rowH = 26;
+    const top = 26 + root.menuSel * rowH;
+    const bottom = top + rowH;
+    if (top < menuFlick.contentY) menuFlick.contentY = top;
+    else if (bottom > menuFlick.contentY + menuFlick.height)
+      menuFlick.contentY = bottom - menuFlick.height;
+  }
+
   function closeMenuOrPanel() {
-    if (root.menu !== "") { root.menu = ""; return; }
+    if (root.menu !== "") { root.closeMenu(); return; }
     root.panelOpen = false;
   }
 
@@ -1871,9 +2089,17 @@ Pill {
     onTextChanged: if (!root.inputSyncing) {
       root.inputSyncing = true;
       if (root.mode === "translate") translateBox.sourceText = text;
-      else inputField.text = text;
+      // while a search menu is open the query belongs to the menu's field,
+      // NOT the chat input (no duplicate typing in both)
+      else if (root.menuSearchOpen) {
+        menuSearchField.text = text;
+        menuSearchField.cursorPosition = text.length;
+      } else inputField.text = text;
       root.inputSyncing = false;
-      if (root.mode === "chat") root.updateFinder();
+      if (root.mode === "chat") {
+        if (root.menuSearchOpen) root.menuSel = 0;
+        else root.updateFinder();
+      }
     }
     onCursorPositionChanged: if (!root.inputSyncing) {
       root.inputSyncing = true;
@@ -1884,6 +2110,14 @@ Pill {
     // the chat's TextEdits never hold the (compositor) keyboard — the bar
     // does. Forward copy from here to whichever message has a selection
     Keys.onPressed: event => {
+      // Escape closes the open menu (or the panel). Handled here as well as
+      // via onEscapePressed so it works whichever surface holds the keyboard.
+      if (event.key === Qt.Key_Escape) {
+        event.accepted = true;
+        if (root.formCancelText()) return;
+        root.closeMenuOrPanel();
+        return;
+      }
       if (event.key === Qt.Key_C && (event.modifiers & Qt.ControlModifier)
           && root.selEdit) {
         root.selEdit.copy();
@@ -1898,6 +2132,12 @@ Pill {
         event.accepted = true;
         return;
       }
+      // list menus (models/agents/sessions): arrows move the selection
+      if (root.menuSearchable()
+          && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier))) {
+        if (event.key === Qt.Key_Down) { root.menuMove(1); event.accepted = true; return; }
+        if (event.key === Qt.Key_Up) { root.menuMove(-1); event.accepted = true; return; }
+      }
       // @-mention finder: arrows move the selection, Enter picks it
       if (root.menu === "files" && root.fileHits.length > 0) {
         if (event.key === Qt.Key_Down) { root.finderMove(1); event.accepted = true; return; }
@@ -1908,11 +2148,13 @@ Pill {
     // be submitted from the calculator (which has no text field of its own)
     Keys.onReturnPressed: {
       if (root.formCommitText()) return;
+      if (root.menuPickSelected()) return;
       if (root.mode === "translate") translateBox.translate();
       else if (root.mode === "chat" && !root.finderPickSelected()) root.send();
     }
     Keys.onEnterPressed: {
       if (root.formCommitText()) return;
+      if (root.menuPickSelected()) return;
       if (root.mode === "translate") translateBox.translate();
       else if (root.mode === "chat" && !root.finderPickSelected()) root.send();
     }
@@ -1921,6 +2163,8 @@ Pill {
       root.closeMenuOrPanel();
     }
   }
+
+  // (keyboard diagnostics removed — the overlay reaches the panel directly)
 
   // ---------- panel ----------
   //
@@ -2005,6 +2249,9 @@ Pill {
                            && root.menu === "" && root.pendingImages.length === 0
                            && !root.chatLoading
 
+      // catch-all: Escape bubbling up from any focused child of the overlay
+      Keys.onEscapePressed: root.closeMenuOrPanel()
+
       Column {
         anchors.fill: parent
         anchors.margins: 10
@@ -2083,7 +2330,7 @@ Pill {
               anchors.fill: parent
               hoverEnabled: true
               cursorShape: Qt.PointingHandCursor
-              onClicked: root.menu = root.menu === "sessions" ? "" : "sessions"
+              onClicked: root.menu === "sessions" ? root.closeMenu() : root.openMenu("sessions")
             }
           }
 
@@ -2124,7 +2371,7 @@ Pill {
               anchors.fill: parent
               hoverEnabled: true
               cursorShape: Qt.PointingHandCursor
-              onClicked: root.menu = root.menu === "models" ? "" : "models"
+              onClicked: root.menu === "models" ? root.closeMenu() : root.openMenu("models")
             }
           }
 
@@ -2152,7 +2399,7 @@ Pill {
               anchors.fill: parent
               hoverEnabled: true
               cursorShape: Qt.PointingHandCursor
-              onClicked: root.menu = root.menu === "agents" ? "" : "agents"
+              onClicked: root.menu === "agents" ? root.closeMenu() : root.openMenu("agents")
             }
           }
 
@@ -2486,7 +2733,13 @@ Pill {
 
             Connections {
               target: root
-              function onMenuChanged() { menuFlick.contentY = 0; }
+              function onMenuChanged() { menuFlick.contentY = 0; root.menuSel = 0; }
+            }
+
+            // keep the keyboard-selected list row in view
+            Connections {
+              target: root
+              function onMenuSelChanged() { root.ensureMenuSelVisible(); }
             }
 
             // keep the keyboard-selected finder hit in view
@@ -2509,6 +2762,142 @@ Pill {
               y: 6
               width: menuFlick.width - 12
               spacing: 2
+
+            // search row for the list menus. This mirrors the single real
+            // editor (the bar's hiddenInput) BOTH ways: if the popup happens
+            // to hold the keyboard this field is typed into directly,
+            // otherwise the bar's editor is and the text lands here. (A
+            // read-only field would swallow the keys when the popup has
+            // focus, which is what made search look dead.)
+            Rectangle {
+              visible: root.menu === "models" || root.menu === "agents"
+                    || root.menu === "sessions"
+              width: menuCol.width - 4
+              height: 24
+              radius: 4
+              color: Theme.bg
+              border.color: Theme.border
+              border.width: 1
+              Text {
+                anchors.left: parent.left
+                anchors.leftMargin: 8
+                anchors.verticalCenter: parent.verticalCenter
+                text: "\uf002"
+                font.family: Theme.font
+                font.pixelSize: 10
+                color: Theme.muted
+              }
+              // a bare TextInput, not a TextField: the Control's inner
+              // contentItem was consuming Escape before the Keys handlers
+              TextInput {
+                id: menuSearchField
+                anchors.left: parent.left
+                anchors.leftMargin: 20
+                anchors.right: parent.right
+                anchors.rightMargin: 26
+                anchors.verticalCenter: parent.verticalCenter
+                text: ""
+                color: Theme.accent
+                font.family: Theme.font
+                font.pixelSize: 10
+                selectionColor: Theme.hover
+                selectedTextColor: Theme.accent
+                // grab QML focus while a list menu is open, so a popup that
+                // holds the keyboard types straight into this field
+                focus: root.menuSearchOpen && root.panelOpen
+                cursorVisible: root.menuSearchOpen
+                cursorDelegate: Item {
+                  implicitWidth: 2
+                  Rectangle {
+                    anchors.fill: parent
+                    radius: 1
+                    color: Theme.accent
+                    SequentialAnimation on opacity {
+                      running: root.menu === "models" || root.menu === "agents"
+                            || root.menu === "sessions"
+                      loops: Animation.Infinite
+                      NumberAnimation { to: 1; duration: 600 }
+                      NumberAnimation { to: 0; duration: 600 }
+                    }
+                  }
+                }
+                // typed here: keep the bar's editor in sync (single source),
+                // but not the chat input — the draft stays parked there
+                onTextEdited: {
+                  root.inputSyncing = true;
+                  if (hiddenInput.text !== text) {
+                    hiddenInput.text = text;
+                    hiddenInput.cursorPosition = text.length;
+                  }
+                  root.inputSyncing = false;
+                  root.menuSel = 0;
+                }
+                // one handler with BeforeItem priority so Escape/Enter are
+                // caught before any default editing behaviour
+                Keys.priority: Keys.BeforeItem
+                Keys.onPressed: event => {
+                  if (event.key === Qt.Key_Escape) {
+                    event.accepted = true;
+                    root.closeMenu();
+                  } else if (event.key === Qt.Key_Backspace && text === "") {
+                    // backspace on an empty query closes (Escape-lite)
+                    event.accepted = true;
+                    root.closeMenu();
+                  } else if (event.key === Qt.Key_Down) {
+                    event.accepted = true;
+                    root.menuMove(1);
+                  } else if (event.key === Qt.Key_Up) {
+                    event.accepted = true;
+                    root.menuMove(-1);
+                  } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                    event.accepted = true;
+                    root.menuPickSelected();
+                  }
+                }
+              }
+              Text {
+                anchors.left: parent.left
+                anchors.leftMargin: 20
+                anchors.right: menuSearchClose.left
+                anchors.rightMargin: 6
+                anchors.verticalCenter: parent.verticalCenter
+                visible: menuSearchField.text === ""
+                text: root.menu === "models" ? "search models…  (↑↓ · Enter)"
+                    : root.menu === "agents" ? "search agents…  (↑↓ · Enter)"
+                    : "search chats…  (↑↓ · Enter)"
+                color: Theme.idleText
+                font.family: Theme.font
+                font.pixelSize: 10
+                elide: Text.ElideRight
+              }
+
+              // close affordance. Escape is not delivered to this popup
+              // surface (the compositor keeps it for the popup grab), so a
+              // click target is the reliable way out.
+              Rectangle {
+                id: menuSearchClose
+                anchors.right: parent.right
+                anchors.rightMargin: 4
+                anchors.verticalCenter: parent.verticalCenter
+                width: 18; height: 18; radius: 4
+                color: menuSearchCloseMa.containsMouse ? Theme.hover : "transparent"
+                Behavior on color { ColorAnimation { duration: 150 } }
+                Text {
+                  anchors.centerIn: parent
+                  text: "\uf00d"
+                  font.family: Theme.font
+                  font.pixelSize: 10
+                  color: menuSearchCloseMa.containsMouse ? Theme.err : Theme.muted
+                }
+                MouseArea {
+                  id: menuSearchCloseMa
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.closeMenu()
+                }
+              }
+            }
 
             // file finder results
             Repeater {
@@ -2548,13 +2937,24 @@ Pill {
               }
             }
 
-            // sessions menu
+            // sessions menu (searchable: the input filters by title/agent).
+            // Filtering is inlined so the binding reads inputField.text /
+            // sessionList directly and re-evaluates on every keystroke.
             Repeater {
-              model: root.menu === "sessions" ? root.sessionList : []
+              id: sessionsRep
+              model: {
+                if (root.menu !== "sessions") return [];
+                const q = menuSearchField.text.trim().toLowerCase();
+                if (q === "") return root.sessionList;
+                return root.sessionList.filter(s =>
+                  root.sessionLabel(s).toLowerCase().indexOf(q) !== -1
+                  || (s.agent || "").toLowerCase().indexOf(q) !== -1);
+              }
 
               Rectangle {
                 id: sesRow
                 required property var modelData
+                required property int index
                 readonly property bool cur: root.session && root.session.id === modelData.id
                 readonly property bool running: root.activeSessions[modelData.id] !== undefined
                 width: menuCol.width - 4
@@ -2563,7 +2963,8 @@ Pill {
                 // a handler (not a MouseArea) so hovering the ✕ child does
                 // not report the row as un-hovered and hide the button
                 HoverHandler { id: sesHover }
-                color: sesHover.hovered ? Theme.hover : "transparent"
+                color: (index === root.menuSel || sesHover.hovered)
+                       ? Theme.hover : "transparent"
                 Text {
                   anchors.left: parent.left
                   anchors.leftMargin: 8
@@ -2594,6 +2995,7 @@ Pill {
                   anchors.fill: parent
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
+                  onEntered: root.menuSel = index
                   onClicked: root.switchSession(parent.modelData)
                 }
                 // delete (hover only) — clears empty/abandoned chats, which
@@ -2625,25 +3027,92 @@ Pill {
               }
             }
 
-            // models menu
+            // models menu (searchable: name / provider / id)
             Repeater {
-              model: root.menu === "models" ? root.models : []
+              id: modelsRep
+              model: {
+                if (root.menu !== "models") return [];
+                const q = menuSearchField.text.trim().toLowerCase();
+                if (q === "") return root.models;
+                return root.models.filter(m =>
+                  (m.name || "").toLowerCase().indexOf(q) !== -1
+                  || (m.providerID || "").toLowerCase().indexOf(q) !== -1
+                  || (m.id || "").toLowerCase().indexOf(q) !== -1);
+              }
 
               Rectangle {
                 required property var modelData
+                required property int index
                 readonly property bool cur: root.session && root.session.model
                     && root.session.model.id === modelData.id
                 width: menuCol.width - 4
                 height: 24
                 radius: 4
-                color: modMa.containsMouse ? Theme.hover : "transparent"
+                color: (index === root.menuSel || modMa.containsMouse)
+                       ? Theme.hover : "transparent"
                 Text {
                   anchors.left: parent.left
                   anchors.leftMargin: 8
+                  anchors.right: provText.left
+                  anchors.rightMargin: 8
                   anchors.verticalCenter: parent.verticalCenter
-                  width: parent.width - 90
                   text: (parent.cur ? "● " : "") + parent.modelData.name
-                      + "  ·  " + parent.modelData.providerID
+                  font.family: Theme.font
+                  font.pixelSize: 10
+                  font.bold: parent.cur
+                  color: parent.cur ? Theme.accent : Theme.text
+                  elide: Text.ElideRight
+                }
+                // provider on the right, dim, so the list scans by model name
+                Text {
+                  id: provText
+                  anchors.right: parent.right
+                  anchors.rightMargin: 8
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: parent.modelData.providerID
+                  font.family: Theme.font
+                  font.pixelSize: 9
+                  color: Theme.muted
+                }
+                MouseArea {
+                  id: modMa
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onEntered: root.menuSel = index
+                  onClicked: root.switchModel(parent.modelData)
+                }
+              }
+            }
+
+            // agents menu (searchable)
+            Repeater {
+              id: agentsRep
+              model: {
+                if (root.menu !== "agents") return [];
+                const q = menuSearchField.text.trim().toLowerCase();
+                if (q === "") return root.agents;
+                return root.agents.filter(a =>
+                  (a.name || "").toLowerCase().indexOf(q) !== -1
+                  || (a.id || "").toLowerCase().indexOf(q) !== -1);
+              }
+
+              Rectangle {
+                required property var modelData
+                required property int index
+                readonly property bool cur: root.session && root.session.agent === modelData.id
+                width: menuCol.width - 4
+                height: 24
+                radius: 4
+                color: (index === root.menuSel || agMa.containsMouse)
+                       ? Theme.hover : "transparent"
+                Text {
+                  anchors.left: parent.left
+                  anchors.leftMargin: 8
+                  anchors.right: parent.right
+                  anchors.rightMargin: 8
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: (parent.cur ? "● " : "") + parent.modelData.name
                   font.family: Theme.font
                   font.pixelSize: 10
                   font.bold: parent.cur
@@ -2651,41 +3120,11 @@ Pill {
                   elide: Text.ElideRight
                 }
                 MouseArea {
-                  id: modMa
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: root.switchModel(parent.modelData)
-                }
-              }
-            }
-
-            // agents menu
-            Repeater {
-              model: root.menu === "agents" ? root.agents : []
-
-              Rectangle {
-                required property var modelData
-                readonly property bool cur: root.session && root.session.agent === modelData.id
-                width: menuCol.width - 4
-                height: 24
-                radius: 4
-                color: agMa.containsMouse ? Theme.hover : "transparent"
-                Text {
-                  anchors.left: parent.left
-                  anchors.leftMargin: 8
-                  anchors.verticalCenter: parent.verticalCenter
-                  text: (parent.cur ? "● " : "") + parent.modelData.name
-                  font.family: Theme.font
-                  font.pixelSize: 10
-                  font.bold: parent.cur
-                  color: parent.cur ? Theme.accent : Theme.text
-                }
-                MouseArea {
                   id: agMa
                   anchors.fill: parent
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
+                  onEntered: root.menuSel = index
                   onClicked: root.switchAgent(parent.modelData)
                 }
               }
@@ -2728,10 +3167,28 @@ Pill {
                     inputField.text = "/" + parent.modelData.name + " ";
                     inputField.cursorPosition = inputField.text.length;
                     root.menu = "";
-                    inputField.forceActiveFocus();
+                    root.focusPanelField();
                   }
                 }
               }
+            }
+
+            // empty-filter hint for the searchable menus
+            Text {
+              visible: (root.menu === "models" || root.menu === "agents"
+                     || root.menu === "sessions")
+                     && menuSearchField.text.trim() !== ""
+                     && (root.menu === "models" ? modelsRep.count
+                         : root.menu === "agents" ? agentsRep.count
+                         : sessionsRep.count) === 0
+              width: menuCol.width - 4
+              height: 24
+              horizontalAlignment: Text.AlignHCenter
+              verticalAlignment: Text.AlignVCenter
+              text: "nenhum resultado"
+              font.family: Theme.font
+              font.pixelSize: 10
+              color: Theme.muted
             }
             }
           }
@@ -3128,7 +3585,9 @@ Pill {
           font.pixelSize: 12
           selectionColor: Theme.hover
           selectedTextColor: Theme.accent
-          enabled: !root.busy && !root.sending
+          // disabled while a search menu owns the keyboard (it shows the
+          // parked draft, dimmed)
+          enabled: !root.busy && !root.sending && !root.menuSearchOpen
           wrapMode: TextInput.Wrap
           // the popup window is keyboard-less — the bar's hiddenInput is
           // the real editor, so this field never gets real active focus
@@ -3164,13 +3623,15 @@ Pill {
           }
           // only ever submit from the chat tab (same guard as hiddenInput)
           Keys.onReturnPressed: if (!root.formCommitText()
+                                    && !root.menuPickSelected()
                                     && root.mode === "chat"
                                     && !root.finderPickSelected()) root.send()
           Keys.onEnterPressed: if (!root.formCommitText()
+                                   && !root.menuPickSelected()
                                    && root.mode === "chat"
                                    && !root.finderPickSelected()) root.send()
-          Keys.onUpPressed: root.finderMove(-1)
-          Keys.onDownPressed: root.finderMove(1)
+          Keys.onUpPressed: root.menuSearchable() ? root.menuMove(-1) : root.finderMove(-1)
+          Keys.onDownPressed: root.menuSearchable() ? root.menuMove(1) : root.finderMove(1)
           Keys.onEscapePressed: event => {
             event.accepted = true;   // don't let the panel Shortcut also fire
             if (root.formCancelText()) return;
@@ -3522,11 +3983,17 @@ Pill {
         }
       }
 
-      Shortcut {
-        sequence: "Escape"
-        onActivated: root.closeMenuOrPanel()
-      }
+      // Escape is handled by an application-wide Shortcut on the root (below)
     }
+  }
+
+  // Escape closes the open menu, or the panel when no menu is open. Layer
+  // surfaces do not reliably map onto Qt's "active window", which made a
+  // window-scoped Shortcut silently do nothing — application scope works.
+  Shortcut {
+    sequence: "Escape"
+    context: Qt.ApplicationShortcut
+    onActivated: root.closeMenuOrPanel()
   }
 
   onPanelOpenChanged: {
@@ -3536,7 +4003,7 @@ Pill {
       return;                 // where PopupWindow.visible never changed)
     }
     hideAnim.restart();       // close: keep mapped while fading out
-    menu = "";
+    root.closeMenu();
     activePoll.stop();
     // the SSE stream deliberately keeps running while closed: it feeds the
     // "turn finished" desktop notification and keeps the model warm
@@ -3545,7 +4012,7 @@ Pill {
   // tab switch: the bar's hiddenInput is the single real editor — point
   // it at the newly active tab's field (both directions stay in sync)
   onModeChanged: {
-    menu = "";                // a finder/menu from the old tab must not linger
+    root.closeMenu();         // a finder/menu from the old tab must not linger
     // tab swipe: jump the bodies to the side (instant), then glide to 0
     const t = mode === "chat" ? 0 : mode === "translate" ? 1 : 2;
     const dir = t > prevTab ? 1 : -1;
@@ -3560,7 +4027,7 @@ Pill {
     hiddenInput.text = mode === "translate" ? translateBox.sourceText
                                             : inputField.text;
     root.inputSyncing = false;
-    if (panelOpen) hiddenInput.forceActiveFocus();
+    if (panelOpen) root.focusPanelField();
   }
 
   // fallback polling only when the SSE stream is not delivering
