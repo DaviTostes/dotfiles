@@ -3,7 +3,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
-// Settings panel for hyprpaper / hyprlock / hypridle.
+// Settings panel for wallpaper / hyprlock / hypridle.
 // Opens as a Pomodoro-style dropdown anchored under the bar's
 // settings pill, on whichever monitor that pill lives on.
 PopupWindow {
@@ -16,9 +16,9 @@ PopupWindow {
     property int tab: 0
 
     // Tab names, in the same order as the StackLayout below. The bar's
-    // `settingsTab` lets the IPC (SUPER+SHIFT+B / SUPER+SHIFT+W) open the
-    // dropdown directly on a tab.
-    readonly property var tabs: ["Wallpaper", "Lock Screen", "Idle", "Bluetooth", "Wi-Fi"]
+    // `settingsTab` lets the IPC (SUPER+SHIFT+B / SUPER+SHIFT+W /
+    // SUPER+SHIFT+V) open the dropdown directly on a tab.
+    readonly property var tabs: ["Wallpaper", "Lock Screen", "Idle", "Bluetooth", "Wi-Fi", "VPN"]
 
     // Accepts "wifi", "wi-fi", "Wi-Fi", "lock screen", "lockscreen", …
     function tabIndex(name) {
@@ -54,11 +54,21 @@ PopupWindow {
         }
     }
 
-    // The Wi-Fi tab shells out to iwctl (several processes per load). Only
-    // load it when its tab is actually shown, instead of on every dropdown
-    // open regardless of the tab the user is looking at.
+    // The Wi-Fi and VPN tabs shell out to external tools (several
+    // processes per load). Only load them when their tab is actually shown,
+    // instead of on every dropdown open regardless of the tab the user is
+    // looking at.
     function loadWifiIfVisible() {
         if (root.tab === 4) wifiTab.reload();
+    }
+
+    function loadVpnIfVisible() {
+        if (root.tab === 5) vpnTab.reload();
+    }
+
+    function loadLazyTabsIfVisible() {
+        root.loadWifiIfVisible();
+        root.loadVpnIfVisible();
     }
 
     onVisibleChanged: {
@@ -76,11 +86,11 @@ PopupWindow {
         root.tab = want;
         // onTabChanged only fires on an actual change; cover the reopen-on-
         // the-same-tab case explicitly
-        if (!changed) root.loadWifiIfVisible();
+        if (!changed) root.loadLazyTabsIfVisible();
         HyprSettings.galleryOpen = false;
     }
 
-    onTabChanged: root.loadWifiIfVisible()
+    onTabChanged: root.loadLazyTabsIfVisible()
 
     // re-opening on another tab while the dropdown is already visible does
     // not go through onVisibleChanged, so follow the bar's request too
@@ -192,6 +202,7 @@ PopupWindow {
                 IdleTab { id: idleTab }
                 BluetoothTab { id: bluetoothTab }
                 WifiTab { id: wifiTab }
+                VpnTab { id: vpnTab }
             }
         }
 
@@ -268,6 +279,7 @@ PopupWindow {
             WallpaperGrid {
                 anchors.fill: parent
                 anchors.margins: 10
+                animate: galleryWin.open
                 picked: HyprSettings.galleryPicked
                 onChosen: p => {
                     if (HyprSettings.galleryTab === 0) paperTab.applyGalleryPick(p);

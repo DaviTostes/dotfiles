@@ -8,6 +8,10 @@ Pill {
   id: root
 
   required property HyprlandMonitor monitor
+  // workspace where this monitor's opencode full panel is pinned (-1 = none).
+  // Layer surfaces are not windows, so an otherwise-empty workspace vanishes
+  // from Hyprland's list once the user leaves it; this keeps its chip shown.
+  property int pinnedWsId: -1
 
   implicitWidth: wsArea.implicitWidth + 12
 
@@ -57,6 +61,14 @@ Pill {
             const list = [];
             for (const ws of Hyprland.workspaces.values)
               if (ws.monitor && ws.monitor.name == m.name && ws.id > 0) list.push(ws);
+            // the opencode full keeps its workspace "occupied": add a chip for
+            // it when Hyprland no longer reports that workspace (it was the
+            // only thing there). Real workspaces keep their identity so the
+            // active-pill slide is not disturbed.
+            const pinned = root.pinnedWsId;
+            if (pinned > 0 && !list.some(ws => ws.id === pinned))
+              list.push({ id: pinned, name: String(pinned),
+                          active: false, urgent: false });
             list.sort((a, b) => a.id - b.id);
             return list;
           }
@@ -65,7 +77,9 @@ Pill {
         Rectangle {
           id: btn
 
-          required property HyprlandWorkspace modelData
+          // HyprlandWorkspace for a real workspace, or the synthetic chip
+          // added above for the pinned opencode workspace
+          required property var modelData
 
           readonly property bool isActive: modelData.active
 

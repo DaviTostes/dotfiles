@@ -22,4 +22,19 @@ QtObject {
     readonly property color err: "#d2686a"      // errors / destructive
     readonly property color idleText: "#7d8791" // idle / dimmed pill text
     readonly property color paused: "#4a505a"   // dimmed state accent
+
+    // Per-prefix tag colors (bar/Tasks.qml). A prefix is hashed to an index,
+    // so the same prefix always maps to the same color across restarts.
+    // Deliberately vivid: these are meant to stand out against the muted
+    // chrome and group tasks at a glance.
+    readonly property var tagColors: [
+        "#ff6b6b", // red
+        "#ffa94d", // orange
+        "#ffd43b", // yellow
+        "#51cf66", // green
+        "#22d3ee", // cyan
+        "#4dabf7", // blue
+        "#9775fa", // violet
+        "#f783ac"  // pink
+    ]
 }

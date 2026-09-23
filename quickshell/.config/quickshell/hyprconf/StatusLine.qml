@@ -2,7 +2,7 @@ import QtQuick
 
 // Status line for the tab footers: message that fades out a few seconds
 // after it is set, plus an optional spinner kept on screen while a
-// background process (hyprpaper / hypridle restart) is running.
+// background process (wallpaper apply / hypridle restart) is running.
 Row {
     id: root
 

@@ -213,6 +213,7 @@ ColumnLayout {
                     PreviewBox {
                         width: parent.width
                         path: root.bgPath
+                        animate: root.panel === null || (root.panel.panelOpen && root.panel.tab === 1)
                     }
                 }
             }

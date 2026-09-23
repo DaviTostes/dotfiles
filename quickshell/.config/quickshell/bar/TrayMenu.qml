@@ -40,6 +40,15 @@ PopupWindow {
     menu: menu.handle
   }
 
+  // Esc closes the menu, like the settings panel. The bar grabs keyboard
+  // while this is open (Bar.focusable ← Tray.menuOpen) because the popup
+  // itself cannot take focus.
+  Shortcut {
+    sequence: "Escape"
+    enabled: menu.open
+    onActivated: menu.closeMenu()
+  }
+
   anchor {
     window: menu.targetItem ? menu.targetItem.QsWindow.window : null
     edges: Edges.Top

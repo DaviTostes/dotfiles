@@ -1,0 +1,91 @@
+#!/bin/sh
+# wallpaper-apply — push ~/.config/hypr/wallpaper.conf to the awww daemon.
+#
+# The config is a list of hyprpaper-style "wallpaper { ... }" blocks, one per
+# monitor, plus an optional top-level "transition = <awww type>". This script
+# translates fit_mode into an awww --resize value and sends one `awww img` per
+# block.
+#
+# It is the single apply path, used both at login (hyprland.lua autostart) and
+# by the quickshell Hypr Config panel (HyprConfig -> Wallpaper -> Save).
+
+set -u
+
+CONF="${WALLPAPER_CONF:-$HOME/.config/hypr/wallpaper.conf}"
+
+# awww-daemon may still be coming up when Hyprland's autostart reaches us.
+i=0
+while ! awww query >/dev/null 2>&1; do
+    i=$((i + 1))
+    if [ "$i" -ge 50 ]; then
+        echo "wallpaper-apply: awww-daemon not reachable" >&2
+        exit 1
+    fi
+    sleep 0.1
+done
+
+[ -f "$CONF" ] || { echo "wallpaper-apply: $CONF not found" >&2; exit 1; }
+
+transition=$(awk '
+    /^[[:space:]]*transition[[:space:]]*=/ {
+        sub(/[[:space:]]*#.*/, "")
+        sub(/^[^=]*=[[:space:]]*/, "")
+        gsub(/[[:space:]"]/, "")
+        print; exit
+    }
+' "$CONF")
+[ -n "$transition" ] || transition=simple
+
+# map config fit_mode -> awww --resize (cover/contain/tile kept for old files)
+conf_to_resize() {
+    case "$1" in
+        crop|fit|stretch|no) printf '%s' "$1" ;;
+        cover)               printf 'crop' ;;
+        contain)             printf 'fit' ;;
+        tile)                printf 'no' ;;
+        *)                   printf 'crop' ;;
+    esac
+}
+
+apply_one() {
+    mon=$1
+    path=$2
+    fit=$3
+    [ -n "$path" ] || return 0
+    case "$path" in
+        "~/"*) path="$HOME/${path#\~/}" ;;
+        "~")   path="$HOME" ;;
+    esac
+    [ -f "$path" ] || { echo "wallpaper-apply: missing $path" >&2; return 0; }
+    fit=$(conf_to_resize "$fit")
+    if [ "$mon" = "-" ] || [ -z "$mon" ]; then
+        awww img --resize "$fit" --transition-type "$transition" "$path"
+    else
+        awww img -o "$mon" --resize "$fit" --transition-type "$transition" "$path"
+    fi
+}
+
+# Emit "monitor<TAB>path<TAB>fit" per block; "-" stands in for an empty
+# monitor so `read` does not swallow the leading field.
+awk '
+    /^[[:space:]]*wallpaper[[:space:]]*\{/ { mon=""; path=""; fit=""; inb=1; next }
+    inb && /^[[:space:]]*\}/ {
+        if (mon == "") mon = "-"
+        printf "%s\t%s\t%s\n", mon, path, fit
+        inb=0; next
+    }
+    inb {
+        line=$0; sub(/[[:space:]]*#.*/, "", line)
+        if (line !~ /=/) next
+        key=line; sub(/=.*/, "", key)
+        val=line; sub(/^[^=]*=[[:space:]]*/, "", val)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+        gsub(/^"|"$/, "", val)
+        if (key == "monitor") mon=val
+        else if (key == "path") path=val
+        else if (key == "fit_mode") fit=val
+    }
+' "$CONF" | while IFS="$(printf '\t')" read -r mon path fit; do
+    apply_one "$mon" "$path" "$fit"
+done

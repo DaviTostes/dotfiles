@@ -322,8 +322,16 @@ PanelWindow {
     // swallows clicks on the card's padding so they don't reach the scrim
     MouseArea { anchors.fill: parent }
 
+    // Escape closes the launcher. Layer surfaces do not reliably map onto
+    // Qt's "active window", so a window-scoped Shortcut here swallowed the
+    // key without ever activating — and in doing so stopped the field's
+    // Keys handler from seeing it too. Application scope works (same fix as
+    // Opencode.qml); `enabled` keeps it from colliding with that panel's
+    // Escape shortcut while the launcher is closed.
     Shortcut {
       sequence: "Escape"
+      context: Qt.ApplicationShortcut
+      enabled: root.open
       onActivated: root.close()
     }
 

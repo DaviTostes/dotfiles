@@ -8,6 +8,10 @@ Pill {
   implicitWidth: row.implicitWidth + 20
   visible: SystemTray.items.values.length > 0
 
+  // exposed so the bar can hold keyboard focus while the menu is open
+  // (popups can't grab focus themselves) — this is what lets Esc reach it
+  readonly property alias menuOpen: trayMenu.open
+
   // click-outside duty for the tray menu
   Catcher {
     active: trayMenu.open

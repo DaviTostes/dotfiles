@@ -13,6 +13,7 @@ Pill 1.0 Pill.qml
 Player 1.0 Player.qml
 SelText 1.0 SelText.qml
 Sound 1.0 Sound.qml
+Tasks 1.0 Tasks.qml
 Tip 1.0 Tip.qml
 Toasts 1.0 Toasts.qml
 Tray 1.0 Tray.qml

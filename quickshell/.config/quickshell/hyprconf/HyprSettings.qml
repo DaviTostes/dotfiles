@@ -20,7 +20,7 @@ QtObject {
     property string wallpaperDir: Quickshell.env("HOME") + "/.config/backgrounds"
 
     // Wallpaper gallery popup state — host is the panel instance that
-    // opened it (per monitor); galleryTab is 0 (hyprpaper rows) or
+    // opened it (per monitor); galleryTab is 0 (wallpaper rows) or
     // 1 (hyprlock background); galleryRow indexes that tab's target.
     property bool galleryOpen: false
     property var galleryHost: null

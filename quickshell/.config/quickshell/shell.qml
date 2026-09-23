@@ -48,7 +48,8 @@ Scope {
   }
 
   // global keybind bridge — hyprland.lua: SUPER+A → `qs ipc call opencode toggle`,
-  // SUPER+N → `qs ipc call notifs toggle` (calendar panel w/ notifications)
+  // SUPER+N → `qs ipc call notifs toggle` (calendar panel w/ notifications),
+  // SUPER+O → `qs ipc call tasks toggle` (tasks dropdown)
   IpcHandler {
     target: "opencode"
 
@@ -62,6 +63,13 @@ Scope {
       const m = Hyprland.focusedMonitor;
       const bar = m ? root.bars[m.name] : null;
       if (bar) bar.openChat();
+    }
+
+    // SUPER+SHIFT+A — big chat window: closed→full, docked→full, full→closed
+    function toggleExpanded() {
+      const m = Hyprland.focusedMonitor;
+      const bar = m ? root.bars[m.name] : null;
+      if (bar) bar.toggleChatExpanded();
     }
 
     function close() {
@@ -79,6 +87,22 @@ Scope {
     }
 
     function clear() { Notifs.clearAll(); }
+  }
+
+  // tasks pill — `qs ipc call tasks toggle` (SUPER+O, moved off the omm
+  // launcher) / `close`
+  IpcHandler {
+    target: "tasks"
+
+    function toggle() {
+      const m = Hyprland.focusedMonitor;
+      const bar = m ? root.bars[m.name] : null;
+      if (bar) bar.toggleTasks();
+    }
+
+    function close() {
+      for (const k in root.bars) root.bars[k].closeTasks();
+    }
   }
 
   // SUPER+Space — app launcher (replaces wofi --show drun)
@@ -103,8 +127,8 @@ Scope {
   }
 
   // settings dropdown, straight on a tab by name: `qs ipc call settings open
-  // bluetooth` (SUPER+SHIFT+B) / `open wifi` (SUPER+SHIFT+W). Tab names live
-  // in HyprConfig.tabs.
+  // bluetooth` (SUPER+SHIFT+B) / `open wifi` (SUPER+SHIFT+W) /
+  // `open vpn` (SUPER+SHIFT+V). Tab names live in HyprConfig.tabs.
   IpcHandler {
     target: "settings"
 
