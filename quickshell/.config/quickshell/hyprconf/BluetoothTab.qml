@@ -3,16 +3,21 @@ import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import Quickshell
 import Quickshell.Bluetooth
+import Quickshell.Io
 
 // Bluetooth tab of the Hypr Config dropdown (replaces bzmenu).
 //
-// Quickshell talks to BlueZ over D-Bus directly, so there is no external
-// tool involved. Clicking a device connects it (BlueZ pairs on demand) or
-// disconnects it; the ✕ forgets a known device.
+// Quickshell talks to BlueZ over D-Bus directly. Clicking a device connects
+// (or disconnects) it; the ✕ forgets a known device.
 //
-// Caveat from 0.3.1: quickshell ships no pairing *agent*, so a device that
-// needs PIN/passkey confirmation cannot be paired from here — already
-// paired devices (and Just Works ones) are fine.
+// Pairing: BlueZ refuses to attach the HID profile to a device that is not
+// bonded, and Quickshell 0.3.1 registers no pairing *agent*, so calling
+// `Device1.Connect()` on a fresh device connects nothing — bluetoothd just
+// logs "Rejected connection from !bonded device". Bonded devices keep using
+// Quickshell natively; the un-bonded case falls back to `bluetoothctl`
+// (pair → trust → connect), which registers its own agent and completes
+// Just Works pairing. Devices demanding host PIN/passkey entry still can't
+// be paired from here.
 ColumnLayout {
     id: root
 
@@ -24,11 +29,38 @@ ColumnLayout {
     property int selected: 0
     property string status: ""
 
+    // Un-bonded devices go through `bluetoothctl` (see the header comment);
+    // pairStep walks pair → trust → connect and is 0 when idle.
+    property string pairTarget: ""
+    property int pairStep: 0
+
     readonly property bool on: root.adapter !== null && root.adapter.enabled
 
     spacing: 10
 
     function label(d) { return d ? (d.name || d.deviceName || d.address) : "" }
+
+    function validAddress(a) {
+        return typeof a === "string" && /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/i.test(a);
+    }
+
+    function plain(s) {
+        return (s || "").replace(/\x1b\[[0-9;]*m/g, "").replace(/\r/g, "");
+    }
+
+    // bluetoothctl mixes progress lines with errors; surface the first line
+    // that actually reads like an error, else the first non-empty one
+    function errorLine(s) {
+        const lines = root.plain(s).split("\n");
+        let first = "";
+        for (let i = 0; i < lines.length; i++) {
+            const t = lines[i].trim();
+            if (t === "") continue;
+            if (/fail|error|not available|authentication|refused/i.test(t)) return t;
+            if (first === "") first = t;
+        }
+        return first;
+    }
 
     // BlueZ reports an icon *name* per device class; theme lookups for those
     // names are unreliable here, so map them to Nerd Font glyphs (same
@@ -88,7 +120,7 @@ ColumnLayout {
         if (d.state === BluetoothDeviceState.Disconnecting) return "desconectando…";
         if (d.connected) return d.batteryAvailable ? Math.round(d.battery) + "%" : "conectado";
         if (d.bonded || d.paired) return "pareado";
-        return "novo";
+        return "parear";
     }
 
     function stateColor(d) {
@@ -109,9 +141,76 @@ ColumnLayout {
         } else if (d.connected) {
             d.disconnect();
             root.status = "desconectando " + root.label(d) + "…";
-        } else {
+        } else if (d.bonded) {
+            // a real bond exists — BlueZ can bring the HID link up on its own
+            // (bluez also sets a transient `paired` without a bond, which is
+            // not enough for HID, so only `bonded` takes this path)
             d.connect();
             root.status = "conectando " + root.label(d) + "…";
+        } else {
+            // fresh device: Connect() alone never bonds it (no agent in 0.3.1)
+            root.pair(d);
+        }
+    }
+
+    function pair(d) {
+        const mac = d ? d.address : "";
+        if (!root.validAddress(mac)) {
+            root.status = "endereço bluetooth inesperado: " + mac;
+            return;
+        }
+        root.pairTarget = mac;
+        root.pairStep = 1;
+        root.status = "pareando " + root.label(d) + "…";
+        pairProc.command = ["bluetoothctl", "--timeout", "30", "pair", mac];
+        pairProc.running = true;
+    }
+
+    function finishPair(code, detail) {
+        const wasConnecting = root.pairStep === 3;
+        root.pairStep = 0;
+        root.pairTarget = "";
+        if (code !== 0) {
+            root.status = detail !== "" ? "erro: " + detail
+                                        : "falhou (código " + code + ")";
+        } else {
+            root.status = wasConnecting ? "pareado e conectado" : "pareado";
+        }
+        root.refresh();
+    }
+
+    // one `bluetoothctl` invocation per step: each one registers an agent for
+    // the whole operation, which is what actually creates the bond. `trust`
+    // is best-effort (lets BlueZ auto-connect the keyboard next time).
+    Process {
+        id: pairProc
+
+        stdout: StdioCollector { id: pairOut; waitForEnd: true }
+        stderr: StdioCollector { id: pairErr; waitForEnd: true }
+
+        onExited: code => {
+            const out = root.plain(pairOut.text);
+            const err = root.plain(pairErr.text);
+            const already = /AlreadyExists/i.test(err) || /AlreadyExists/i.test(out);
+            const detail = root.errorLine(err) || root.errorLine(out);
+
+            if (root.pairStep === 1 && (code === 0 || already)) {
+                // a leftover transient "paired" flag makes `pair` report
+                // AlreadyExists; trust + connect still settle a real bond
+                root.pairStep = 2;
+                root.status = "confiando " + root.pairTarget + "…";
+                pairProc.command = ["bluetoothctl", "trust", root.pairTarget];
+                pairProc.running = true;
+            } else if (root.pairStep === 2) {
+                // trust is best-effort: a failure here shouldn't stop connect
+                root.pairStep = 3;
+                root.status = "conectando " + root.pairTarget + "…";
+                pairProc.command = ["bluetoothctl", "--timeout", "30",
+                                    "connect", root.pairTarget];
+                pairProc.running = true;
+            } else {
+                root.finishPair(code, detail);
+            }
         }
     }
 

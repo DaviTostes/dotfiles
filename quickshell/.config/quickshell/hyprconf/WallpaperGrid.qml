@@ -13,6 +13,9 @@ Rectangle {
     property string picked: ""
     signal chosen(string p)
 
+    // play gifs only while the gallery is actually open
+    property bool animate: true
+
     property string dir: HyprSettings.wallpaperDir
     readonly property string homeDir: Quickshell.env("HOME")
     readonly property string dirPath: Conf.expandPath(dir, root.homeDir)
@@ -118,12 +121,12 @@ Rectangle {
                             Conf.expandPath(cell.p, root.homeDir)
                             === Conf.expandPath(root.picked, root.homeDir)
 
-                        Image {
+                        WallpaperImage {
                             anchors.fill: parent
-                            asynchronous: true
                             fillMode: Image.PreserveAspectCrop
                             source: Conf.fileUrl(cell.p, root.homeDir)
                             sourceSize.width: 240
+                            animate: root.animate
                             scale: cellMa.containsMouse ? 1.06 : 1
                             Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
                         }

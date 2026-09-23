@@ -33,6 +33,9 @@ Item {
   // the same SSE events, so this shared marker keeps the notification from
   // firing once per bar.
   property string lastOpencodeDoneEvent: ""
+  // Same idea for "opencode asked something" (a select-question form or a
+  // permission request): one notification per question, not one per monitor.
+  property string lastOpencodeAskKey: ""
   readonly property var toastList: {
     root.hiddenTick;
     return server.trackedNotifications.values.filter(n => !root.hiddenIds[n.id]);

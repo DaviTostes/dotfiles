@@ -41,6 +41,20 @@ Pill {
 
   // ---------- panel ----------
   property bool panelOpen: false
+  // panelExpanded: the dropdown grows to a large, screen-centered window
+  // (chatbot style). Toggled from the header button; Escape collapses it
+  // back first. NB: `expanded` is taken by the foldout map below.
+  property bool panelExpanded: false
+  // one-shot: open straight into panelExpanded (set by openExpanded())
+  property bool pendingExpanded: false
+  // panel fade (0 hidden, 1 shown). Driven by explicit animations so an
+  // expand/collapse can fade the panel out, snap the surface to the other
+  // size/position, then fade back in. Animating the surface size every frame
+  // instead makes the compositor reallocate the buffer each frame and drops
+  // the whole panel to ~15fps.
+  property real panelFade: 0
+  // the mode an in-flight crossfade is switching to
+  property bool pendingMode: false
   property string mode: "chat"    // central tab: chat | translate | calc
   // tab swipe: on tab change the incoming body starts offset to the side
   // (direction follows the tab order) and glides back to 0
@@ -81,6 +95,7 @@ Pill {
   property int fileSel: 0         // keyboard-selected finder hit
   property int finderSeq: 0       // guards against out-of-order finder replies
   property string finderQuery: "" // latest @-token, requested after a debounce
+  property bool finderBusy: false // request in flight (drives the menu hint)
   property var pendingImages: []  // clipboard images awaiting send: {name, b64}
   property int imageSeq: 0        // monotonic, so chip names never collide
   property bool pasteFallbackText: true  // Ctrl+V falls back to text paste
@@ -106,6 +121,14 @@ Pill {
   property bool clearBusyNextLoad: false  // panel (re)opened: all-complete ⇒ idle
   property bool rebuilding: false         // chatModel rebuild in progress (guards scroll state)
   property bool chatLoading: false        // switching chats: history still arriving
+  // raw message cache (newest-first) per session, so later reloads can fetch
+  // only the newest page instead of re-paging the whole history. Sid-keyed:
+  // a different session starts fresh.
+  property var msgCache: []
+  property string msgCacheSid: ""
+  property int msgLoadSeq: 0              // supersedes in-flight paginated loads
+  property bool msgPaginating: false      // full-history pagination in flight
+  property bool msgReloadPending: false   // a load was asked for mid-pagination
   property var rebuildQueue: []            // chunked structural rebuild (see startRebuild)
   property int rebuildAt: 0
   readonly property int rebuildChunkSize: 8  // delegates built per frame
@@ -461,14 +484,67 @@ Pill {
   }
 
   // ---------- model index ----------
-  // All appends/clears go through here so the key index and text map stay in
-  // lockstep with the ListModel.
+  // Every row entering the ListModel goes through here, so the key index and
+  // text map stay in lockstep and — more importantly — every role is coerced
+  // to the type the model pinned. ListModel rejects (or silently drops) a
+  // value whose type does not match the role's first-seen type, and an
+  // `undefined` from a missing field is not a supported variant at all
+  // ("Can't create role for unsupported data type"). `toolIn` is normalised
+  // to its String form by loadMessages because tool inputs are maps.
+  function modelRow(d) {
+    return {
+      key: d.key === undefined ? "" : String(d.key),
+      kind: d.kind === undefined ? "" : String(d.kind),
+      text: d.text === undefined || d.text === null ? "" : String(d.text),
+      name: d.name === undefined || d.name === null ? "" : String(d.name),
+      state: d.state === undefined || d.state === null ? "" : String(d.state),
+      toolIn: d.toolIn === undefined || d.toolIn === null ? "" : String(d.toolIn),
+      toolOut: d.toolOut === undefined || d.toolOut === null ? "" : String(d.toolOut),
+      diff: d.diff === undefined || d.diff === null ? "" : String(d.diff),
+      live: d.live === true
+    };
+  }
+
   function modelAppend(d) {
     const k = d.key + "|" + d.kind;
     root.modelKeyMap[k] = root.modelKeys.length;
     root.modelKeys.push(k);
     root.textByKey[k] = d.text === undefined ? "" : d.text;
-    chatModel.append(d);
+    chatModel.append(root.modelRow(d));
+  }
+
+  // insert at a specific position, shifting the key->index map from there on
+  // (ListModel.insert reindexes entries, so the map must follow)
+  function modelInsert(i, d) {
+    const k = d.key + "|" + d.kind;
+    chatModel.insert(i, root.modelRow(d));
+    const keys = root.modelKeys.slice();
+    keys.splice(i, 0, k);
+    root.modelKeys = keys;
+    const map = Object.assign({}, root.modelKeyMap);
+    for (let j = i; j < keys.length; j++) map[keys[j]] = j;
+    root.modelKeyMap = map;
+    root.textByKey[k] = d.text === undefined ? "" : d.text;
+  }
+
+  // The key of a row changed in place (a new message got its server id): move
+  // the index maps so deltas keep resolving, without recreating the row.
+  function renameModelKey(i, newKey) {
+    const oldKey = root.modelKeys[i];
+    if (oldKey === undefined || oldKey === newKey) return;
+    const keys = root.modelKeys.slice();
+    keys[i] = newKey;
+    root.modelKeys = keys;
+    const map = Object.assign({}, root.modelKeyMap);
+    delete map[oldKey];
+    map[newKey] = i;
+    root.modelKeyMap = map;
+    // carry the accumulated text across (the streaming deltas arrived under
+    // the old, id-less key)
+    if (root.textByKey[oldKey] !== undefined && root.textByKey[newKey] === undefined)
+      root.textByKey[newKey] = root.textByKey[oldKey];
+    delete root.textByKey[oldKey];
+    chatModel.setProperty(i, "key", newKey.slice(0, newKey.lastIndexOf("|")));
   }
 
   function modelClear() {
@@ -510,7 +586,10 @@ Pill {
   function rebuildChunk() {
     const q = root.rebuildQueue;
     let n = 0;
-    while (root.rebuildAt < q.length && n < root.rebuildChunkSize) {
+    // while the chat is hidden behind the "loading" state a bigger batch is
+    // free (nothing is painted mid-build), so a long session opens sooner
+    const budget = root.chatLoading ? 64 : root.rebuildChunkSize;
+    while (root.rebuildAt < q.length && n < budget) {
       root.modelAppend(q[root.rebuildAt]);
       root.rebuildAt += 1;
       n += 1;
@@ -563,21 +642,64 @@ Pill {
     activePoll.restart();
   }
 
+  // open the panel straight in the large, centered (chatbot) mode. Recorded
+  // as a pending wish so onPanelOpenChanged can snap there before the window
+  // is ever painted (setting panelExpanded afterwards would flash docked).
+  // Only valid while CLOSED — see toggleExpanded() for the open cases.
+  function openExpanded() {
+    root.pendingExpanded = true;
+    root.panelOpen = true;
+  }
+
+  // SUPER+SHIFT+A: one key for the big window. Cycles
+  //   closed → open full · docked → full · full → closed
+  // (openExpanded() alone could not do the open cases: panelOpen does not
+  // change when it is already open, so onPanelOpenChanged never fired).
+  function toggleExpanded() {
+    if (!root.panelOpen) { root.openExpanded(); return; }
+    if (!root.panelExpanded) { root.setPanelExpanded(true); return; }
+    root.panelOpen = false;                                          // fades out
+  }
+
+  // Switch docked <-> expanded while the panel is open. The window size is
+  // NOT tweened: the panel fades out, the surface snaps to the new geometry
+  // while invisible (modeSwap's middle), then fades back in.
+  function setPanelExpanded(v) {
+    if (root.panelExpanded === v) return;
+    if (!root.panelOpen || !panel.visible) { root.panelExpanded = v; return; }
+    root.pendingMode = v;
+    showAnim.stop();
+    hideAnimFx.stop();
+    modeSwap.restart();
+  }
+
   // focus the single real editor (the bar's hiddenInput) and mirror the
-  // active tab's field into it
+  // active tab's field into it. In full mode the floating window has normal
+  // compositor focus, so the visible field takes focus directly instead.
   function focusPanelField() {
     if (!root.panelOpen) return;
     root.inputSyncing = true;
     hiddenInput.text = root.mode === "translate" ? translateBox.sourceText
                                                  : inputField.text;
     root.inputSyncing = false;
+    root.focusChatEditor();
+  }
+
+  // Focus whichever editor owns the keyboard: the visible field in full mode
+  // (real window, normal focus), the bar's hidden editor when docked.
+  function focusChatEditor() {
+    if (!root.panelOpen) return;
+    if (root.panelExpanded) {
+      if (inputField) inputField.forceActiveFocus();
+      return;
+    }
     hiddenInput.forceActiveFocus();
   }
 
   Timer {
     id: refocusTimer
     interval: 250
-    onTriggered: if (root.panelOpen) hiddenInput.forceActiveFocus();
+    onTriggered: if (root.panelOpen) root.focusChatEditor();
   }
 
   Timer {
@@ -878,13 +1000,19 @@ Pill {
     return "";
   }
 
-  // pretty-print a tool's input only on demand: the model stores the raw
-  // object and this runs when the fold-out is opened, not on every reload
-  // (JSON.stringify of every tool input on every reload added up)
+  // Pretty-print a tool input as a String. ListModel pins each role's type
+  // from the first value it receives ("Can't assign to existing role … of
+  // different type"), and tool inputs arrive as maps, lists or plain strings
+  // depending on the tool — so the model stores the string form only.
+  // Called once per tool part on a reload, which JSON.stringify handles fine.
   function toolInputText(v) {
     if (v === null || v === undefined || v === "") return "";
     if (typeof v === "string") return v;
-    try { return JSON.stringify(v, null, 1); } catch (e) { return ""; }
+    try {
+      if (!Array.isArray(v) && typeof v === "object"
+          && Object.keys(v).length === 0) return "";
+      return JSON.stringify(v, null, 1);
+    } catch (e) { return ""; }
   }
 
   // cap a joined unified diff, keeping whole lines
@@ -1165,31 +1293,175 @@ Pill {
                              "-a", "opencode", title, body]);
   }
 
+  // opencode is waiting on the user: a select-question (form) or a permission
+  // request needs an answer or the turn stalls forever. One notification per
+  // question, only while the panel is closed (open = you can see it), and
+  // deduplicated across monitors by a shared key.
+  function notifyAsk(key, title, body) {
+    if (key === "" || Notifs.lastOpencodeAskKey === key) return;
+    Notifs.lastOpencodeAskKey = key;
+    const t = title || "opencode — pergunta";
+    Quickshell.execDetached(["notify-send", "-u", "normal", "-a", "opencode",
+                             t, body || "o opencode está esperando sua resposta"]);
+  }
+
+  // Reconcile the model with `desired` by key instead of wiping it. Used when
+  // the linear prefix broke but the change is still "same chat, a part was
+  // inserted": the usual case while a turn streams, because a delta can reach
+  // us before the server persists the part (or the server reorders
+  // reasoning/text). Returns false unless merging is provably safe; anything
+  // else (session switch, removals, real reorder) must rebuild.
+  //
+  // Safe means: every row on screen is either present in `desired` (so it gets
+  // updated in place) or sits in an unbroken run at the very end whose keys
+  // `desired` does not contain at all — the "streamed ahead of the server"
+  // tail. That guarantees an insert can never duplicate or shadow a row.
+  function mergeShape(desired) {
+    const mCount = chatModel.count;
+    if (mCount === 0) return false;
+
+    // 1. how many rows on screen are also in `desired`? They must be a prefix
+    //    of the model: once a row is "unknown to the server", everything after
+    //    it must be unknown too (else it is a reorder, not a trailing tail).
+    const want = {};
+    for (const d of desired) want[d.key + "|" + d.kind] = true;
+
+    let known = 0;
+    while (known < mCount) {
+      const it = chatModel.get(known);
+      if (!want[it.key + "|" + it.kind]) break;
+      known++;
+    }
+    for (let j = known; j < mCount; j++) {
+      const it = chatModel.get(j);
+      if (want[it.key + "|" + it.kind]) return false;   // unknown, then known again
+    }
+
+    // 2. the known rows must appear in `desired` in the SAME order, and the
+    //    rows of `desired` missing from the model are the inserts.
+    const modelAt = i => chatModel.get(i).key + "|" + chatModel.get(i).kind;
+    const inserts = [];
+    let mi = 0;
+    for (let di = 0; di < desired.length; di++) {
+      if (mi < known && modelAt(mi) === desired[di].key + "|" + desired[di].kind) {
+        mi++;
+      } else {
+        inserts.push(di);
+      }
+    }
+    if (mi !== known) return false;   // known rows finished early → out of order
+
+    // 3. apply: insert the missing rows back-to-front, then refresh the shared
+    //    ones. The trailing unknowns are left exactly as they are.
+    for (let i = inserts.length - 1; i >= 0; i--)
+      root.modelInsert(inserts[i], desired[inserts[i]]);
+
+    for (let di = 0, mj = 0; di < desired.length && mj < chatModel.count; ) {
+      const it = chatModel.get(mj);
+      if (it.key === desired[di].key && it.kind === desired[di].kind) {
+        const d = desired[di];
+        if (it.text !== d.text) {
+          chatModel.setProperty(mj, "text", d.text);
+          root.textByKey[d.key + "|" + d.kind] = d.text;
+        }
+        if (it.name !== d.name) chatModel.setProperty(mj, "name", d.name);
+        if (it.state !== d.state) chatModel.setProperty(mj, "state", d.state);
+        if (it.toolIn !== d.toolIn) chatModel.setProperty(mj, "toolIn", d.toolIn);
+        if (it.toolOut !== d.toolOut) chatModel.setProperty(mj, "toolOut", d.toolOut);
+        if (it.diff !== d.diff) chatModel.setProperty(mj, "diff", d.diff);
+        if (it.live && !d.live) chatModel.setProperty(mj, "live", false);
+        di++; mj++;
+      } else {
+        di++;
+      }
+    }
+    return true;
+  }
+
+  // The message endpoint pages (default 50, newest-first) with a cursor. Only
+  // ever fetching the first page made the returned window SLIDE as the chat
+  // grew: the model's oldest rows fell out of `desired`, the common prefix
+  // broke at row 0 and mergeShape bailed, so every tool update rebuilt the
+  // whole chat (the "loading chat" flash). So the first load of a session
+  // pages through the WHOLE history into `msgCache`; later loads fetch just
+  // the newest page and merge it with the cached older messages.
   function loadMessages() {
     if (!root.session) return;
     const sid = root.session.id;
-    api("GET", "/api/session/" + sid + "/message", null, (ok, data, status) => {
-      // the displayed session was deleted elsewhere (TUI, another panel):
-      // drop it and let loadSession pick a live one instead of showing a
-      // permanently frozen history
-      if (status === 404 && root.session && root.session.id === sid) {
-        root.session = null;
-        root.modelClear();
-        root.resetTurnState();
-        root.loadSession();
-        return;
+    // A full-history pagination for THIS session is still in flight: a second
+    // load would see an empty cache, fetch only page 1 and freeze the history
+    // there. Remember it and re-run once the pagination finishes.
+    if (root.msgPaginating && root.msgCacheSid === sid) {
+      root.msgReloadPending = true;
+      return;
+    }
+    const fresh = root.msgCacheSid !== sid;   // new session → full history
+    if (fresh) {
+      root.msgCache = [];
+      root.msgCacheSid = sid;
+      root.msgPaginating = true;
+      root.msgReloadPending = false;
+    }
+    const seq = ++root.msgLoadSeq;
+    const raw = [];
+    const done = () => {
+      root.msgPaginating = false;
+      if (root.msgReloadPending) {
+        root.msgReloadPending = false;
+        root.loadMessages();     // a request raced the pagination: re-fetch
       }
-      if (!ok || !data || !data.data) { root.chatLoading = false; return; }
-      if (!root.session || root.session.id !== sid) return;  // switched mid-flight
-      const wasPinned = chatView.pinned;
-      // rebuild atomically: intermediate contentHeight collapses clamp
-      // contentY and would clobber the pinned/scroll state mid-rebuild
-      root.rebuilding = true;
-      let deferred = false;   // structural rebuild handed to rebuildTimer
-      try {
-      // the API returns messages newest-first; chat order is oldest-first.
-      // Walk it backwards instead of copying + reversing the whole array.
-      const raw = data.data;
+    };
+    const fetchPage = cursor => {
+      if (seq !== root.msgLoadSeq) return;    // superseded by a newer load
+      const q = "?limit=200"
+          + (cursor ? "&cursor=" + encodeURIComponent(cursor) : "");
+      api("GET", "/api/session/" + sid + "/message" + q, null, (ok, data, status) => {
+        if (seq !== root.msgLoadSeq) return;
+        // the displayed session was deleted elsewhere (TUI, another panel):
+        // drop it and let loadSession pick a live one instead of showing a
+        // permanently frozen history
+        if (status === 404 && root.session && root.session.id === sid) {
+          root.session = null;
+          root.modelClear();
+          root.resetTurnState();
+          done();
+          root.loadSession();
+          return;
+        }
+        if (!ok || !data || !data.data) { root.chatLoading = false; done(); return; }
+        for (const m of data.data) raw.push(m);
+        const next = data.cursor && data.cursor.next;
+        if (next && fresh) { fetchPage(next); return; }  // keep paging the history
+        // raw is newest-first. On a later load it is only the newest page:
+        // splice it on top of the cached older messages (overlap by id).
+        let merged;
+        if (fresh || raw.length === 0) {
+          merged = raw.slice();
+        } else {
+          const lastId = raw[raw.length - 1].id;
+          let idx = -1;
+          for (let i = 0; i < root.msgCache.length; i++)
+            if (root.msgCache[i].id === lastId) { idx = i; break; }
+          merged = idx >= 0 ? raw.concat(root.msgCache.slice(idx + 1)) : raw.slice();
+        }
+        root.msgCache = merged;
+        root.applyMessages(sid, merged);
+        done();
+      });
+    };
+    fetchPage(null);
+  }
+
+  function applyMessages(sid, raw) {
+    if (!root.session || root.session.id !== sid) return;  // switched mid-flight
+    const wasPinned = chatView.pinned;
+    // rebuild atomically: intermediate contentHeight collapses clamp
+    // contentY and would clobber the pinned/scroll state mid-rebuild
+    root.rebuilding = true;
+    let deferred = false;   // structural rebuild handed to rebuildTimer
+    try {
+      // `raw` is newest-first; chat order is oldest-first. Walk it backwards
+      // instead of copying + reversing the whole array.
       // streamed text must never shrink (the API copy can lag the live
       // deltas): root.textByKey mirrors the model's text, so it is read
       // directly instead of snapshotting every row on each reload
@@ -1215,7 +1487,11 @@ Pill {
             if (!c || !c.type) continue;
             counts[c.type] = (counts[c.type] || 0) + 1;
             const key = m.id + ":" + c.type + ":" + (counts[c.type] - 1);
-            if (c.type === "text" && (c.text || "").trim() !== "") {
+            if (c.type === "text" && ((c.text || "").trim() !== "" || !done)) {
+              // a live part is kept even while empty: dropping it made the
+              // row pop in mid-list when the first token landed, which broke
+              // the common prefix and forced a structural rebuild (the
+              // "loading chat" flash on every tool update)
               const k = key + "|assistant";
               const t = (c.text || "").length >= (root.textByKey[k] || "").length
                   ? c.text : root.textByKey[k];
@@ -1244,11 +1520,21 @@ Pill {
                     .map(l => "+" + l).join("\n"));
               }
               desired.push({
-                key: key, kind: "tool", name: name,
+                key: key, kind: "tool",
+                // tool rows render through the fold-out, never as plain text,
+                // but the role MUST be present: a missing `text` makes the
+                // in-place update below write `undefined` into the ListModel,
+                // and Qt rejects that variant ("Can't create role for
+                // unsupported data type") every single reload.
+                text: "", name: name,
                 state: (st.status || "") + (st.title ? " · " + st.title : running ? " · running…" : ""),
-                // keep the raw input; it is only pretty-printed when the
-                // fold-out is actually opened (see toolInputText)
-                toolIn: st.input || null,
+                // Keep the raw input; it is only pretty-printed when the
+                // fold-out is opened (see toolInputText). Normalised to a
+                // String here: ListModel pins a role's type from its first
+                // value, and a tool input can be a map, a list or a string
+                // ("Can't assign to existing role 'toolIn' of different
+                // type" rejected every later write of another shape).
+                toolIn: toolInputText(st.input),
                 toolOut: toolOutText(st),
                 diff: diff,
                 live: false
@@ -1279,6 +1565,25 @@ Pill {
         if (it.key !== desired[prefix].key || it.kind !== desired[prefix].kind) break;
       }
 
+      // A brand-new assistant message can briefly have NO id server-side, and
+      // the key is built from it — so when the id is assigned the row's key
+      // changes with the same position and kind. Treat that single trailing
+      // row as a rename instead of a structural change: otherwise every id
+      // assignment rebuilt the whole chat (the "everything reloads" flicker).
+      let renameTail = prefix;
+      if (!wasBuilding && prefix < n && prefix === chatModel.count - 1
+          && prefix === desired.length - 1
+          && chatModel.get(prefix).kind === desired[prefix].kind) {
+        renameTail = prefix + 1;
+        const it = chatModel.get(prefix);
+        const d = desired[prefix];
+        // move the streamed state to the new key before it is dropped
+        root.renameModelKey(prefix, d.key + "|" + d.kind);
+        if ((root.textByKey[d.key + "|" + d.kind] || "").length < (it.text || "").length)
+          root.textByKey[d.key + "|" + d.kind] = it.text;
+      }
+      prefix = renameTail;
+
       // `chatModel.count > 0` keeps an empty model (a fresh switch, which
       // arrives here already cleared) on the structural path: the append-only
       // path leaves `rebuilding` clear, and a multi-frame append would flip
@@ -1302,8 +1607,7 @@ Pill {
           if (it.state !== d.state) chatModel.setProperty(i, "state", d.state);
           if (it.toolIn !== d.toolIn) chatModel.setProperty(i, "toolIn", d.toolIn);
           if (it.toolOut !== d.toolOut) chatModel.setProperty(i, "toolOut", d.toolOut);
-          if (it.diff !== d.diff) chatModel.setProperty(i, "diff", d.diff);
-          // `live` only ever settles true → false (part finished)
+          if (it.diff !== d.diff) chatModel.setProperty(i, "diff", d.diff);          // `live` only ever settles true → false (part finished)
           if (it.live && !d.live) chatModel.setProperty(i, "live", false);
         }
         if (tail.length > root.rebuildChunkSize) {
@@ -1315,10 +1619,18 @@ Pill {
           for (const d of tail) root.modelAppend(d);
           root.chatLoading = false;
         }
+      } else if (!wasBuilding && root.mergeShape(desired)) {
+        // the prefix broke but this is still the same chat with a part
+        // inserted (a delta landed before the server persisted it): merge in
+        // place instead of clearing the whole model — clearing made every
+        // update look like a full chat reload
+        root.chatLoading = false;
       } else {
-        // different shape (session switch / reorder) or a superseded rebuild:
-        // clear and rebuild across frames, hidden behind the loading state
-        if (!wasBuilding) root.chatLoading = true;
+        // genuinely different shape (session switch, removals, reorder): clear
+        // and rebuild across frames. Only blank the chat when there was
+        // nothing on screen — that is an actual chat switch, and the "loading"
+        // state belongs to it.
+        if (!wasBuilding && chatModel.count === 0) root.chatLoading = true;
         root.startRebuild(desired);
         deferred = true;
       }
@@ -1356,7 +1668,6 @@ Pill {
       // restore the scroll exactly where the rebuild found it
       chatView.pinned = wasPinned;
       if (wasPinned) Qt.callLater(chatView.stick);
-    });
   }
 
   function loadPerms() {
@@ -1364,8 +1675,14 @@ Pill {
     const sid = root.session.id;
     api("GET", "/api/session/" + sid + "/permission", null, (ok, data) => {
       if (!root.session || root.session.id !== sid) return;  // switched
-      root.pendingPerm = (ok && data && data.data && data.data.length)
+      const perm = (ok && data && data.data && data.data.length)
           ? data.data[data.data.length - 1] : null;
+      root.pendingPerm = perm;
+      // a permission request blocks the turn until answered — notify when the
+      // panel is closed so it is not silently stuck
+      if (perm && !root.panelOpen)
+        root.notifyAsk("perm:" + perm.id, "opencode — permissão",
+                       perm.action + " — " + (perm.resources || []).join(", "));
     });
   }
 
@@ -1387,6 +1704,14 @@ Pill {
       if (!root.session || root.session.id !== sid) return;  // switched
       const list = (ok && data && data.data) ? data.data : [];
       root.pendingForms = list;
+      // a question appeared while the panel was closed: ping the desktop
+      // (the form stays pending until it is answered)
+      if (!root.panelOpen && list.length > 0) {
+        const f = list[list.length - 1];
+        root.notifyAsk("form:" + f.id,
+                       "opencode — " + (f.title || "pergunta"),
+                       root.sessionLabel(root.session));
+      }
       // seed/clean the answers map for the forms currently pending
       const ans = Object.assign({}, root.formAnswers);
       for (const f of list) if (!(f.id in ans)) ans[f.id] = {};
@@ -1467,7 +1792,7 @@ Pill {
                             title: field.title || field.key, form: form };
     inputField.text = "";
     hiddenInput.text = "";
-    hiddenInput.forceActiveFocus();
+    root.focusChatEditor();
     // closing any menu must not restore a parked draft into this field
     if (root.menu !== "") { root.menuSavedInput = ""; root.menu = ""; }
   }
@@ -1528,7 +1853,7 @@ Pill {
     root.menuSavedInput = "";
     inputField.text = "";
     hiddenInput.text = "";
-    hiddenInput.forceActiveFocus();
+    root.focusChatEditor();
   }
 
   function switchSession(s) {
@@ -1602,27 +1927,34 @@ Pill {
     api("POST", "/api/session/" + root.session.id + "/interrupt", {}, () => {});
   }
 
-  // parse trailing "@path" tokens into file attachments
+  // parse trailing "@path" tokens into file attachments. A path with spaces
+  // (very common here: "Telegram Desktop/…", "FICHA - … .docx") is inserted
+  // quoted — @"a b/c.pdf" — so the token survives the whitespace split, and
+  // the URI is percent-encoded per path segment because the server reads the
+  // attachment straight from it (a raw space or `#` comes back as a 400).
   function collectFiles(text) {
     const files = [];
     const dir = root.session && root.session.location
         ? root.session.location.directory : Quickshell.env("HOME");
     const home = Quickshell.env("HOME");
-    const re = /(^|\s)@([^\s,;]+)/g;
+    const re = /(^|\s)@(?:"([^"]+)"?|([^\s,;]+))/g;
     let m;
     while ((m = re.exec(text)) !== null) {
+      const quoted = m[2] !== undefined;
+      const tok = quoted ? m[2] : m[3];
       const start = m.index + m[1].length;
-      const tok = m[2];
-      // absolute and ~-anchored mentions must not be glued to the session
-      // dir; encodeURI keeps `/` and `:` but escapes spaces and `#`
-      let uri;
-      if (tok.startsWith("/")) uri = "file://" + encodeURI(tok);
-      else if (tok.startsWith("~/")) uri = "file://" + encodeURI(home + tok.slice(1));
-      else uri = "file://" + encodeURI(dir + "/" + tok);
+      // the exact matched span (keeps the quotes and survives a token the
+      // user left unterminated)
+      const full = m[0].slice(m[1].length);
+      let abs;
+      if (tok.startsWith("/")) abs = tok;
+      else if (tok.startsWith("~/")) abs = home + tok.slice(1);
+      else abs = dir + "/" + tok;
+      const uri = "file://" + abs.split("/").map(encodeURIComponent).join("/");
       files.push({
         uri: uri,
         name: tok,
-        mention: { start: start, end: start + 1 + tok.length, text: "@" + tok }
+        mention: { start: start, end: start + full.length, text: full }
       });
     }
     return files;
@@ -1725,6 +2057,7 @@ Pill {
     if (root.formTextTarget !== null) {
       finderTimer.stop();
       root.fileHits = [];
+      root.finderBusy = false;
       if (root.menu === "files") root.menu = "";
       return;
     }
@@ -1732,17 +2065,21 @@ Pill {
     if (text.length > 0 && text[0] === "/" && text.indexOf(" ") === -1) {
       finderTimer.stop();
       root.fileHits = [];
+      root.finderBusy = false;
       root.menu = "commands";
       return;
     }
-    // trailing @token → file finder (works before a session exists too)
-    const m = text.match(/@([^\s,;]*)$/);
+    // trailing @token → file finder (works before a session exists too).
+    // A quoted token (@"a b" or an open @"a b) matches too, so a folder with
+    // spaces keeps the finder scoped to it after it is picked.
+    const m = text.match(/@(?:"([^"]*)"?|([^\s,;]*))$/);
     if (m) {
-      const q = m[1];
+      const q = m[1] !== undefined ? m[1] : m[2];
       if (q.length === 0) {
         finderTimer.stop();
         root.finderSeq++;          // cancel any in-flight reply
         root.fileHits = [];
+        root.finderBusy = false;
         root.fileSel = 0;
         if (root.menu === "files") root.menu = "";
         return;
@@ -1755,6 +2092,7 @@ Pill {
       return;
     }
     finderTimer.stop();
+    root.finderBusy = false;
     if (root.menu === "files") root.menu = "";
   }
 
@@ -1762,9 +2100,11 @@ Pill {
     if (root.menu !== "files" || root.finderQuery === "") return;
     const q = root.finderQuery;
     const seq = ++root.finderSeq;
+    root.finderBusy = true;
     api("GET", "/api/fs/find?query=" + encodeURIComponent(q)
         + "&limit=12", null, (ok, data) => {
       if (seq !== root.finderSeq) return;   // a newer query superseded this one
+      root.finderBusy = false;
       if (!ok || !data || !data.data) { root.fileHits = []; root.fileSel = 0; return; }
       root.fileHits = data.data.map(f =>
         typeof f === "string" ? { path: f, type: "file" }
@@ -1799,20 +2139,25 @@ Pill {
     const path = typeof entry === "string" ? entry : entry.path;
     const type = typeof entry === "string" ? "file" : (entry.type || "file");
     const text = inputField.text;
-    const m = text.match(/@([^\s,;]*)$/);
+    const m = text.match(/@(?:"[^"]*"?|[^\s,;]*)$/);
     if (m) {
       const dir = root.session && root.session.location
           ? root.session.location.directory : Quickshell.env("HOME");
       let rel = path;
       if (rel.indexOf(dir + "/") === 0) rel = rel.slice(dir.length + 1);
-      // files get a trailing space so the mention ends; directories keep the
-      // finder open, now scoped to that folder
-      const suffix = type === "directory" ? "/" : " ";
-      inputField.text = text.slice(0, m.index) + "@" + rel + suffix;
+      const isDir = type === "directory";
+      // the finder returns directories with a trailing "/" already — strip it
+      // before re-adding exactly one, else picking a directory typed "//"
+      const inner = isDir ? rel.replace(/\/+$/, "") + "/" : rel;
+      // quote paths with spaces/commas so the @token survives collectFiles'
+      // whitespace split; files get a trailing space so the mention ends,
+      // directories keep the finder open scoped to that folder
+      const token = /[\s,;]/.test(inner) ? '@"' + inner + '"' : "@" + inner;
+      inputField.text = text.slice(0, m.index) + token + (isDir ? "" : " ");
       inputField.cursorPosition = inputField.text.length;
     }
     root.menu = type === "directory" ? "files" : "";
-    hiddenInput.forceActiveFocus();
+    root.focusChatEditor();
     if (type === "directory") root.updateFinder();
   }
 
@@ -1906,7 +2251,7 @@ Pill {
     }
     root.menu = name;
     root.menuSel = 0;
-    if (root.panelOpen) hiddenInput.forceActiveFocus();
+    if (root.panelOpen) root.focusChatEditor();
   }
 
   function closeMenu() {
@@ -1915,12 +2260,15 @@ Pill {
     root.menuSel = 0;
     root.inputSyncing = true;
     menuSearchField.text = "";
-    // the bar's editor goes back to the parked draft shown in the field
+    // the bar's editor goes back to the parked draft shown in the field.
+    // This mirrors the FIELD (not menuSavedInput, which is cleared below):
+    // the finder/menu edits the field in place, and trusting the parked copy
+    // here dropped an @file mention that was picked while a menu was open.
     hiddenInput.text = inputField.text;
     root.inputSyncing = false;
     root.menuSavedInput = "";
     // hand the keyboard back to the chat editor
-    if (root.panelOpen) hiddenInput.forceActiveFocus();
+    if (root.panelOpen) root.focusChatEditor();
   }
 
   // keep the keyboard-selected row in view (the search row is first)
@@ -1936,6 +2284,9 @@ Pill {
 
   function closeMenuOrPanel() {
     if (root.menu !== "") { root.closeMenu(); return; }
+    // expanded: Escape steps back to the docked dropdown first, so a stray
+    // Escape does not throw the whole large window away
+    if (root.panelExpanded) { root.setPanelExpanded(false); return; }
     root.panelOpen = false;
   }
 
@@ -2071,20 +2422,54 @@ Pill {
   // keyboard: the chat input field lives in the popup window, but the
   // compositor's keyboard focus sits on the BAR surface right after the
   // pill's click (OnDemand grab) — and the bar has nothing editable, so
-  // keys would be dropped. This hidden TextInput in the bar window takes
+  // keys would be dropped. This hidden editor in the bar window takes
   // active focus when the panel opens and does the actual editing; the
   // popup's visible field mirrors it (both directions, so typing directly
   // into the popup after clicking it — which moves compositor focus to
   // the popup surface — also stays in sync).
+  //
+  // It is a TextEdit (not a TextInput) so Shift+Enter can insert a real
+  // newline: a single-line TextInput would drop it, and the draft would lose
+  // its line breaks on the next keystroke.
   property bool inputSyncing: false
 
-  TextInput {
+  // Enter sends; Shift+Enter inserts a newline. Shared by the hidden editor
+  // and the visible field so it behaves the same whichever surface holds the
+  // keyboard. In a search menu Enter picks the row and Shift+Enter is a no-op
+  // (a single-line query has no use for a line break).
+  function handleReturnKey(event) {
+    if (event.modifiers & Qt.ShiftModifier) {
+      event.accepted = true;
+      // only the free-form chat / form-answer editor gets line breaks; a
+      // search menu (models/agents/sessions/commands/files) is single-line
+      if (root.menuSearchOpen || root.mode !== "chat" || root.menu !== "") return;
+      const at = hiddenInput.cursorPosition;
+      root.inputSyncing = true;
+      hiddenInput.insert(at, "\n");
+      hiddenInput.cursorPosition = at + 1;
+      root.inputSyncing = false;
+      inputField.text = hiddenInput.text;
+      inputField.cursorPosition = at + 1;
+      if (root.mode === "chat") root.updateFinder();
+      return;
+    }
+    event.accepted = true;
+    if (root.formCommitText()) return;
+    if (root.menuPickSelected()) return;
+    if (root.mode === "translate") translateBox.translate();
+    else if (root.mode === "chat" && !root.finderPickSelected()) root.send();
+  }
+
+  TextEdit {
     id: hiddenInput
     width: 0
     height: 0
     opacity: 0
-    focus: root.panelOpen
+    // docked only: in full mode the visible field owns the keyboard
+    focus: root.panelOpen && !root.panelExpanded
     color: "transparent"
+    textFormat: TextEdit.PlainText
+    wrapMode: TextEdit.NoWrap
 
     onTextChanged: if (!root.inputSyncing) {
       root.inputSyncing = true;
@@ -2108,7 +2493,9 @@ Pill {
       root.inputSyncing = false;
     }
     // the chat's TextEdits never hold the (compositor) keyboard — the bar
-    // does. Forward copy from here to whichever message has a selection
+    // does. Forward copy from here to whichever message has a selection.
+    // BeforeItem so the menu arrows below beat the TextEdit's caret motion.
+    Keys.priority: Keys.BeforeItem
     Keys.onPressed: event => {
       // Escape closes the open menu (or the panel). Handled here as well as
       // via onEscapePressed so it works whichever surface holds the keyboard.
@@ -2144,20 +2531,11 @@ Pill {
         if (event.key === Qt.Key_Up) { root.finderMove(-1); event.accepted = true; return; }
       }
     }
-    // Enter only sends in the CHAT tab — otherwise a leftover draft would
-    // be submitted from the calculator (which has no text field of its own)
-    Keys.onReturnPressed: {
-      if (root.formCommitText()) return;
-      if (root.menuPickSelected()) return;
-      if (root.mode === "translate") translateBox.translate();
-      else if (root.mode === "chat" && !root.finderPickSelected()) root.send();
-    }
-    Keys.onEnterPressed: {
-      if (root.formCommitText()) return;
-      if (root.menuPickSelected()) return;
-      if (root.mode === "translate") translateBox.translate();
-      else if (root.mode === "chat" && !root.finderPickSelected()) root.send();
-    }
+    // Enter sends / Shift+Enter inserts a newline (see handleReturnKey).
+    // Enter only acts in the CHAT tab — a leftover draft must not be
+    // submitted from the calculator (which has no text field of its own).
+    Keys.onReturnPressed: event => root.handleReturnKey(event)
+    Keys.onEnterPressed: event => root.handleReturnKey(event)
     Keys.onEscapePressed: {
       if (root.formCancelText()) return;
       root.closeMenuOrPanel();
@@ -2176,20 +2554,159 @@ Pill {
   // as modal and drop every pointer press until the next motion event,
   // so it must stay keyboard-less.
   Catcher {
-    active: root.panelOpen
+    // only the docked dropdown is click-outside-to-close; the full mode is a
+    // real window (a fullscreen catcher layer would sit above it)
+    active: root.panelOpen && !root.panelExpanded
     onClicked: root.panelOpen = false
+  }
+
+  // ---- panel motion --------------------------------------------------------
+  // Open/close and the docked<->expanded swap all drive `panelFade` (and a
+  // little scale) instead of the window geometry. Only opacity/transform
+  // change per frame, so the compositor keeps the surface buffer as-is and
+  // the animation stays smooth; the size/position are snapped once while the
+  // panel is transparent (modeSwap's middle).
+  ParallelAnimation {
+    id: showAnim
+    NumberAnimation {
+      target: root; property: "panelFade"
+      from: 0; to: 1; duration: 190; easing.type: Easing.OutCubic
+    }
+    NumberAnimation {
+      target: panelContent; property: "scale"
+      from: 0.97; to: 1; duration: 230; easing.type: Easing.OutCubic
+    }
+  }
+  ParallelAnimation {
+    id: hideAnimFx
+    NumberAnimation {
+      target: root; property: "panelFade"
+      to: 0; duration: 160; easing.type: Easing.OutCubic
+    }
+    NumberAnimation {
+      target: panelContent; property: "scale"
+      to: 0.97; duration: 200; easing.type: Easing.OutCubic
+    }
+  }
+  SequentialAnimation {
+    id: modeSwap
+    ParallelAnimation {
+      NumberAnimation {
+        target: root; property: "panelFade"
+        to: 0; duration: 130; easing.type: Easing.OutCubic
+      }
+      NumberAnimation {
+        target: panelContent; property: "scale"
+        to: 0.98; duration: 130; easing.type: Easing.OutCubic
+      }
+    }
+    // invisible here: move the content to the other window and snap geometry
+    ScriptAction { script: {
+      root.panelExpanded = root.pendingMode;
+      panelContent.parent = root.panelExpanded ? fullWin.contentItem
+                                               : panel.contentItem;
+      panel.applyTargetCenter();
+      if (root.panelExpanded)
+        Qt.callLater(() => { if (inputField) inputField.forceActiveFocus(); });
+      else if (root.panelOpen)
+        root.focusPanelField();
+    } }
+    ParallelAnimation {
+      NumberAnimation {
+        target: root; property: "panelFade"
+        to: 1; duration: 190; easing.type: Easing.OutCubic
+      }
+      NumberAnimation {
+        target: panelContent; property: "scale"
+        to: 1; duration: 210; easing.type: Easing.OutCubic
+      }
+    }
+  }
+
+  // Full mode is a real toplevel, not a layer-shell popup: Hyprland manages it
+  // like any floating window (belongs to the workspace it was opened on, can
+  // be moved/resized, takes focus normally). The single panelContent is
+  // reparented into it while expanded, so the UI and all its state are shared
+  // with the docked dropdown.
+  FloatingWindow {
+    id: fullWin
+    title: "opencode"
+    color: "transparent"
+    // initial size; the content fills whatever size the window ends up with
+    implicitWidth: panel.expandedW
+    implicitHeight: panel.expandedH
+    visible: (root.panelOpen && root.panelExpanded) || fullHideAnim.running
+    Timer { id: fullHideAnim; interval: 260 }
+    onVisibleChanged: {
+      if (visible)
+        Qt.callLater(() => { if (inputField) inputField.forceActiveFocus(); });
+      else if (root.sttState !== "idle") {
+        root.sttCancel = true;
+        recProc.running = false;
+      }
+    }
   }
 
   PopupWindow {
     id: panel
 
-    // stays mapped briefly while closing so the fade/slide can play
-    visible: root.panelOpen || hideAnim.running
+    // stays mapped briefly while closing so the fade/slide can play; unused in
+    // full mode (the content is reparented into fullWin)
+    visible: (root.panelOpen && !root.panelExpanded) || hideAnim.running
     color: "transparent"
     implicitWidth: panelContent.width
     implicitHeight: panelContent.height
 
-    Timer { id: hideAnim; interval: 220 }
+    // expanded (chatbot-style) size: as large as the screen comfortably
+    // allows, with a minimum so a tiny/unknown screen still works. Kept as
+    // explicit properties so the anchor can target the FINAL size before the
+    // surface has resized (see onAnchoring).
+    readonly property int collapsedW: 660
+    readonly property int collapsedH: 700
+    readonly property int expandedW: {
+      const sw = panel.screen ? panel.screen.width : 0;
+      return Math.max(640, Math.min(1080, (sw > 0 ? sw : 1920) - 120));
+    }
+    readonly property int expandedH: {
+      const sh = panel.screen ? panel.screen.height : 0;
+      return Math.max(480, Math.min(940, (sh > 0 ? sh : 1080) - 140));
+    }
+
+    // ---------- placement ----------
+    // The surface is positioned by its CENTER and snapped (never tweened):
+    // expanding/collapsing fades the panel out, snaps here, and fades back
+    // in. `anchorCX/CY` still exist as the single source of the target so
+    // onAnchoring stays trivial, and so opening can snap before first paint.
+    property real anchorCX: 0
+    property real anchorCY: 0
+    onAnchorCXChanged: if (visible) anchor.updateAnchor()
+    onAnchorCYChanged: if (visible) anchor.updateAnchor()
+    onImplicitWidthChanged: if (visible) anchor.updateAnchor()
+    onImplicitHeightChanged: if (visible) anchor.updateAnchor()
+
+    // where the panel's CENTER should sit: the monitor middle when expanded,
+    // the pill's box when docked
+    function targetCenter() {
+      if (root.panelExpanded)
+        return { x: (panel.screen ? panel.screen.width : 1920) / 2,
+                 y: (panel.screen ? panel.screen.height : 1080) / 2 };
+      const p = root.mapToItem(null, 0, 0);
+      return { x: p.x + 2 + root.width - panel.collapsedW / 2,
+               y: p.y + root.height + 6 + panel.collapsedH / 2 };
+    }
+
+    // set the center target (always a snap — the surface geometry is only
+    // ever changed while the panel is transparent)
+    function applyTargetCenter() {
+      const t = panel.targetCenter();
+      panel.anchorCX = t.x;
+      panel.anchorCY = t.y;
+    }
+
+    Component.onCompleted: panel.applyTargetCenter()
+    onScreenChanged: panel.applyTargetCenter()
+
+    Timer { id: hideAnim; interval: 260 }
 
     // Open-side work lives in root.panelShown(), called from
     // root.onPanelOpenChanged. Doing it here would miss the rapid
@@ -2211,14 +2728,11 @@ Pill {
     }
 
     anchor.onAnchoring: {
-      // pin the panel's TOP-LEFT corner at (pillRight - 660, pillBottom + 6):
-      // for the 660-wide chat panel this right-aligns its right edge with
-      // the pill's right edge (as before), and — because the anchor is the
-      // top-left corner — tab resizes never move the origin; the panel
-      // only shrinks/grows from its right and bottom edges
-      const p = root.mapToItem(null, 0, 0);
-      anchor.rect.x = p.x + 2 + root.width - 660;
-      anchor.rect.y = p.y + root.height + 6;
+      // place the panel by its CENTER (anchorCX/CY, set by applyTargetCenter)
+      // minus half the current size. Size and center are only ever changed
+      // while the panel is faded out, so this never needs to be smooth.
+      anchor.rect.x = Math.round(panel.anchorCX - panelContent.width / 2);
+      anchor.rect.y = Math.round(panel.anchorCY - panelContent.height / 2);
       anchor.rect.width = 1;
       anchor.rect.height = 1;
     }
@@ -2227,21 +2741,32 @@ Pill {
       id: panelContent
       x: 0
       y: 0
-      // fixed panel size for all tabs — resizing the popup per tab proved
-      // janky, so everything lives in the same dropdown
-      width: 660
-      height: 700
+      // Two fixed sizes (dropdown / expanded) — SNAPPED, never tweened: the
+      // mode swap fades out, changes this, and fades back in (see modeSwap).
+      // Animating the size would resize the surface every frame, which makes
+      // the compositor reallocate the buffer each frame (~15fps).
+      width: root.panelExpanded
+          ? (fullWin.width > 0 ? fullWin.width : panel.expandedW)
+          : panel.collapsedW
+      height: root.panelExpanded
+          ? (fullWin.height > 0 ? fullWin.height : panel.expandedH)
+          : panel.collapsedH
       color: Theme.bg
-      radius: 6
+      radius: root.panelExpanded ? 12 : 6
+      Behavior on radius { NumberAnimation { duration: 260; easing.type: Easing.OutCubic } }
       border.color: Theme.border
       border.width: 1
-      // open/close: fade + drop-in (same motion as the player/pomodoro
-      // dropdowns); the popup stays mapped for 220ms on close (hideAnim)
-      opacity: root.panelOpen ? 1 : 0
-      Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+      // open/close and the docked<->expanded swap both drive `panelFade`
+      // (animated in root); the panel slides down slightly and scales a hair
+      // so it drops out of the bar instead of blinking. The window stays
+      // mapped for hideAnim while closing.
+      opacity: root.panelFade
+      scale: 1
+      // grow from the bar edge when docked, from the middle when expanded
+      transformOrigin: root.panelExpanded ? Item.Center : Item.Top
       transform: Translate {
-        y: root.panelOpen ? 0 : -8
-        Behavior on y { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+        y: root.panelOpen ? 0 : -12
+        Behavior on y { NumberAnimation { duration: 230; easing.type: Easing.OutCubic } }
       }
 
       // chat is empty (and no menu open) → TUI-style centered prompt
@@ -2317,7 +2842,8 @@ Pill {
             visible: root.mode === "chat"
             width: parent.width - tabRow.width
                    - costText.width
-                   - modelBtn.width - agentBtn.width - newBtn.width - 40
+                   - modelBtn.width - agentBtn.width - newBtn.width
+                   - expandBtn.width - 56
                    - (stopBtn.visible ? stopBtn.width + 8 : 0)
             text: root.session ? (root.session.title || "opencode") : "opencode — new chat"
             font.family: Theme.font
@@ -2450,6 +2976,33 @@ Pill {
               onClicked: root.interrupt()
             }
           }
+
+          // expand / restore: grows the dropdown to a large, centered
+          // chatbot-style window and back
+          Rectangle {
+            id: expandBtn
+            anchors.verticalCenter: parent.verticalCenter
+            visible: root.mode === "chat"
+            width: 22; height: 22; radius: 5
+            color: expandMa.containsMouse ? Theme.hover : Theme.surface
+            Behavior on color { ColorAnimation { duration: 200 } }
+            scale: expandMa.containsMouse ? 1.07 : 1
+            Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+            Text {
+              anchors.centerIn: parent
+              text: root.panelExpanded ? "\uf066" : "\uf065"   // compress / expand
+              font.family: Theme.font
+              font.pixelSize: 11
+              color: root.panelExpanded ? Theme.accent : Theme.text
+            }
+            MouseArea {
+              id: expandMa
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.setPanelExpanded(!root.panelExpanded)
+            }
+          }
         }
 
         // ----- error line -----
@@ -2469,8 +3022,14 @@ Pill {
         }
 
         // ----- chat history (anchored to the bottom like a real chat) -----
-        Flickable {
-          id: chatView
+        // A ListView, not a Repeater in a Column: a Repeater instantiates a
+        // delegate for EVERY row of the model, and each row carries several
+        // selectable TextEdits (rich-text markdown, colored diffs, tool I/O).
+        // With a long chat that is thousands of live TextEdits, held resident
+        // even while the panel is closed (~600MB here). A ListView only keeps
+        // the visible rows (+ cacheBuffer) alive.
+        Item {
+          id: chatArea
           transform: Translate { x: root.swipeOfs }
           width: parent.width
           height: root.mode === "chat"
@@ -2478,221 +3037,237 @@ Pill {
                 - errorLine.height - permBanner.height - formBanner.height
                 - inputRow.height - 8 * 5 - 10
               : 0
-          clip: true
-          contentWidth: width
-          contentHeight: chatCol.implicitHeight + (height > chatCol.implicitHeight
-            ? chatCol.y : 0)
-          // hidden while history loads, so the chunked rebuild is not seen as
-          // content assembling itself; it fades in once complete
-          opacity: root.chatLoading ? 0 : 1
-          Behavior on opacity { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
 
-          // chat flow: messages hug the bottom; history scrolls up.
-          // `rebuilding` guards pinned: during a model rebuild contentY is
-          // clamped (contentHeight collapses), which must NOT flip pinned
-          property bool pinned: true
-
-          onContentYChanged: if (!root.rebuilding) pinned = contentY >= contentHeight - height - 24
-          onContentHeightChanged: if (pinned) Qt.callLater(stick)
-
-          function stick() {
-            if (!pinned) return;
-            contentY = Math.max(0, contentHeight - height);
-          }
-
-          Column {
-            id: chatCol
-            width: chatView.width
-            y: Math.max(0, chatView.height - implicitHeight)
+          ListView {
+            id: chatView
+            // hug the bottom: while the history fits it shrinks to the content
+            // and sits at the bottom; past that it fills the area and scrolls
+            anchors.bottom: parent.bottom
+            width: parent.width
+            height: Math.min(parent.height, contentHeight)
+            clip: true
             spacing: 8
+            model: chatModel
 
-            Repeater {
-              model: chatModel
+            // hidden while history loads, so the chunked rebuild is not seen
+            // as content assembling itself; it fades in once complete
+            opacity: root.chatLoading ? 0 : 1
+            Behavior on opacity { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
 
-              delegate: Item {
-                id: msgDel
-                required property string key
-                required property string kind
-                required property string text
-                required property string name
-                required property string state
-                // toolIn carries the raw input object (pretty-printed lazily)
-                required property var toolIn
-                required property string toolOut
-                // diff was used but never declared, so the tool diff/input never
-                // actually rendered — declare the role to bind it
-                required property string diff
-                required property bool live
-                readonly property bool open: root.expanded[key] === true
-                width: chatView.width
-                height: msgRect.implicitHeight + 4
+            // chat flow: messages hug the bottom; history scrolls up.
+            // `rebuilding` guards pinned: during a model rebuild contentY is
+            // clamped (contentHeight collapses), which must NOT flip pinned
+            property bool pinned: true
 
-                Rectangle {
-                  id: msgRect
-                  anchors.right: msgDel.kind === "user" ? parent.right : undefined
-                  anchors.left: msgDel.kind === "user" ? undefined : parent.left
-                  anchors.leftMargin: msgDel.kind === "tool" || msgDel.kind === "reasoning" ? 14 : 0
-                  width: {
-                    if (msgDel.kind === "assistant") return parent.width - 16;
-                    if (msgDel.kind === "user")
-                      return Math.min(parent.width - 20, userMeasure.implicitWidth + 20);
-                    return parent.width - 30;
+            // A ListView's contentHeight is only an ESTIMATE until every
+            // delegate is created (and can overshoot the real end by a lot),
+            // so "at the end" must come from atYEnd, which Qt computes from
+            // the laid-out content. Computing it as contentY >= contentHeight
+            // - height said "not at the end" while the last row was visibly
+            // flush at the bottom — that un-pinned us and lit the jump button.
+            onContentYChanged: {
+              if (root.rebuilding) return;
+              if (atYEnd) pinned = true;                   // truly at the end
+              else if (flicking || dragging) pinned = false;  // user scrolled up
+            }
+            onMovementStarted: if (!root.rebuilding) pinned = atYEnd
+            onMovementEnded: if (!root.rebuilding) pinned = atYEnd
+            onFlickStarted: if (!root.rebuilding) pinned = atYEnd
+            onFlickEnded: if (!root.rebuilding) pinned = atYEnd
+            onContentHeightChanged: if (pinned) Qt.callLater(stick)
+
+            // positionViewAtEnd() forces the LAST delegate into existence and
+            // lands on the REAL end (contentY = contentHeight - height would
+            // overshoot into the estimate's empty tail).
+            function stick() {
+              if (!pinned) return;
+              positionViewAtEnd();
+            }
+
+            delegate: Item {
+              id: msgDel
+              required property string key
+              required property string kind
+              required property string text
+              required property string name
+              required property string state
+              // already pretty-printed JSON (normalised in loadMessages);
+              // see toolInputText for why it is not kept as an object
+              required property string toolIn
+              required property string toolOut
+              // diff was used but never declared, so the tool diff/input never
+              // actually rendered — declare the role to bind it
+              required property string diff
+              required property bool live
+              readonly property bool open: root.expanded[key] === true
+              width: chatView.width
+              height: msgRect.implicitHeight + 4
+
+              Rectangle {
+                id: msgRect
+                anchors.right: msgDel.kind === "user" ? parent.right : undefined
+                anchors.left: msgDel.kind === "user" ? undefined : parent.left
+                anchors.leftMargin: msgDel.kind === "tool" || msgDel.kind === "reasoning" ? 14 : 0
+                width: {
+                  if (msgDel.kind === "assistant") return parent.width - 16;
+                  if (msgDel.kind === "user")
+                    return Math.min(parent.width - 20, userMeasure.implicitWidth + 20);
+                  return parent.width - 30;
+                }
+                implicitHeight: {
+                  if (msgDel.kind === "user") return userText.contentHeight + 14;
+                  if (msgDel.kind === "assistant") return asstText.contentHeight + 8;
+                  if (msgDel.open)
+                    return foldHead.implicitHeight + 6 + foldCol.implicitHeight + 14;
+                  return foldHead.implicitHeight + 8;
+                }
+                radius: 8
+                color: msgDel.kind === "user" ? Theme.surface : "transparent"
+                border.width: msgDel.kind === "user" ? 1 : 0
+                border.color: Theme.border
+
+                // invisible measure: TextEdit has no content-hugging width,
+                // this sizes the user bubble
+                Text {
+                  id: userMeasure
+                  visible: false
+                  width: Math.min(chatView.width - 60, implicitWidth)
+                  text: msgDel.text
+                  textFormat: Text.PlainText
+                  font.family: Theme.font
+                  font.pixelSize: 12
+                }
+
+                SelText {
+                  id: userText
+                  visible: msgDel.kind === "user"
+                  anchors.centerIn: parent
+                  width: userMeasure.width
+                  height: contentHeight
+                  text: msgDel.text
+                  textFormat: TextEdit.PlainText
+                  font.pixelSize: 12
+                  onSelectedTextChanged: if (selectedText !== "") root.selEdit = userText
+                  onCopied: root.showCopyToast()
+                }
+
+                SelText {
+                  id: asstText
+                  visible: msgDel.kind === "assistant"
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: parent.width
+                  height: contentHeight
+                  // rendered to a controlled RichText subset (spacing,
+                  // code blocks, tables) — see renderMarkdown
+                  textFormat: TextEdit.RichText
+                  text: root.renderMarkdown(msgDel.text, !msgDel.live)
+                  font.pixelSize: 12
+                  color: Theme.accent
+                  onSelectedTextChanged: if (selectedText !== "") root.selEdit = asstText
+                  onCopied: root.showCopyToast()
+                }
+
+                // foldout header (tool / reasoning)
+                Text {
+                  id: foldHead
+                  visible: msgDel.kind === "tool" || msgDel.kind === "reasoning"
+                  anchors.top: parent.top
+                  anchors.topMargin: 4
+                  text: (msgDel.open ? "▾ " : "▸ ")
+                      + (msgDel.kind === "tool" ? "⚒ " + msgDel.name
+                           + (msgDel.state !== "" ? " · " + msgDel.state : "")
+                         : "✦ reasoning")
+                  font.family: Theme.font
+                  font.pixelSize: 10
+                  color: msgDel.kind === "reasoning" ? Theme.muted
+                       : (msgDel.state.indexOf("error") !== -1 ? Theme.err : Theme.muted)
+                  opacity: 0.9
+
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.toggleFold(msgDel.key)
                   }
-                  implicitHeight: {
-                    if (msgDel.kind === "user") return userText.contentHeight + 14;
-                    if (msgDel.kind === "assistant") return asstText.contentHeight + 8;
-                    if (msgDel.open)
-                      return foldHead.implicitHeight + 6 + foldCol.implicitHeight + 14;
-                    return foldHead.implicitHeight + 8;
-                  }
-                  radius: 8
-                  color: msgDel.kind === "user" ? Theme.surface : "transparent"
-                  border.width: msgDel.kind === "user" ? 1 : 0
-                  border.color: Theme.border
+                }
 
-                  // invisible measure: TextEdit has no content-hugging width,
-                  // this sizes the user bubble
-                  Text {
-                    id: userMeasure
-                    visible: false
-                    width: Math.min(chatView.width - 60, implicitWidth)
-                    text: msgDel.text
-                    textFormat: Text.PlainText
-                    font.family: Theme.font
-                    font.pixelSize: 12
-                  }
+                // foldout body
+                Column {
+                  id: foldCol
+                  visible: (msgDel.kind === "tool" || msgDel.kind === "reasoning")
+                           && msgDel.open
+                  anchors.top: foldHead.bottom
+                  anchors.topMargin: 6
+                  anchors.left: parent.left
+                  anchors.leftMargin: 10
+                  anchors.right: parent.right
+                  spacing: 4
 
                   SelText {
-                    id: userText
-                    visible: msgDel.kind === "user"
-                    anchors.centerIn: parent
-                    width: userMeasure.width
-                    height: contentHeight
-                    text: msgDel.text
-                    textFormat: TextEdit.PlainText
-                    font.pixelSize: 12
-                    onSelectedTextChanged: if (selectedText !== "") root.selEdit = userText
-                    onCopied: root.showCopyToast()
-                  }
-
-                  SelText {
-                    id: asstText
-                    visible: msgDel.kind === "assistant"
-                    anchors.verticalCenter: parent.verticalCenter
+                    id: toolInEdit
+                    // with a diff shown, the raw JSON input only duplicates
+                    // it and clutters the foldout
+                    visible: !!msgDel.toolIn && msgDel.diff === ""
                     width: parent.width
                     height: contentHeight
-                    // rendered to a controlled RichText subset (spacing,
-                    // code blocks, tables) — see renderMarkdown
-                    textFormat: TextEdit.RichText
-                    text: root.renderMarkdown(msgDel.text, !msgDel.live)
-                    font.pixelSize: 12
-                    color: Theme.accent
-                    onSelectedTextChanged: if (selectedText !== "") root.selEdit = asstText
+                    // materialize (and pretty-print) only while it is open
+                    text: msgDel.open ? msgDel.toolIn : ""
+                    textFormat: TextEdit.PlainText
+                    font.pixelSize: 9
+                    color: Theme.idleText
+                    onSelectedTextChanged: if (selectedText !== "") root.selEdit = toolInEdit
                     onCopied: root.showCopyToast()
                   }
 
-                  // foldout header (tool / reasoning)
-                  Text {
-                    id: foldHead
-                    visible: msgDel.kind === "tool" || msgDel.kind === "reasoning"
-                    anchors.top: parent.top
-                    anchors.topMargin: 4
-                    text: (msgDel.open ? "▾ " : "▸ ")
-                        + (msgDel.kind === "tool" ? "⚒ " + msgDel.name
-                             + (msgDel.state !== "" ? " · " + msgDel.state : "")
-                           : "✦ reasoning")
-                    font.family: Theme.font
-                    font.pixelSize: 10
-                    color: msgDel.kind === "reasoning" ? Theme.muted
-                         : (msgDel.state.indexOf("error") !== -1 ? Theme.err : Theme.muted)
-                    opacity: 0.9
-
-                    MouseArea {
-                      anchors.fill: parent
-                      cursorShape: Qt.PointingHandCursor
-                      onClicked: root.toggleFold(msgDel.key)
-                    }
+                  // reasoning text lives in `text` (tools use toolOut)
+                  SelText {
+                    id: reasoningEdit
+                    visible: msgDel.kind === "reasoning" && msgDel.text !== ""
+                    width: parent.width
+                    height: contentHeight
+                    text: msgDel.open ? msgDel.text : ""
+                    textFormat: TextEdit.PlainText
+                    font.pixelSize: 9
+                    color: Theme.muted
+                    onSelectedTextChanged: if (selectedText !== "") root.selEdit = reasoningEdit
+                    onCopied: root.showCopyToast()
                   }
 
-                  // foldout body
-                  Column {
-                    id: foldCol
-                    visible: (msgDel.kind === "tool" || msgDel.kind === "reasoning")
-                             && msgDel.open
-                    anchors.top: foldHead.bottom
-                    anchors.topMargin: 6
-                    anchors.left: parent.left
-                    anchors.leftMargin: 10
-                    anchors.right: parent.right
-                    spacing: 4
+                  // colored unified diff (edit/patch tools)
+                  SelText {
+                    id: diffEdit
+                    visible: msgDel.diff !== ""
+                    width: parent.width
+                    height: contentHeight
+                    // renderDiff is not free — skip it while collapsed
+                    text: msgDel.open ? renderDiff(msgDel.diff) : ""
+                    textFormat: TextEdit.RichText
+                    font.pixelSize: 9
+                    color: Theme.text
+                    onSelectedTextChanged: if (selectedText !== "") root.selEdit = diffEdit
+                    onCopied: root.showCopyToast()
+                  }
 
-                    SelText {
-                      id: toolInEdit
-                      // with a diff shown, the raw JSON input only duplicates
-                      // it and clutters the foldout
-                      visible: !!msgDel.toolIn && msgDel.diff === ""
-                      width: parent.width
-                      height: contentHeight
-                      // materialize (and pretty-print) only while it is open
-                      text: msgDel.open ? root.toolInputText(msgDel.toolIn) : ""
-                      textFormat: TextEdit.PlainText
-                      font.pixelSize: 9
-                      color: Theme.idleText
-                      onSelectedTextChanged: if (selectedText !== "") root.selEdit = toolInEdit
-                      onCopied: root.showCopyToast()
-                    }
-
-                    // reasoning text lives in `text` (tools use toolOut)
-                    SelText {
-                      id: reasoningEdit
-                      visible: msgDel.kind === "reasoning" && msgDel.text !== ""
-                      width: parent.width
-                      height: contentHeight
-                      text: msgDel.open ? msgDel.text : ""
-                      textFormat: TextEdit.PlainText
-                      font.pixelSize: 9
-                      color: Theme.muted
-                      onSelectedTextChanged: if (selectedText !== "") root.selEdit = reasoningEdit
-                      onCopied: root.showCopyToast()
-                    }
-
-                    // colored unified diff (edit/patch tools)
-                    SelText {
-                      id: diffEdit
-                      visible: msgDel.diff !== ""
-                      width: parent.width
-                      height: contentHeight
-                      // renderDiff is not free — skip it while collapsed
-                      text: msgDel.open ? renderDiff(msgDel.diff) : ""
-                      textFormat: TextEdit.RichText
-                      font.pixelSize: 9
-                      color: Theme.text
-                      onSelectedTextChanged: if (selectedText !== "") root.selEdit = diffEdit
-                      onCopied: root.showCopyToast()
-                    }
-
-                    SelText {
-                      id: toolOutEdit
-                      visible: msgDel.toolOut !== ""
-                      width: parent.width
-                      height: contentHeight
-                      text: !msgDel.open || msgDel.toolOut === "" ? ""
-                          : msgDel.toolOut.length > 4000
-                            ? msgDel.toolOut.slice(0, 4000) + " …"
-                            : msgDel.toolOut
-                      textFormat: TextEdit.PlainText
-                      font.pixelSize: 9
-                      color: msgDel.kind === "reasoning" ? Theme.muted : Theme.text
-                      onSelectedTextChanged: if (selectedText !== "") root.selEdit = toolOutEdit
-                      onCopied: root.showCopyToast()
-                    }
+                  SelText {
+                    id: toolOutEdit
+                    visible: msgDel.toolOut !== ""
+                    width: parent.width
+                    height: contentHeight
+                    text: !msgDel.open || msgDel.toolOut === "" ? ""
+                        : msgDel.toolOut.length > 4000
+                          ? msgDel.toolOut.slice(0, 4000) + " …"
+                          : msgDel.toolOut
+                    textFormat: TextEdit.PlainText
+                    font.pixelSize: 9
+                    color: msgDel.kind === "reasoning" ? Theme.muted : Theme.text
+                    onSelectedTextChanged: if (selectedText !== "") root.selEdit = toolOutEdit
+                    onCopied: root.showCopyToast()
                   }
                 }
               }
             }
 
             // thinking indicator while the assistant turn streams
-            Text {
+            footer: Text {
               visible: root.busy
               text: "◌ thinking…"
               font.family: Theme.font
@@ -2714,7 +3289,7 @@ Pill {
           transform: Translate { x: root.swipeOfs }
           width: parent.width
           height: root.menu !== "" && root.mode === "chat"
-              ? Math.min(200, menuCol.implicitHeight + 12) : 0
+              ? Math.min(root.panelExpanded ? 320 : 200, menuCol.implicitHeight + 12) : 0
           visible: height > 0
           radius: 6
           color: Theme.surface
@@ -2899,7 +3474,26 @@ Pill {
               }
             }
 
-            // file finder results
+            // file finder: header that doubles as the loading/empty state
+            // (the menu is never a blank box) + the result rows
+            Text {
+              visible: root.menu === "files"
+              width: menuCol.width - 4
+              height: root.menu === "files" ? 18 : 0
+              leftPadding: 8
+              verticalAlignment: Text.AlignVCenter
+              text: root.finderBusy ? "\uf002  buscando…"
+                  : root.fileHits.length === 0
+                    ? "\uf002  nenhum arquivo — tente outro nome"
+                    : "\uf002  " + root.fileHits.length
+                      + (root.fileHits.length === 1 ? " resultado" : " resultados")
+                      + "  ·  ↑↓ · Enter"
+              font.family: Theme.font
+              font.pixelSize: 9
+              color: root.finderBusy ? Theme.live : Theme.muted
+              elide: Text.ElideRight
+            }
+
             Repeater {
               model: root.menu === "files" ? root.fileHits : []
 
@@ -2908,23 +3502,36 @@ Pill {
                 required property var modelData
                 required property int index
                 readonly property bool sel: index === root.fileSel
+                readonly property bool dir: modelData.type === "directory"
                 width: menuCol.width - 4
                 height: 24
                 radius: 4
                 color: sel ? Theme.hover
                      : fileMa.containsMouse ? Theme.hover : "transparent"
+                Behavior on color { ColorAnimation { duration: 150 } }
                 Text {
                   anchors.left: parent.left
                   anchors.leftMargin: 8
-                  anchors.right: parent.right
+                  anchors.right: fileRow.dir ? kindText.left : parent.right
                   anchors.rightMargin: 8
                   anchors.verticalCenter: parent.verticalCenter
-                  text: (fileRow.modelData.type === "directory"
-                         ? "\uf07b  " : "\uf15b  ") + fileRow.modelData.path
+                  text: (fileRow.dir ? "\uf07b  " : "\uf15b  ") + fileRow.modelData.path
                   font.family: Theme.font
                   font.pixelSize: 10
                   color: fileRow.sel ? Theme.accent : Theme.text
                   elide: Text.ElideMiddle
+                }
+                // directories only: picking one keeps the finder open, so say so
+                Text {
+                  id: kindText
+                  anchors.right: parent.right
+                  anchors.rightMargin: 8
+                  anchors.verticalCenter: parent.verticalCenter
+                  visible: fileRow.dir
+                  text: "pasta"
+                  font.family: Theme.font
+                  font.pixelSize: 9
+                  color: fileRow.sel ? Theme.muted : Theme.idleText
                 }
                 MouseArea {
                   id: fileMa
@@ -3544,42 +4151,61 @@ Pill {
 
       }
       // ----- input row -----
-      // floats: glides up to the middle of the panel when the chat is
-      // empty (TUI-style centered prompt), docks to the bottom otherwise
+      // Docked to the panel's bottom edge (anchors.bottom), so a growing
+      // draft expands UPWARD and the chat above it shrinks — chatView's
+      // height subtracts inputRow.height, keeping the two from overlapping.
+      // An empty chat lifts the row toward the middle (TUI-style centered
+      // prompt) via `lift`, a visual-only Translate: `y` stays the docked
+      // value so the floating siblings can still anchor to it.
       Rectangle {
         id: inputRow
-        transform: Translate { x: root.swipeOfs }
         x: 10
         width: parent.width - 20
         visible: root.mode === "chat"
-        y: panelContent.empty ? 44 + (parent.height - 120) / 2
-                              : parent.height - 48   // 10px bottom margin
-        height: 38
-        Behavior on y { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 10
+        height: Math.max(38, Math.min(158, inputField.height + 18))
+        // where the row should sit: middle when empty, docked otherwise
+        readonly property real targetY: panelContent.empty
+            ? 44 + (parent.height - 120 - (height - 38)) / 2
+            : parent.height - 10 - height
+        // extra vertical offset on top of the docked position; 0 when docked
+        property real lift: targetY - (parent.height - 10 - height)
+        // visual position (docked y + lift): what the siblings must follow
+        readonly property real visualY: y + lift
+        Behavior on lift { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
+        Behavior on height { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+        transform: Translate { x: root.swipeOfs; y: inputRow.lift }
         radius: 6
         color: Theme.surface
         border.color: inputField.activeFocus || hiddenInput.activeFocus
                      ? Theme.muted : Theme.border
         border.width: 1
 
-        TextField {
+        TextEdit {
           id: inputField
           anchors.left: parent.left
           anchors.leftMargin: 10
           anchors.right: pasteBtn.left
           anchors.rightMargin: 4
+          // verticalCenter keeps a one-line draft at the row's middle; as it
+          // grows the row grows with it (inputRow.height binds here) so the
+          // field only ever fills the space it is given
           anchors.verticalCenter: parent.verticalCenter
-          background: null
-          placeholderText: root.formTextTarget !== null
-              ? "answer: " + root.formTextTarget.title + " …"
-              : root.sttState === "rec"
-              ? "● recording " + Math.floor(root.recSecs / 60) + ":"
-                + String(root.recSecs % 60).padStart(2, "0")
-                + " — mic again to stop"
-              : root.sttState === "stt" ? "◌ transcribing…"
-              : root.busy ? "opencode is working…"
-              : "ask opencode…  (@file · /command · Ctrl+V image)"
-          placeholderTextColor: Theme.idleText
+          // Grows with the draft but never past the room it is given;
+          // wrapMode keeps long lines inside the box instead of escaping it
+          // (the old TextField never grew, so a long draft scrolled away on
+          // a single invisible line). Past the cap the field scrolls itself
+          // with the caret (see ensureCaretVisible).
+          //
+          // NB: a plain TextEdit top-aligns its text inside its own height,
+          // so the height must equal the content's own height for the row's
+          // verticalCenter above to actually centre the text/placeholder.
+          // A fixed floor here (the old Math.max(20, …)) made a one-line
+          // draft 20px tall inside a 38px row and drew it ~4px above the
+          // middle, which is what pushed the placeholder off-centre.
+          height: Math.min(contentHeight, 120)
+          textFormat: TextEdit.PlainText
           color: Theme.accent
           font.family: Theme.font
           font.pixelSize: 12
@@ -3588,7 +4214,21 @@ Pill {
           // disabled while a search menu owns the keyboard (it shows the
           // parked draft, dimmed)
           enabled: !root.busy && !root.sending && !root.menuSearchOpen
-          wrapMode: TextInput.Wrap
+          // the Controls TextEdit defaults to WrapAnywhere; Wrap breaks on
+          // word boundaries and still keeps long tokens inside the box
+          wrapMode: TextEdit.Wrap
+          // while the draft is longer than the box the caret must stay in
+          // view — the bar's hiddenInput has no scrolling of its own.
+          // `TextEdit.contentY` is read-only on a Controls TextEdit, so the
+          // attached Flickable property is the one to move.
+          function ensureCaretVisible() {
+            if (contentHeight <= height) { Flickable.contentY = 0; return; }
+            const r = cursorRectangle;
+            if (r.y < Flickable.contentY) Flickable.contentY = Math.max(0, r.y - 2);
+            else if (r.y + r.height > Flickable.contentY + height)
+              Flickable.contentY = Math.min(contentHeight - height,
+                                            r.y + r.height - height + 2);
+          }
           // the popup window is keyboard-less — the bar's hiddenInput is
           // the real editor, so this field never gets real active focus
           // (and with it, no caret). Mirror the cursor position and fake
@@ -3610,30 +4250,67 @@ Pill {
               }
             }
           }
-          onTextEdited: root.updateFinder()
+          // TextEdit has no placeholder of its own — draw the same hint the
+          // old TextField showed, only while the draft is empty
+          Text {
+            anchors.fill: parent
+            text: root.formTextTarget !== null
+                ? "answer: " + root.formTextTarget.title + " …"
+                : root.sttState === "rec"
+                ? "● recording " + Math.floor(root.recSecs / 60) + ":"
+                  + String(root.recSecs % 60).padStart(2, "0")
+                  + " — mic again to stop"
+                : root.sttState === "stt" ? "◌ transcribing…"
+                : root.busy ? "opencode is working…"
+                : "ask opencode…  (@file · /command · Ctrl+V image)"
+            visible: inputField.text === ""
+            color: Theme.idleText
+            font.family: Theme.font
+            font.pixelSize: 12
+            elide: Text.ElideRight
+          }
           onTextChanged: if (!root.inputSyncing) {
             root.inputSyncing = true;
             hiddenInput.text = text;
             root.inputSyncing = false;
+            // typing straight into the popup field (the user clicked it, so
+            // the compositor moved the keyboard here) must drive the @file /
+            // slash menus too — the bar's hiddenInput is not the only path
+            if (root.mode === "chat" && !root.menuSearchOpen) root.updateFinder();
           }
           onCursorPositionChanged: if (!root.inputSyncing) {
             root.inputSyncing = true;
             hiddenInput.cursorPosition = cursorPosition;
             root.inputSyncing = false;
           }
-          // only ever submit from the chat tab (same guard as hiddenInput)
-          Keys.onReturnPressed: if (!root.formCommitText()
-                                    && !root.menuPickSelected()
-                                    && root.mode === "chat"
-                                    && !root.finderPickSelected()) root.send()
-          Keys.onEnterPressed: if (!root.formCommitText()
-                                   && !root.menuPickSelected()
-                                   && root.mode === "chat"
-                                   && !root.finderPickSelected()) root.send()
-          Keys.onUpPressed: root.menuSearchable() ? root.menuMove(-1) : root.finderMove(-1)
-          Keys.onDownPressed: root.menuSearchable() ? root.menuMove(1) : root.finderMove(1)
+          // the caret moves as the mirror from the bar's editor updates, and
+          // after send()/newChat() clear the field
+          onContentHeightChanged: ensureCaretVisible()
+          onCursorRectangleChanged: ensureCaretVisible()
+          // arrows move the open @file / search menu selection. This surface
+          // may hold the keyboard after a click into the popup (where the
+          // bar's hiddenInput — the other nav path — does not receive keys),
+          // so it has to handle them itself. BeforeItem so the caret does not
+          // eat the event first; unhandled keys fall through to the caret.
+          Keys.priority: Keys.BeforeItem
+          Keys.onUpPressed: event => {
+            if (root.menuSearchable()) { root.menuMove(-1); event.accepted = true; }
+            else if (root.menu === "files" && root.fileHits.length > 0) {
+              root.finderMove(-1); event.accepted = true;
+            }
+          }
+          Keys.onDownPressed: event => {
+            if (root.menuSearchable()) { root.menuMove(1); event.accepted = true; }
+            else if (root.menu === "files" && root.fileHits.length > 0) {
+              root.finderMove(1); event.accepted = true;
+            }
+          }
+          // Enter sends / Shift+Enter newline, in case this surface holds the
+          // keyboard (after a click into the popup) instead of the bar's editor
+          Keys.onReturnPressed: event => root.handleReturnKey(event)
+          Keys.onEnterPressed: event => root.handleReturnKey(event)
           Keys.onEscapePressed: event => {
-            event.accepted = true;   // don't let the panel Shortcut also fire
+            event.accepted = true;
             if (root.formCancelText()) return;
             root.closeMenuOrPanel();
           }
@@ -3644,7 +4321,8 @@ Pill {
           id: pasteBtn
           anchors.right: micBtn.left
           anchors.rightMargin: 4
-          anchors.verticalCenter: parent.verticalCenter
+          anchors.top: parent.top
+          anchors.topMargin: 6
           width: 28; height: 26; radius: 5
           color: pasteMa.containsMouse ? Theme.hover : Theme.bg
           Behavior on color { ColorAnimation { duration: 200 } }
@@ -3672,7 +4350,8 @@ Pill {
           id: micBtn
           anchors.right: sendBtn.left
           anchors.rightMargin: 4
-          anchors.verticalCenter: parent.verticalCenter
+          anchors.top: parent.top
+          anchors.topMargin: 6
           width: 28; height: 26; radius: 5
           color: micMa.containsMouse && root.sttState === "idle"
                  ? Theme.hover : Theme.bg
@@ -3709,7 +4388,10 @@ Pill {
           id: sendBtn
           anchors.right: parent.right
           anchors.rightMargin: 6
-          anchors.verticalCenter: parent.verticalCenter
+          // pinned to the top-right of the row, not centered: a grown input
+          // row must keep the buttons at the first text line
+          anchors.top: parent.top
+          anchors.topMargin: 6
           width: 28; height: 26; radius: 5
           color: sendMa.containsMouse ? Theme.hover : Theme.bg
           Behavior on color { ColorAnimation { duration: 200 } }
@@ -3732,72 +4414,84 @@ Pill {
         }
       }
       // ----- attached clipboard images (chips above the input row) -----
-      Row {
+      // own wrapping Row: with the input row grown by a multi-line draft the
+      // chips would otherwise run off the panel's left edge
+      Flickable {
         id: imageChips
         transform: Translate { x: root.swipeOfs }
         x: inputRow.x
-        y: inputRow.y - 34
-        spacing: 6
+        width: inputRow.width
+        y: inputRow.visualY - 34
+        height: 28
+        contentWidth: chipsRow.implicitWidth
+        contentHeight: height
+        clip: true
+        interactive: contentWidth > width
         opacity: visible ? 1 : 0
         visible: root.mode === "chat" && root.pendingImages.length > 0
                  && root.menu === ""
         Behavior on y { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
         Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
 
-        Repeater {
-          model: root.pendingImages
+        Row {
+          id: chipsRow
+          spacing: 6
 
-          Rectangle {
-            id: chip
-            required property var modelData
-            required property int index
-            width: chipRow.implicitWidth + 18
-            height: 28
-            radius: 5
-            color: Theme.surface
-            border.color: Theme.border
-            border.width: 1
+          Repeater {
+            model: root.pendingImages
 
-            Row {
-              id: chipRow
-              anchors.centerIn: parent
-              spacing: 6
+            Rectangle {
+              id: chip
+              required property var modelData
+              required property int index
+              width: chipRow.implicitWidth + 18
+              height: 28
+              radius: 5
+              color: Theme.surface
+              border.color: Theme.border
+              border.width: 1
 
-              Image {
-                width: 20; height: 20
-                anchors.verticalCenter: parent.verticalCenter
-                source: root.imageUri(chip.modelData)
-                sourceSize: Qt.size(40, 40)
-                asynchronous: true
-                fillMode: Image.PreserveAspectCrop
-              }
+              Row {
+                id: chipRow
+                anchors.centerIn: parent
+                spacing: 6
 
-              Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: "[Image " + (chip.index + 1) + "]"
-                font.family: Theme.font
-                font.pixelSize: 10
-                color: Theme.text
-              }
-
-              Item {
-                width: 12; height: 12
-                anchors.verticalCenter: parent.verticalCenter
-
-                Text {
-                  anchors.centerIn: parent
-                  text: "\uf00d"
-                  font.family: Theme.font
-                  font.pixelSize: 10
-                  color: delMa.containsMouse ? Theme.err : Theme.muted
+                Image {
+                  width: 20; height: 20
+                  anchors.verticalCenter: parent.verticalCenter
+                  source: root.imageUri(chip.modelData)
+                  sourceSize: Qt.size(40, 40)
+                  asynchronous: true
+                  fillMode: Image.PreserveAspectCrop
                 }
 
-                MouseArea {
-                  id: delMa
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: root.removePendingImage(chip.index)
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "[Image " + (chip.index + 1) + "]"
+                  font.family: Theme.font
+                  font.pixelSize: 10
+                  color: Theme.text
+                }
+
+                Item {
+                  width: 12; height: 12
+                  anchors.verticalCenter: parent.verticalCenter
+
+                  Text {
+                    anchors.centerIn: parent
+                    text: "\uf00d"
+                    font.family: Theme.font
+                    font.pixelSize: 10
+                    color: delMa.containsMouse ? Theme.err : Theme.muted
+                  }
+
+                  MouseArea {
+                    id: delMa
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.removePendingImage(chip.index)
+                  }
                 }
               }
             }
@@ -3811,7 +4505,11 @@ Pill {
         transform: Translate { x: root.swipeOfs }
         x: 10
         width: parent.width - 20
-        y: panelContent.empty ? inputRow.y - 122 : inputRow.y
+        // sits just above the input row's VISUAL top (visualY accounts for
+        // the empty-state lift), so a grown draft never overlaps it
+        y: panelContent.empty
+           ? Math.max(headerRow.height + 12, inputRow.visualY - height - 6)
+           : inputRow.visualY
         height: 120
         visible: panelContent.empty
         opacity: panelContent.empty ? 1 : 0
@@ -3853,7 +4551,7 @@ Pill {
         id: chatLoadingLabel
         transform: Translate { x: root.swipeOfs }
         anchors.horizontalCenter: parent.horizontalCenter
-        y: inputRow.y - 56
+        y: inputRow.visualY - inputRow.height - 18
         visible: root.chatLoading && root.mode === "chat"
         text: "◌ loading chat…"
         font.family: Theme.font
@@ -3919,7 +4617,7 @@ Pill {
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         anchors.rightMargin: 12
-        anchors.bottomMargin: 54     // input row (38) + gap
+        anchors.bottomMargin: inputRow.height + 16   // clears a grown input row
         z: 5
         visible: opacity > 0
         opacity: (!chatView.pinned && root.panelOpen && root.mode === "chat") ? 1 : 0
@@ -3956,7 +4654,7 @@ Pill {
         id: copyToast
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottom: parent.bottom
-        anchors.bottomMargin: 52
+        anchors.bottomMargin: inputRow.height + 14
         z: 10
         width: toastText.implicitWidth + 20
         height: 22
@@ -3990,23 +4688,45 @@ Pill {
   // Escape closes the open menu, or the panel when no menu is open. Layer
   // surfaces do not reliably map onto Qt's "active window", which made a
   // window-scoped Shortcut silently do nothing — application scope works.
+  // Gated on panelOpen: two enabled application-scoped Escape shortcuts would
+  // be treated as ambiguous and neither would fire (the launcher has one too,
+  // enabled only while it is open).
   Shortcut {
     sequence: "Escape"
     context: Qt.ApplicationShortcut
+    enabled: root.panelOpen
     onActivated: root.closeMenuOrPanel()
   }
 
   onPanelOpenChanged: {
     if (panelOpen) {          // open: cancel any pending close so the
       hideAnim.stop();        // fade-in plays from fully transparent
+      hideAnimFx.stop();
+      modeSwap.stop();
+      // Reset the mode BEFORE the first paint. The window is not on screen
+      // yet, so the reset is a snap and never flashes a move; SUPER+SHIFT+A
+      // asks for expanded via pendingExpanded.
+      const wantExpanded = root.pendingExpanded;
+      root.pendingExpanded = false;
+      root.panelExpanded = wantExpanded;
+      panelContent.parent = wantExpanded ? fullWin.contentItem : panel.contentItem;
+      panel.applyTargetCenter();
+      root.panelFade = 0;
+      showAnim.restart();     // fade + scale in
       panelShown();           // connect + reload (also on a rapid reopen,
       return;                 // where PopupWindow.visible never changed)
     }
     hideAnim.restart();       // close: keep mapped while fading out
+    if (root.panelExpanded) fullHideAnim.restart();   // ...the floating window too
+    showAnim.stop();
+    modeSwap.stop();
+    hideAnimFx.restart();     // fade + scale out
     root.closeMenu();
     activePoll.stop();
     // the SSE stream deliberately keeps running while closed: it feeds the
     // "turn finished" desktop notification and keeps the model warm
+    // NOTE: the size/mode is NOT reset here — the panel fades out at the size
+    // it has, and the reset is snapped invisibly on the next open.
   }
 
   // tab switch: the bar's hiddenInput is the single real editor — point
@@ -4062,6 +4782,11 @@ Pill {
     }
   }
 
-  // chat model: SSE deltas update individual items incrementally
+  // chat model: SSE deltas update individual items incrementally.
+  //
+  // ListModel pins each role's type from the first value it sees and then
+  // refuses (or drops) later writes of another type, so every row is passed
+  // through modelRow() — which coerces to the pinned types — instead of being
+  // appended raw. Roles: all strings except `live`.
   ListModel { id: chatModel }
 }

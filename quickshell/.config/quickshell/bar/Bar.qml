@@ -10,13 +10,19 @@ PanelWindow {
   property bool panelOpen: false
   // which tab the settings dropdown opens on (see openSettings below)
   property int settingsTab: 0
-  // set by the opencode pill when its chat panel opens (see its instance)
+  // set by the opencode pill when its DOCKED dropdown is on screen. The full
+  // mode is a real window with its own focus, so the bar holds no grab for it.
   property bool chatPanelOpen: false
+  // set by the tasks pill while its dropdown is open (same signal-driven
+  // pattern as chatPanelOpen: a direct binding races object creation)
+  property bool tasksPanelOpen: false
 
   // lets a panel popup receive keyboard input while it is open (popups
   // can't grab focus themselves; OnDemand only grabs on click) — covers
-  // both the settings panel and the opencode chat panel's input field
-  focusable: root.panelOpen || root.chatPanelOpen
+  // the settings panel, the opencode docked input field, the tasks
+  // panel's fields, and the tray menu's Esc-to-close
+  focusable: root.panelOpen || root.chatPanelOpen || root.tasksPanelOpen
+             || trayPill.menuOpen
 
   anchors {
     top: true
@@ -61,16 +67,31 @@ PanelWindow {
     anchors.verticalCenter: parent.verticalCenter
     spacing: 7
 
-    Tray {}
+    Tray { id: trayPill }
     // Player {}
     Battery {}
     // Pomodoro {}
+    Tasks {
+      id: tasksPill
+    }
+    // propagate the tasks panel state into the bar's keyboard-focus decision.
+    // A Connections (not an `onPanelOpenChanged` on the instance) so the
+    // pill's own open/close handler — animations, focus, tab reset — is not
+    // shadowed by the outer handler.
+    Connections {
+      target: tasksPill
+      function onPanelOpenChanged() { root.tasksPanelOpen = tasksPill.panelOpen; }
+    }
     Opencode {
       id: opencodePill
-
-      // propagate into the bar's keyboard-focus decision (a plain binding
-      // on the pill's property races object creation at load time)
-      onPanelOpenChanged: root.chatPanelOpen = panelOpen
+    }
+    // docked dropdown owns the bar keyboard grab; full mode is a real window
+    // with normal focus. A direct binding races object creation, so drive it
+    // from signals.
+    Connections {
+      target: opencodePill
+      function onPanelOpenChanged() { root.chatPanelOpen = opencodePill.panelOpen && !opencodePill.panelExpanded; }
+      function onPanelExpandedChanged() { root.chatPanelOpen = opencodePill.panelOpen && !opencodePill.panelExpanded; }
     }
     // Notifications {}
 
@@ -78,7 +99,7 @@ PanelWindow {
     Toasts {}
     Sound {}
 
-    // hyprpaper / hyprlock / hypridle settings panel
+    // wallpaper / hyprlock / hypridle settings panel
     Pill {
       id: settingsPill
 
@@ -124,6 +145,14 @@ PanelWindow {
     }
   }
 
+  // SUPER+SHIFT+A: one key for the big chat window — see
+  // Opencode.toggleExpanded() for the cycle (closed→full, docked→full,
+  // full→closed)
+  function toggleChatExpanded() {
+    if (!opencodePill.panelOpen) opencodePill.ensureService();
+    opencodePill.toggleExpanded();
+  }
+
   function closeChat() { opencodePill.panelOpen = false; }
 
   // SUPER+SHIFT+B / SUPER+SHIFT+W → settings dropdown, straight on a tab
@@ -140,4 +169,9 @@ PanelWindow {
   function toggleNotifPanel() {
     clockPill.calOpen = !clockPill.calOpen;
   }
+
+  // tasks dropdown (per-bar, like the pill) — `qs ipc call tasks toggle`
+  function toggleTasks() { tasksPill.panelOpen = !tasksPill.panelOpen; }
+
+  function closeTasks() { tasksPill.panelOpen = false; }
 }

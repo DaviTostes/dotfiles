@@ -9,9 +9,9 @@ import "Conf.js" as Conf
 ColumnLayout {
     id: root
 
-    property bool splash: false
-    property bool ipc: false
-    property bool restartAfterSave: true
+    // awww transition used when a save is applied (see wallpaper-apply)
+    property string transition: "simple"
+    property bool applyAfterSave: true
     property string status: ""
     property var monitors: []
 
@@ -32,8 +32,7 @@ ColumnLayout {
     function reload() {
         root.silent = true;
         const cfg = Conf.parse(fileView.text());
-        root.splash = Conf.get(cfg, "", "splash", "false") === "true";
-        root.ipc = Conf.get(cfg, "", "ipc", "false") === "true";
+        root.transition = Conf.get(cfg, "", "transition", "simple");
         root.monitors = [];
         const ms = Hyprland.monitors ? Hyprland.monitors.values : [];
         for (let i = 0; i < ms.length; i++) if (ms[i].name) root.monitors.push(ms[i].name);
@@ -46,11 +45,11 @@ ColumnLayout {
                 else if (kv.key === "path") path = kv.val;
                 else if (kv.key === "fit_mode") fit = kv.val;
             }
-            rows.append({ monitor: monitor, path: path, fit: fit || "cover" });
+            rows.append({ monitor: monitor, path: path, fit: fit || "crop" });
         }
         // Sensible default when the file is empty: one row per connected monitor.
         if (rows.count === 0) {
-            for (const m of root.monitors) rows.append({ monitor: m, path: "", fit: "cover" });
+            for (const m of root.monitors) rows.append({ monitor: m, path: "", fit: "crop" });
         }
         root.status = "";
         root.dirty = false;
@@ -61,23 +60,38 @@ ColumnLayout {
     // mirror the picked path into the gallery popup (only when this
     // panel is the one that opened it)
     function syncGalleryPicked() {
-        if (root.panel !== null && HyprSettings.galleryHost === root.panel
-                && HyprSettings.galleryTab === 0)
+        if (root.panel === null || HyprSettings.galleryHost !== root.panel
+                || HyprSettings.galleryTab !== 0)
+            return;
+        if (HyprSettings.galleryRow >= 0) {
             HyprSettings.galleryPicked = rowPath(HyprSettings.galleryRow);
+            return;
+        }
+        // "all monitors" picker (row -1): highlight the path only if every
+        // row already shares it, otherwise leave nothing highlighted
+        let common = rows.count > 0 ? rows.get(0).path : "";
+        for (let i = 1; i < rows.count; i++) {
+            if (rows.get(i).path !== common) { common = ""; break; }
+        }
+        HyprSettings.galleryPicked = common;
     }
 
-    // gallery popup picked an image for the row it was opened from
+    // gallery popup picked an image: row -1 means "every monitor"
     function applyGalleryPick(p) {
         const i = HyprSettings.galleryRow;
-        if (i < 0 || i >= rows.count) return;
+        if (i < 0) {
+            for (let j = 0; j < rows.count; j++) rows.setProperty(j, "path", p);
+            HyprSettings.galleryPicked = p;
+            return;
+        }
+        if (i >= rows.count) return;
         rows.setProperty(i, "path", p);
         HyprSettings.galleryPicked = p;
     }
 
     function save() {
         const cfg = { items: [], vars: {} };
-        cfg.items.push(Conf.item(Conf.KV, "", "splash", root.splash ? "true" : "false"));
-        cfg.items.push(Conf.item(Conf.KV, "", "ipc", root.ipc ? "true" : "false"));
+        cfg.items.push(Conf.item(Conf.KV, "", "transition", root.transition));
         for (let i = 0; i < rows.count; i++) {
             const r = rows.get(i);
             cfg.items.push(Conf.item(Conf.SECTION_START, "wallpaper"));
@@ -88,12 +102,13 @@ ColumnLayout {
         }
         fileView.setText(Conf.serialize(cfg));
         root.dirty = false;
-        root.status = "Saved hyprpaper.conf";
-        if (root.restartAfterSave) {
-            restartProc.command = ["sh", "-c",
-                "pkill -x hyprpaper >/dev/null 2>&1; sleep 0.3; nohup hyprpaper >/dev/null 2>&1 &"];
-            restartProc.running = true;
-            root.status += ", restarting hyprpaper…";
+        root.status = "Saved wallpaper.conf";
+        if (root.applyAfterSave) {
+            // the file write may not have hit disk yet; give it a beat
+            applyProc.command = ["sh", "-c",
+                "sleep 0.2; exec \"$HOME/.config/hypr/scripts/wallpaper-apply\""];
+            applyProc.running = true;
+            root.status += ", applying…";
         }
     }
 
@@ -111,12 +126,12 @@ ColumnLayout {
 
     FileView {
         id: fileView
-        path: HyprSettings.confDir + "/hyprpaper.conf"
+        path: HyprSettings.confDir + "/wallpaper.conf"
         blockAllReads: true
         preload: true
     }
 
-    Process { id: restartProc }
+    Process { id: applyProc }
 
     component WallpaperRow: Item {
         id: wrow
@@ -167,7 +182,7 @@ ColumnLayout {
                 }
 
                 SegRow {
-                    options: ["cover", "contain", "tile"]
+                    options: ["crop", "fit", "stretch"]
                     value: wrow.fit
                     onPicked: v => rows.setProperty(wrow.index, "fit", v)
                 }
@@ -195,6 +210,7 @@ ColumnLayout {
             PreviewBox {
                 width: parent.width - 4
                 path: wrow.path
+                animate: root.panel === null || (root.panel.panelOpen && root.panel.tab === 0)
             }
         }
     }
@@ -210,17 +226,12 @@ ColumnLayout {
 
             SectionCard {
                 Layout.fillWidth: true
-                title: "General"
+                title: "Transition"
 
-                CheckRow {
-                    label: "Show splash logo on startup"
-                    checked: root.splash
-                    onToggled: c => { root.splash = c; root.dirty = true; }
-                }
-                CheckRow {
-                    label: "Enable IPC socket (hyprctl hyprpaper)"
-                    checked: root.ipc
-                    onToggled: c => { root.ipc = c; root.dirty = true; }
+                SegRow {
+                    options: ["none", "simple", "wipe", "grow", "random"]
+                    value: root.transition
+                    onPicked: v => { root.transition = v; root.dirty = true; }
                 }
             }
 
@@ -237,9 +248,15 @@ ColumnLayout {
                     spacing: 10
 
                     TextButton {
+                        label: "\uf03e set all"
+                        tooltip: "Pick one wallpaper for every monitor"
+                        onClicked: if (root.panel) root.panel.toggleGallery(0, -1)
+                    }
+
+                    TextButton {
                         label: "\uf067 add monitor"
                         tooltip: "Add monitor"
-                        onClicked: rows.append({ monitor: root.monitors[0] || "", path: "", fit: "cover" })
+                        onClicked: rows.append({ monitor: root.monitors[0] || "", path: "", fit: "crop" })
                     }
 
                     Text {
@@ -266,9 +283,9 @@ ColumnLayout {
         spacing: 12
 
         CheckRow {
-            label: "Restart hyprpaper after saving"
-            checked: root.restartAfterSave
-            onToggled: c => root.restartAfterSave = c
+            label: "Apply after saving"
+            checked: root.applyAfterSave
+            onToggled: c => root.applyAfterSave = c
         }
 
         TextButton {
@@ -281,7 +298,7 @@ ColumnLayout {
 
         StatusLine {
             text: root.status
-            busy: restartProc.running
+            busy: applyProc.running
             labelWidth: 220
         }
     }

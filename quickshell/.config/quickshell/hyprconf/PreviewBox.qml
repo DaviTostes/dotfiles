@@ -7,6 +7,8 @@ Rectangle {
     id: root
 
     property string path: ""
+    // play gifs only while the owning panel/tab is on screen
+    property bool animate: true
 
     implicitWidth: 300
     implicitHeight: 120
@@ -15,13 +17,13 @@ Rectangle {
     border.color: Theme.border
     clip: true
 
-    Image {
+    WallpaperImage {
         id: img
         anchors.fill: parent
         anchors.margins: 2
-        asynchronous: true
         fillMode: Image.PreserveAspectCrop
         source: Conf.fileUrl(root.path, Quickshell.env("HOME"))
+        animate: root.animate
         // fade in once decoded, sink toward the box color while loading
         opacity: root.path === "" ? 0 : (img.status === Image.Ready ? 1 : 0.15)
         Behavior on opacity { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }

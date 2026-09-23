@@ -31,12 +31,17 @@ local autostart = {
   "systemctl --user import-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP",
   "quickshell",
   "hypridle",
-  "hyprpaper",
+  "awww-daemon",
+  "$HOME/.config/hypr/scripts/wallpaper-apply",
   "swayosd-server",
   "wl-paste --watch cliphist store",
   "ollama serve",
   "goytn",
   "maily",
+  -- org.freedesktop.secrets (Secret Service) for apps that store secrets,
+  -- e.g. ZapFast's archive key. KWallet's ksecretd normally only gets
+  -- started by a Plasma session, so Hyprland has to launch it itself.
+  "ksecretd",
   -- XEmbed tray host: Wine/Proton (Battle.net) shows a stray 160x20
   -- "Shell_TrayWnd" window when nothing owns _NET_SYSTEM_TRAY_S0, and
   -- quickshell's tray speaks StatusNotifier, not XEmbed.
@@ -75,6 +80,7 @@ local browser     = "helium-browser"
 local discord     = "vesktop"
 local btManager   = "qs ipc call settings open bluetooth"
 local wifiManager = "qs ipc call settings open wifi"
+local vpnManager  = "qs ipc call settings open vpn"
 
 local function termRun(cmd) return terminal .. " --title \"" .. cmd .. "\" " .. cmd end
 
@@ -280,11 +286,12 @@ hl.bind(mod("T"), hl.dsp.layout("togglesplit"))
 hl.bind(mod("B"), exec(browser))
 hl.bind(mod("D"), exec(discord))
 hl.bind(mod("S"), exec("steam"))
-hl.bind(mod("Z"), exec("whatsie"))
+hl.bind(mod("Z"), exec("zapfast"))
 hl.bind(shift("Z"), exec("Telegram"))
-hl.bind(mod("O"), exec(termRun("omm")))
+hl.bind(mod("O"), exec("qs ipc call tasks toggle"))    -- tasks panel (was: omm launcher)
 hl.bind(shift("B"), exec(btManager))
 hl.bind(shift("W"), exec(wifiManager))
+hl.bind(shift("V"), exec(vpnManager))
 hl.bind(mod("I"), exec(termRun("btop")))
 hl.bind(mod("M"), exec(termRun("maily")))
 hl.bind(mod("W"), exec("sh -c 'killall quickshell 2>/dev/null; sleep 0.5; setsid -f quickshell'"))
@@ -293,6 +300,7 @@ hl.bind(mod("N"), exec("qs ipc call notifs toggle"))    -- calendar + notificati
 hl.bind(shift("N"), exec("qs ipc call notifs clear"))
 
 hl.bind(mod("A"), exec("qs ipc call opencode toggle"))  -- opencode chat panel
+hl.bind(shift("A"), exec("qs ipc call opencode toggleExpanded"))  -- opencode: big window / close
 
 hl.bind("PRINT", exec("hyprshot -m window"))
 hl.bind("SHIFT + PRINT", exec("hyprshot -m region"))

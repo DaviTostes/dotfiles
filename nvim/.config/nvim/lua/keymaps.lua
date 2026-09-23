@@ -93,6 +93,13 @@ vim.keymap.set("n", "[c", function()
   move.goto_previous_start("@class.outer")
 end)
 
+-- opencode
+vim.keymap.set({'n', 'v'}, '<leader>oc', ':Opencode<CR>', nil)
+vim.keymap.set({'n', 'v'}, '<leader>ow', ":OpencodeWindow<CR>", nil)
+vim.keymap.set({'n', 'v'}, '<leader>on', ':OpencodeNew<CR>', nil)
+vim.keymap.set({'n', 'v'}, '<leader>os', ':OpencodeSessions<CR>', nil)
+vim.keymap.set({'n', 'v'}, '<leader>oe', ":'<,'>OpencodeEdit<CR>", nil)
+
 -- moves
 
 -- Normal mode: Move current line down/up
