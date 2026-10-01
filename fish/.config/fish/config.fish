@@ -22,7 +22,7 @@ if status is-interactive
   # Aliases
   alias v='nvim'
 
-  alias oc='opencode2'
+  alias oc='opencode'
 
   alias t='tmux'
   alias tn='tmux new'

@@ -51,77 +51,85 @@ PopupWindow {
     anchor.rect.height = 1;
   }
 
-  Rectangle {
+  // the frame and the body share one wrapper so the fade + slide animates
+  // the whole popup: animating only the Rectangle left the content (the
+  // clock's calendar) opaque and stationary while the frame faded out
+  Item {
+    id: fade
     anchors.fill: parent
-    color: Theme.bg
-    radius: 6
-    border.color: Theme.border
-    border.width: 1
     opacity: tip.shown ? 1 : 0
     Behavior on opacity { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
     transform: Translate {
       y: tip.shown ? 0 : -5
       Behavior on y { NumberAnimation { duration: 170; easing.type: Easing.OutCubic } }
     }
-  }
 
-  Item {
-    id: body
-    anchors.centerIn: parent
-    implicitWidth: tip.content
-        ? (loader.item ? loader.item.implicitWidth : 0)
-        : (tip.rich ? richLabel.implicitWidth : col.implicitWidth)
-    implicitHeight: tip.content
-        ? (loader.item ? loader.item.implicitHeight : 0)
-        : (tip.rich ? richLabel.implicitHeight : col.implicitHeight)
-    onImplicitWidthChanged: tip.contentW = Math.max(64, implicitWidth)
-    onImplicitHeightChanged: tip.contentH = implicitHeight
-    Component.onCompleted: {
-      tip.contentW = Math.max(64, implicitWidth);
-      tip.contentH = implicitHeight;
+    Rectangle {
+      anchors.fill: parent
+      color: Theme.bg
+      radius: 6
+      border.color: Theme.border
+      border.width: 1
     }
 
-    // instantiate the content component only while the tip is on screen:
-    // otherwise a heavy tip body (the clock's calendar + notification list)
-    // is built at shell start even though it is never shown
-    Loader {
-      id: loader
+    Item {
+      id: body
       anchors.centerIn: parent
-      active: tip.content != null && tip.visible
-      sourceComponent: tip.content
-    }
+      implicitWidth: tip.content
+          ? (loader.item ? loader.item.implicitWidth : 0)
+          : (tip.rich ? richLabel.implicitWidth : col.implicitWidth)
+      implicitHeight: tip.content
+          ? (loader.item ? loader.item.implicitHeight : 0)
+          : (tip.rich ? richLabel.implicitHeight : col.implicitHeight)
+      onImplicitWidthChanged: tip.contentW = Math.max(64, implicitWidth)
+      onImplicitHeightChanged: tip.contentH = implicitHeight
+      Component.onCompleted: {
+        tip.contentW = Math.max(64, implicitWidth);
+        tip.contentH = implicitHeight;
+      }
 
-    Text {
-      id: richLabel
-      anchors.centerIn: parent
-      visible: tip.content == null && tip.rich
-      textFormat: Text.RichText
-      text: tip.text
-      font.family: Theme.font
-      font.pixelSize: 12
-      color: Theme.text
-    }
-
-    Column {
-      id: col
-      anchors.centerIn: parent
-      visible: tip.content == null && !tip.rich
-      spacing: 2
+      // instantiate the content component only while the tip is on screen:
+      // otherwise a heavy tip body (the clock's calendar + notification list)
+      // is built at shell start even though it is never shown
+      Loader {
+        id: loader
+        anchors.centerIn: parent
+        active: tip.content != null && tip.visible
+        sourceComponent: tip.content
+      }
 
       Text {
+        id: richLabel
+        anchors.centerIn: parent
+        visible: tip.content == null && tip.rich
+        textFormat: Text.RichText
         text: tip.text
         font.family: Theme.font
-        font.bold: true
         font.pixelSize: 12
         color: Theme.text
       }
 
-      Text {
-        visible: tip.subtitle !== ""
-        text: tip.subtitle
-        font.family: Theme.font
-        font.pixelSize: 11
-        color: Theme.muted
+      Column {
+        id: col
+        anchors.centerIn: parent
+        visible: tip.content == null && !tip.rich
+        spacing: 2
+
+        Text {
+          text: tip.text
+          font.family: Theme.font
+          font.bold: true
+          font.pixelSize: 12
+          color: Theme.text
+        }
+
+        Text {
+          visible: tip.subtitle !== ""
+          text: tip.subtitle
+          font.family: Theme.font
+          font.pixelSize: 11
+          color: Theme.muted
+        }
       }
     }
   }

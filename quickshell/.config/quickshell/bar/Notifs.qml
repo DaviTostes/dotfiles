@@ -23,6 +23,10 @@ Item {
   property bool dnd: false
   onDndChanged: if (dnd) root.hideAllToasts()
 
+  // cap on simultaneously visible toasts: when a burst arrives, the oldest
+  // excess toast is hidden instead of stacking (0 = no cap)
+  property int maxToasts: 5
+
   // ids whose toast is hidden — they remain tracked (and actionable)
   // hiddenTick re-evaluates toastList when the (plain) object is mutated
   readonly property var hiddenIds: ({})
@@ -65,6 +69,7 @@ Item {
       n.tracked = true;
       root.recordHistory(n);
       if (root.dnd) root.hideToast(n); else root.showToast(n);
+      root.enforceToastLimit();
     }
   }
 
@@ -113,6 +118,27 @@ Item {
   function hideAllToasts() {
     for (const n of server.trackedNotifications.values)
       root.hideToast(n);
+  }
+
+  // Keep at most maxToasts on screen by hiding the oldest excess ones. Order
+  // is read off the history ListModel (newest first), so this does not depend
+  // on the order the server hands out trackedNotifications.
+  function enforceToastLimit() {
+    if (root.maxToasts <= 0) return;
+    const visible = server.trackedNotifications.values.filter(
+        n => !root.hiddenIds[n.id]);
+    if (visible.length <= root.maxToasts) return;
+    const rank = {};
+    for (let i = 0; i < history.count; i++)
+      rank[history.get(i).nid] = i;
+    visible.sort((a, b) => {
+      const ra = rank[a.id] === undefined ? -1 : rank[a.id];
+      const rb = rank[b.id] === undefined ? -1 : rank[b.id];
+      return rb - ra; // larger history index = older, so oldest comes first
+    });
+    const drop = visible.length - root.maxToasts;
+    for (let i = 0; i < drop; i++) root.hiddenIds[visible[i].id] = true;
+    root.hiddenTick++;
   }
 
   // ---------- lifetime ----------

@@ -39,10 +39,10 @@ PanelWindow {
           readonly property var n: modelData
           readonly property bool critical: n.urgency === NotificationUrgency.Critical
           // honor the app's timeout hint when it sent one (ms); fall back
-          // to 12s / 20s (critical)
+          // to 3s / 5s (critical). Kept short so bursts don't pile up.
           readonly property int duration: n.expireTimeout > 0
-              ? Math.max(3000, Math.min(30000, n.expireTimeout))
-              : (critical ? 20000 : 12000)
+              ? Math.max(2000, Math.min(5000, n.expireTimeout))
+              : (critical ? 5000 : 3000)
 
           width: 344
           height: col.implicitHeight + 16

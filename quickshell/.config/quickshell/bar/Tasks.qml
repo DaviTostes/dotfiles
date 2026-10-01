@@ -11,8 +11,9 @@ import "../hyprconf"
 // from the editor). Clicking a row opens the editor sub-panel below the list;
 // the "+" icon in the header opens it blank for a new task. Tasks are
 // reordered with the row's up/down buttons, checked off and deleted from the
-// row. The list is persisted per shell in Quickshell.stateDir/tasks.json
-// (same store trick as the launcher's usage).
+// row. The list itself is global state shared by every monitor's pill and
+// lives in the TasksStore singleton (persisted in Quickshell.stateDir/
+// tasks.json), so a change on one bar shows up on all of them.
 //
 // Keyboard: the visible fields live in the PopupWindow, which cannot hold
 // the compositor keyboard on its own — the BAR does while a panel is open
@@ -31,21 +32,13 @@ Pill {
   // prefix color picked in the editor ("" = auto, i.e. the hashed default)
   property string editingColor: ""
 
-  // per-prefix color overrides: lowercased prefix → "#rrggbb". Persisted
-  // separately so a prefix keeps its color across restarts.
-  property var prefixColors: ({})
-
-  // stored tasks: { id, name, desc, prefix, done, created, doneAt }. Always
-  // replaced wholesale on mutation (never edited in place) so the filtered
-  // bindings below re-evaluate.
-  property var tasks: []
-
-  readonly property var pendingTasks: root.tasks.filter(t => !t.done)
-  readonly property var doneTasks: root.tasks.filter(t => t.done)
+  // tasks + per-prefix colors come from the shared TasksStore singleton: one
+  // list for every bar, so the per-monitor pills never drift out of sync.
+  // The filtered views below just re-expose it.
+  readonly property var pendingTasks: TasksStore.pendingTasks
+  readonly property var doneTasks: TasksStore.doneTasks
   readonly property var shown: root.tab === 0 ? root.pendingTasks : root.doneTasks
 
-  readonly property string storePath: Quickshell.stateDir + "/tasks.json"
-  readonly property string prefixColorsPath: Quickshell.stateDir + "/tasks-prefix-colors.json"
   readonly property int rowHeight: 42
 
   // ---------- pill ----------
@@ -68,88 +61,9 @@ Pill {
     onClicked: root.panelOpen = !root.panelOpen
   }
 
-  // ---------- persistence ----------
-  // stateDir is created by quickshell; printErrors off so the (expected)
-  // "file does not exist" warning on first run stays quiet. FileView caches
-  // the text, so a hand-edit only takes effect after a config reload.
-  // prefix color overrides (see prefixColors above)
-  FileView {
-    id: tasksFile
-    path: root.storePath
-    blockAllReads: true
-    preload: true
-    printErrors: false
-    watchChanges: false
-  }
-
-  FileView {
-    id: prefixColorsFile
-    path: root.prefixColorsPath
-    blockAllReads: true
-    preload: true
-    printErrors: false
-    watchChanges: false
-  }
-
-  function loadTasks() {
-    root.tasks = [];
-
-    const raw = tasksFile.text();
-    if (!raw) return;
-
-    let parsed = null;
-    try { parsed = JSON.parse(raw); } catch (e) { return; }
-    if (!Array.isArray(parsed)) return;
-
-    const out = [];
-    for (let i = 0; i < parsed.length; i++) {
-      const t = parsed[i];
-      if (!t || typeof t.name !== "string") continue;
-      out.push({
-        id: String(t.id !== undefined ? t.id : Date.now() + "-" + i),
-        name: t.name,
-        desc: typeof t.desc === "string" ? t.desc : "",
-        prefix: typeof t.prefix === "string" ? t.prefix : "",
-        done: !!t.done,
-        created: typeof t.created === "number" ? t.created : 0,
-        doneAt: typeof t.doneAt === "number" ? t.doneAt : 0
-      });
-    }
-    root.tasks = out;
-  }
-
-  function saveTasks() { tasksFile.setText(JSON.stringify(root.tasks)); }
-
-  function loadPrefixColors() {
-    root.prefixColors = {};
-
-    const raw = prefixColorsFile.text();
-    if (!raw) return;
-
-    let parsed = null;
-    try { parsed = JSON.parse(raw); } catch (e) { return; }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
-
-    const out = {};
-    for (const k in parsed) {
-      if (typeof parsed[k] === "string" && /^#[0-9a-fA-F]{6}$/.test(parsed[k]))
-        out[k.toLowerCase()] = parsed[k];
-    }
-    root.prefixColors = out;
-  }
-
-  function savePrefixColors() { prefixColorsFile.setText(JSON.stringify(root.prefixColors)); }
-
-  // set a custom color for a prefix; falsy color removes the override (auto)
-  function setPrefixColor(prefix, color) {
-    const key = (prefix || "").toLowerCase();
-    if (key === "") return;
-    const next = Object.assign({}, root.prefixColors);
-    if (color) next[key] = color;
-    else delete next[key];
-    root.prefixColors = next;
-    root.savePrefixColors();
-  }
+  // ---------- editor ----------
+  // tasks + prefix colors are loaded and saved by the TasksStore singleton;
+  // this pill only reads that store and calls its mutators.
 
   // open the editor sub-panel; pass a task to edit it, or null to create one
   function openEditor(task) {
@@ -158,14 +72,14 @@ Pill {
     descField.text = task ? task.desc : "";
     prefixField.text = task ? task.prefix : "";
     root.editingColor = (task && task.prefix)
-        ? (root.prefixColors[task.prefix.toLowerCase()] || "") : "";
+        ? (TasksStore.prefixColors[task.prefix.toLowerCase()] || "") : "";
     root.editorOpen = true;
   }
 
   function newTask() { root.openEditor(null); }
 
   function editTask(id) {
-    const t = root.tasks.find(x => x.id === id);
+    const t = TasksStore.find(id);
     if (t) root.openEditor(t);
   }
 
@@ -181,60 +95,24 @@ Pill {
     const prefix = prefixField.text.trim();
 
     if (root.editingId === "") {
-      const now = Date.now();
-      const t = {
-        id: now + "-" + Math.floor(Math.random() * 1e6),
-        name: name,
-        desc: desc,
-        prefix: prefix,
-        done: false,
-        created: now,
-        doneAt: 0
-      };
-      root.tasks = [t].concat(root.tasks);   // newest first
-      root.tab = 0;                          // reveal the new (pending) task
+      TasksStore.addTask(name, desc, prefix);   // newest first
+      root.tab = 0;                             // reveal the new (pending) task
     } else {
-      root.tasks = root.tasks.map(t => t.id === root.editingId
-          ? Object.assign({}, t, { name: name, desc: desc, prefix: prefix })
-          : t);
+      TasksStore.updateTask(root.editingId, name, desc, prefix);
     }
 
-    root.saveTasks();
-    if (prefix !== "") root.setPrefixColor(prefix, root.editingColor);
+    if (prefix !== "") TasksStore.setPrefixColor(prefix, root.editingColor);
     root.closeEditor();
   }
 
-  function toggleTask(id) {
-    root.tasks = root.tasks.map(t => t.id === id
-        ? Object.assign({}, t, { done: !t.done, doneAt: !t.done ? Date.now() : 0 })
-        : t);
-    root.saveTasks();
-  }
+  function toggleTask(id) { TasksStore.toggleTask(id); }
 
-  function removeTask(id) {
-    root.tasks = root.tasks.filter(t => t.id !== id);
-    root.saveTasks();
-  }
+  function removeTask(id) { TasksStore.removeTask(id); }
 
-  // reorder within the visible tab: swap with the neighbour at index+delta.
-  // The store mixes pending/done, but both views are filters, so rebuilding
-  // as (reordered current group) + (other group untouched) keeps every view
-  // consistent.
-  function moveTask(id, delta) {
-    const cur = root.shown.slice();
-    const i = cur.findIndex(t => t.id === id);
-    const j = i + delta;
-    if (i < 0 || j < 0 || j >= cur.length) return;
-
-    const tmp = cur[i]; cur[i] = cur[j]; cur[j] = tmp;
-
-    const inGroup = {};
-    for (let k = 0; k < cur.length; k++) inGroup[cur[k].id] = true;
-    const other = root.tasks.filter(t => !inGroup[t.id]);
-
-    root.tasks = cur.concat(other);
-    root.saveTasks();
-  }
+  // reorder within the visible tab: the store swaps the neighbour at
+  // index+delta and rebuilds the whole list as (reordered group) + (other
+  // group untouched), so every view stays consistent.
+  function moveTask(id, delta) { TasksStore.moveTask(id, delta, root.shown); }
 
   // Prefix → color: a custom override wins; otherwise the same prefix always
   // hashes to the same swatch (case-insensitive) across restarts. Empty
@@ -242,16 +120,11 @@ Pill {
   function tagColor(prefix) {
     const p = (prefix || "").toLowerCase();
     if (p === "") return Theme.accent2;
-    if (root.prefixColors[p]) return root.prefixColors[p];
+    if (TasksStore.prefixColors[p]) return TasksStore.prefixColors[p];
 
     let h = 0;
     for (let i = 0; i < p.length; i++) h = (h * 31 + p.charCodeAt(i)) >>> 0;
     return Theme.tagColors[h % Theme.tagColors.length];
-  }
-
-  Component.onCompleted: {
-    root.loadTasks();
-    root.loadPrefixColors();
   }
 
   // ---------- open / close ----------

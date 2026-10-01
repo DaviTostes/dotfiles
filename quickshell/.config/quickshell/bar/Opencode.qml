@@ -6,7 +6,7 @@ import "../hyprconf"
 
 // opencode — native chat panel (no kitty window at all).
 //
-// Talks to the opencode2 HTTP service (the same background server the TUI
+// Talks to the opencode HTTP service (the same background server the TUI
 // uses): reads ~/.local/state/opencode/service.json for url+password, and
 // renders the conversation as QML. Nothing is ever hidden, spawned or
 // focused — opening/closing is pure animation, and there is no window for
@@ -21,7 +21,7 @@ import "../hyprconf"
 // (not even the ": heartbeat") arrive.
 //
 // API map (v2, discovered via GET /openapi.json):
-//   GET  /api/health                              service up?
+//   GET  /api/info                                service up? (v2; /api/health older)
 //   GET  /api/session?parentID=null               root sessions (newest first)
 //   GET  /api/session/active                      { sessionID: {type} } running
 //   POST /api/session                             new chat
@@ -115,6 +115,7 @@ Pill {
   // from "turn done", so the gap is covered by these stamps.
   property real turnStartMs: 0
   property real execEndMs: 0
+  property real turnEndMs: 0      // last observed turn end (grace for late message writes)
   property real lastChangeMs: Date.now()  // last visible message-list change
   property string prevTopKey: ""          // newest message identity at previous load
   property real lastDeltaMs: 0            // last streaming token received
@@ -317,6 +318,7 @@ Pill {
           if (d.finish && d.finish !== "tool-calls") {
             root.busy = false;
             root.execEndMs = Date.now();
+            root.turnEndMs = Date.now();
             // ping the desktop only when the panel is CLOSED (while it is
             // open you can see the turn finish — a popup is just noise)
             if (!root.panelOpen) root.notifyDone(false, ev.id);
@@ -332,7 +334,10 @@ Pill {
       // a failed step may not be followed by a step.ended — clear busy here
       // so the turn cannot wedge the input disabled
       case "session.step.failed":
-        if (mine) { root.busy = false; root.execEndMs = Date.now(); refreshSoon(); }
+        if (mine) {
+          root.busy = false; root.execEndMs = Date.now();
+          root.turnEndMs = Date.now(); refreshSoon();
+        }
         if (root.panelOpen) root.loadActive();
         return;
       case "session.execution.started":
@@ -343,12 +348,16 @@ Pill {
         return;
       case "session.execution.failed":
       case "session.execution.interrupted":
-        if (mine) { root.busy = false; root.execEndMs = Date.now(); refreshSoon(); }
+        if (mine) {
+          root.busy = false; root.execEndMs = Date.now();
+          root.turnEndMs = Date.now(); refreshSoon();
+        }
         return;
       case "session.error":
         if (mine) {
           root.busy = false;
           root.execEndMs = Date.now();
+          root.turnEndMs = Date.now();
           const e = d.error || d;
           const msg = typeof e === "string" ? e
               : (e && (e.message || e.name)) || "";
@@ -628,7 +637,11 @@ Pill {
     focusPanelField();
     refocusTimer.restart();
     root.streamFails = 0;      // reopening the panel re-arms background retries
+    // (re)probe the service as well: a stale `svcUp` after a server restart
+    // would otherwise leave the panel with no SSE stream (and no live turn
+    // updates) until the pill was clicked again
     if (root.svcUp) root.connectStream();
+    else root.checkService();
     // events missed while closed may not have been reconciled — reload now
     // (also reconciles a stale `busy` via loadMessages)
     root.lastChangeMs = Date.now();
@@ -760,26 +773,35 @@ Pill {
     root.checkService();
   }
 
+  // The service is up when its info probe answers. opencode v2 dropped
+  // GET /api/health (it now 404s), so probing it made the widget believe the
+  // service was down: it never marked svcUp, never called connectStream() and
+  // therefore never opened the SSE stream — the panel then only refreshed on
+  // open/close (and never learned a turn ended). Probe /api/info, falling back
+  // to /api/health for older servers.
   function checkService() {
     if (root.svcUrl === "") return respawnService();
-    api("GET", "/api/health", null, ok => {
-      if (ok) {
-        root.svcUp = true;
-        root.svcTries = 0;         // recovered: allow future respawns again
-        root.error = "";
-        loadSession();
-        loadExtras();
-        connectStream();
-        return;
-      }
-      root.svcUp = false;
-      respawnService();
+    const up = () => {
+      root.svcUp = true;
+      root.svcTries = 0;         // recovered: allow future respawns again
+      root.error = "";
+      loadSession();
+      loadExtras();
+      connectStream();
+    };
+    api("GET", "/api/info", null, okInfo => {
+      if (okInfo) return up();
+      api("GET", "/api/health", null, okHealth => {
+        if (okHealth) return up();
+        root.svcUp = false;
+        respawnService();
+      });
     });
   }
 
   function respawnService() {
     if (root.svcTries === 0)
-      Quickshell.execDetached(["opencode2", "serve", "--service"]);
+      Quickshell.execDetached(["opencode", "serve", "--service"]);
     if (++root.svcTries > 6) {
       root.error = "opencode service unreachable";
       return;
@@ -935,6 +957,7 @@ Pill {
     root.error = "";
     root.turnStartMs = 0;
     root.execEndMs = 0;
+    root.turnEndMs = 0;
     root.lastChangeMs = Date.now();
     root.prevTopKey = "";
     root.clearBusyNextLoad = false;
@@ -1636,17 +1659,21 @@ Pill {
       }
 
       // busy reconciliation: an incomplete assistant message anywhere means
-      // a step is in flight → busy. Clearing is left to the per-step
-      // `finish` events (the message list can't tell "between steps" from
-      // "turn done"); while the panel is CLOSED nothing can be observed
-      // mid-gap, so all-complete there means done.
+      // a step is in flight → busy. Clearing is left to the per-step `finish`
+      // events (the message list can't tell "between steps" from "turn done"),
+      // but an all-complete history also means idle whenever nothing can be
+      // observed live — the panel is closed, or the SSE stream is down, so a
+      // missed execution-end must not wedge the turn busy forever.
+      //
+      // `turnEndMs` is a short grace: `step.ended` already set busy=false, and
+      // the message list can lag one reload behind, so an incomplete message
+      // arriving right after the turn end must not flip `busy` back on.
       const anyIncomplete = raw.some(m =>
         m.type === "assistant" && !(m.time && m.time.completed));
       if (anyIncomplete) {
-        root.busy = true;
-      } else if (!root.panelOpen || root.clearBusyNextLoad) {
-        // closing the panel stops all observation, so all-complete there
-        // (or on the reload right after (re)opening) means the turn is done
+        if (Date.now() - root.turnEndMs > 1500) root.busy = true;
+      } else if (!root.panelOpen || root.clearBusyNextLoad
+                 || (!root.streamLive && Date.now() - root.turnStartMs > 2000)) {
         root.busy = false;
         root.clearBusyNextLoad = false;
       }
@@ -1924,6 +1951,7 @@ Pill {
     if (!root.session) return;
     root.busy = false;
     root.execEndMs = Date.now();
+    root.turnEndMs = Date.now();
     api("POST", "/api/session/" + root.session.id + "/interrupt", {}, () => {});
   }
 
@@ -4159,8 +4187,13 @@ Pill {
       // value so the floating siblings can still anchor to it.
       Rectangle {
         id: inputRow
-        x: 10
-        width: parent.width - 20
+        // full width while chatting; capped + centered while empty
+        // (chatbot-style narrow prompt)
+        width: panelContent.empty ? Math.min(parent.width - 20, 640)
+                                  : parent.width - 20
+        x: panelContent.empty ? (parent.width - width) / 2 : 10
+        Behavior on x { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+        Behavior on width { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
         visible: root.mode === "chat"
         anchors.bottom: parent.bottom
         anchors.bottomMargin: 10
@@ -4750,11 +4783,14 @@ Pill {
     if (panelOpen) root.focusPanelField();
   }
 
-  // fallback polling only when the SSE stream is not delivering
+  // fallback polling when the SSE stream is not delivering. It runs whenever
+  // the panel is open and there is no stream — not only mid-turn — so a stream
+  // that never connected (or died silently) can never leave the chat frozen
+  // until the panel is reopened. Fast while a turn is in flight, slow when idle.
   Timer {
-    interval: 50
+    interval: (root.busy || root.sending) ? 60 : 1200
     repeat: true
-    running: root.panelOpen && (root.busy || root.sending) && !root.streamLive
+    running: root.panelOpen && !root.streamLive
     onTriggered: {
       root.loadMessages();
       root.loadPerms();
