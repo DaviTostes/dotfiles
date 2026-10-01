@@ -70,7 +70,10 @@ lands at `~/.config/quickshell/shell.qml`.
   Clicking a row opens the same editor sub-panel below the list to update it;
   the editor also carries the per-prefix color swatches. Rows reorder with
   up/down chevrons (`moveTask` swaps within the visible tab), and are checked
-  off (or restored) and deleted from the row. The list persists at
+  off (or restored) and deleted from the row. The list is **global state**, not
+  per-pill: `bar/TasksStore.qml` is a singleton (registered in `bar/qmldir`,
+  like `Notifs`) holding the tasks + per-prefix colors and every mutator, so
+  all bars stay in sync — `Tasks.qml` is only the view. It persists at
   `Quickshell.stateDir/tasks.json` via `Quickshell.Io.FileView` (the same store
   trick as the launcher). Text entry reuses `hyprconf/TextEntry.qml`; the bar
   holds the keyboard while the panel is open (`Bar.focusable ←

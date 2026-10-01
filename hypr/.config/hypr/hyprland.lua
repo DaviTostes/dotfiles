@@ -143,6 +143,15 @@ hl.config({
     force_default_wallpaper = -1,
     disable_hyprland_logo   = false,
     focus_on_activate       = true,
+    -- VRR (FreeSync) fica DESLIGADO de propósito. Ligar so faz sentido com o
+    -- VSync do jogo desligado, e o Classic Beta ignora `vsync "0"` no
+    -- Config.wtf (ele sobrescreve de volta), entao a unica forma seria
+    -- desligar pelo menu a cada sessao. Com VRR on + VSync on nao se ganha
+    -- nenhum dos dois: o monitor nao varia a refresh (o jogo trava a
+    -- apresentacao em 144) e o vsync segue julgando deadline normal.
+    -- Para usar VRR de verdade: `vrr = 1` aqui + VSync off em Esc > Graficos,
+    -- e ai os drops de vsync viram refresh variavel em vez de cair pra metade.
+    vrr = 0,
   },
 
   input = {
@@ -161,6 +170,10 @@ hl.config({
   },
 
   cursor = {
+    -- cursor por software (original desta maquina). Hardware cursor ocupa um
+    -- plano no CRTC e atrapalha o direct scanout, o que custa frames num jogo
+    -- que depende do caminho XWayland -> compositor. Medido como perda aqui,
+    -- entao volta ao padrao.
     no_hardware_cursors = true,
   },
 
@@ -241,6 +254,23 @@ hl.window_rule({
   name       = "wow-fullscreen",
   match      = { title = "World of Warcraft" },
   fullscreen = true,
+  -- the bar, the lock screen and quickshell layers are layer-shell surfaces
+  -- the compositor still has to process while the game is up. Skipping blur
+  -- and the drop shadow for the game window keeps that work off the frame path.
+  no_blur    = true,
+  no_shadow  = true,
+})
+
+-- kitty 0.49.1 sends xdg_toplevel.set_maximized on map even when started
+-- with --start-as=normal: 'normal' and 'maximized' are indistinguishable, so
+-- every new terminal swallows the whole work area and ignores the split
+-- until it is dragged. There is no kitty.conf key for it (start_as is
+-- CLI-only), so the fix has to live here. Side effect: double-click on
+-- kitty's own titlebar can no longer maximize it.
+hl.window_rule({
+  name           = "kitty-no-maximize",
+  match          = { class = "kitty" },
+  suppress_event = "maximize",
 })
 
 local sideApps = { "warbler", "omm", "maily", "btop", "calc" }
