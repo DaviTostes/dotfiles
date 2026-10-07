@@ -47,6 +47,23 @@ Scope {
     id: clipboard
   }
 
+  // Standalone full-size opencode chat: a second Opencode instance pinned to
+  // full mode and hosted in a hidden window, so its FloatingWindow can be open
+  // at the same time as a bar's docked intelligence central. Both instances
+  // share the same chat selection through the OpencodeShared singleton.
+  PanelWindow {
+    id: opencodeFullHost
+    visible: false
+    implicitWidth: 1
+    implicitHeight: 1
+    color: "transparent"
+
+    Opencode {
+      id: opencodeFull
+      standalone: true
+    }
+  }
+
   // global keybind bridge — hyprland.lua: SUPER+A → `qs ipc call opencode toggle`,
   // SUPER+N → `qs ipc call notifs toggle` (calendar panel w/ notifications),
   // SUPER+O → `qs ipc call tasks toggle` (tasks dropdown)
@@ -65,16 +82,28 @@ Scope {
       if (bar) bar.openChat();
     }
 
-    // SUPER+SHIFT+A — big chat window: closed→full, docked→full, full→closed
-    function toggleExpanded() {
-      const m = Hyprland.focusedMonitor;
-      const bar = m ? root.bars[m.name] : null;
-      if (bar) bar.toggleChatExpanded();
-    }
+    // SUPER+SHIFT+A — the standalone full chat window (independent of the
+    // docked intelligence central, so both can be open at once)
+    function toggleExpanded() { root.toggleFullChat(); }
 
     function close() {
       for (const k in root.bars) root.bars[k].closeChat();
     }
+  }
+
+  // the standalone full chat is its own Opencode instance; this is the shared
+  // toggle used by the keybind and by the pill's expand button
+  function toggleFullChat() {
+    if (opencodeFull.panelOpen) opencodeFull.panelOpen = false;
+    else opencodeFull.openStandalone();
+  }
+
+  IpcHandler {
+    target: "opencodeFull"
+
+    function toggle() { root.toggleFullChat(); }
+    function open() { opencodeFull.openStandalone(); }
+    function close() { opencodeFull.panelOpen = false; }
   }
 
   IpcHandler {

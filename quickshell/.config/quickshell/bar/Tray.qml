@@ -55,14 +55,23 @@ Pill {
           cursorShape: Qt.PointingHandCursor
           onClicked: mouse => {
             const item = icon.modelData;
-            // left and right click both open the menu; middle does the
+            // left activates the app (falls back to the menu for
+            // menu-only items); right toggles the menu; middle does the
             // item's secondary action
-            if ((mouse.button === Qt.RightButton || mouse.button === Qt.LeftButton) && item.menu) {
-              trayMenu.openFor(icon, item.menu);
+            if (mouse.button === Qt.RightButton) {
+              if (item.menu) {
+                if (trayMenu.open && trayMenu.targetItem === icon)
+                  trayMenu.closeMenu();
+                else
+                  trayMenu.openFor(icon, item.menu);
+              }
             } else if (mouse.button === Qt.MiddleButton) {
               item.secondaryActivate();
             } else if (mouse.button === Qt.LeftButton) {
-              item.activate();
+              if (item.onlyMenu && item.menu)
+                trayMenu.openFor(icon, item.menu);
+              else
+                item.activate();
             }
           }
         }

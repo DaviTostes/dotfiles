@@ -11,6 +11,9 @@ TextEdit {
 
   readOnly: true
   persistentSelection: true
+  // read-only TextEdits disable keyboard selection by default; enable it so
+  // messages can be selected with Shift+arrows, not only the mouse
+  selectByKeyboard: true
   wrapMode: TextEdit.Wrap
   font.family: Theme.font
   selectionColor: Theme.accent

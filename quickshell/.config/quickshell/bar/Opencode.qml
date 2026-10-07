@@ -32,7 +32,7 @@ import "../hyprconf"
 //   POST /api/session/{id}/agent   {agent}        switch agent
 //   POST /api/session/{id}/interrupt              stop
 //   GET  /api/session/{id}/permission             pending permission ask
-//   POST /api/session/{id}/permission/{pid}/reply {reply: once|always|reject}
+//   POST /api/session/{id}/permission/{pid}/reply {decision: once|always|reject}
 //   GET  /api/fs/find?query=&type=file            @-mention file finder
 //   GET  /api/agent /api/model /api/command       switcher contents
 //   GET  /api/event                               SSE event stream
@@ -47,14 +47,16 @@ Pill {
   property bool panelExpanded: false
   // one-shot: open straight into panelExpanded (set by openExpanded())
   property bool pendingExpanded: false
+  // standalone: this instance is a full-mode-only chat hosted outside a bar
+  // (its own FloatingWindow) so it can be open at the same time as the bar's
+  // docked intelligence central. The pill/docked dropdown are unused.
+  property bool standalone: false
   // panel fade (0 hidden, 1 shown). Driven by explicit animations so an
   // expand/collapse can fade the panel out, snap the surface to the other
   // size/position, then fade back in. Animating the surface size every frame
   // instead makes the compositor reallocate the buffer each frame and drops
   // the whole panel to ~15fps.
   property real panelFade: 0
-  // the mode an in-flight crossfade is switching to
-  property bool pendingMode: false
   property string mode: "chat"    // central tab: chat | translate | calc
   // tab swipe: on tab change the incoming body starts offset to the side
   // (direction follows the tab order) and glides back to 0
@@ -66,7 +68,8 @@ Pill {
   }
   property string menu: ""        // "" | "sessions" | "models" | "agents" | "commands" | "files"
   property int menuSel: 0         // keyboard selection in the searchable menus
-  property string menuSavedInput: ""  // chat draft parked while a menu searches
+  property string sideQuery: ""       // full-mode history rail filter box
+  property bool sidebarOpen: true     // full-mode history rail shown/collapsed
   // models / agents / sessions take the keyboard over as a search box
   readonly property bool menuSearchOpen: root.menu === "models"
       || root.menu === "agents" || root.menu === "sessions"
@@ -76,18 +79,16 @@ Pill {
   property string svcPw: ""
   property bool svcUp: false
   property int svcTries: 0
+  property real lastSpawnMs: 0    // throttle duplicate `opencode serve` spawns
 
   // ---------- chat state ----------
   property var session: null      // Session.Info or null
   property var sessionList: []
   property var activeSessions: ({})  // sessionID -> true while a turn is running
-  // sessions this panel created or opened on purpose: only these are picked
-  // automatically and only these show up in the picker. A session running in
-  // the TUI (or nvim) must never be dragged into the panel just because it is
-  // the active one. Persisted in Quickshell.stateDir.
-  property var panelSessions: ({})  // sessionID -> true
-  property bool panelSessionsLoaded: false  // store read from disk (guards prune)
-  property bool newChatPending: false  // "+" pressed, session not created yet
+  // Which chats are "panel-owned", which one is selected, and whether a new
+  // chat is pending are shared between every panel instance via OpencodeShared,
+  // so the docked intelligence central and the standalone full chat always show
+  // the same conversation. Only the message model / turn state are per-panel.
   property var agents: []
   property var models: []
   property var commands: []
@@ -171,6 +172,25 @@ Pill {
   implicitWidth: label.implicitWidth + 14
 
   // ---------- http helper ----------
+  // Qt.btoa(string) is deprecated and floods the log on every request, so the
+  // Basic-auth Base64 of the (ASCII) "opencode:<password>" credentials is
+  // built directly here.
+  function b64ascii(s) {
+    const C = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let out = "";
+    for (let i = 0; i < s.length; i += 3) {
+      const b0 = s.charCodeAt(i) & 0xff;
+      const has1 = i + 1 < s.length, has2 = i + 2 < s.length;
+      const b1 = has1 ? s.charCodeAt(i + 1) & 0xff : 0;
+      const b2 = has2 ? s.charCodeAt(i + 2) & 0xff : 0;
+      out += C[b0 >> 2];
+      out += C[((b0 & 3) << 4) | (b1 >> 4)];
+      out += has1 ? C[((b1 & 15) << 2) | (b2 >> 6)] : "=";
+      out += has2 ? C[b2 & 63] : "=";
+    }
+    return out;
+  }
+
   function api(method, path, body, cb) {
     if (root.svcUrl === "") return;
     const x = new XMLHttpRequest();
@@ -188,7 +208,7 @@ Pill {
     // a hung request must not wedge `sending` forever — XHR fires
     // readyState 4 (status 0) on timeout, which is handled like a failure
     x.timeout = 20000;
-    x.setRequestHeader("Authorization", "Basic " + Qt.btoa("opencode:" + root.svcPw));
+    x.setRequestHeader("Authorization", "Basic " + root.b64ascii("opencode:" + root.svcPw));
     x.setRequestHeader("Content-Type", "application/json");
     x.send(body === null ? null : JSON.stringify(body));
   }
@@ -206,6 +226,11 @@ Pill {
     ];
     sseProc.running = true;
     root.streamLive = true;
+    // arm the watchdog at connect time, not only on the first byte: a curl
+    // that connects but then receives nothing (half-open/hung server) would
+    // otherwise leave streamLive stuck true forever, which disables the
+    // fallback polls and freezes the panel.
+    watchdog.restart();
   }
 
   // the stream is intentionally not torn down when the panel closes (it
@@ -658,33 +683,15 @@ Pill {
   // open the panel straight in the large, centered (chatbot) mode. Recorded
   // as a pending wish so onPanelOpenChanged can snap there before the window
   // is ever painted (setting panelExpanded afterwards would flash docked).
-  // Only valid while CLOSED — see toggleExpanded() for the open cases.
   function openExpanded() {
     root.pendingExpanded = true;
     root.panelOpen = true;
   }
 
-  // SUPER+SHIFT+A: one key for the big window. Cycles
-  //   closed → open full · docked → full · full → closed
-  // (openExpanded() alone could not do the open cases: panelOpen does not
-  // change when it is already open, so onPanelOpenChanged never fired).
-  function toggleExpanded() {
-    if (!root.panelOpen) { root.openExpanded(); return; }
-    if (!root.panelExpanded) { root.setPanelExpanded(true); return; }
-    root.panelOpen = false;                                          // fades out
-  }
-
-  // Switch docked <-> expanded while the panel is open. The window size is
-  // NOT tweened: the panel fades out, the surface snaps to the new geometry
-  // while invisible (modeSwap's middle), then fades back in.
-  function setPanelExpanded(v) {
-    if (root.panelExpanded === v) return;
-    if (!root.panelOpen || !panel.visible) { root.panelExpanded = v; return; }
-    root.pendingMode = v;
-    showAnim.stop();
-    hideAnimFx.stop();
-    modeSwap.restart();
-  }
+  // The docked <-> full swap that used to live here is gone: the full chat is
+  // now the standalone `opencodeFull` instance (shell.qml), so this component
+  // never expands or collapses while open — it only opens/closes. `standalone`
+  // instances are the ones that open straight into full mode.
 
   // focus the single real editor (the bar's hiddenInput) and mirror the
   // active tab's field into it. In full mode the floating window has normal
@@ -693,7 +700,8 @@ Pill {
     if (!root.panelOpen) return;
     root.inputSyncing = true;
     hiddenInput.text = root.mode === "translate" ? translateBox.sourceText
-                                                 : inputField.text;
+                     : root.mode === "calc" ? calcBox.draft
+                     : inputField.text;
     root.inputSyncing = false;
     root.focusChatEditor();
   }
@@ -703,6 +711,7 @@ Pill {
   function focusChatEditor() {
     if (!root.panelOpen) return;
     if (root.panelExpanded) {
+      if (root.mode === "calc") { if (calcBox) calcBox.focusEntry(); return; }
       if (inputField) inputField.forceActiveFocus();
       return;
     }
@@ -800,8 +809,14 @@ Pill {
   }
 
   function respawnService() {
-    if (root.svcTries === 0)
+    // ensureService() resets svcTries on every pill click, so without this
+    // throttle each open of a genuinely-down service spawned another
+    // `opencode serve`. One spawn per 5s is enough to auto-start it.
+    const now = Date.now();
+    if (root.svcTries === 0 && now - root.lastSpawnMs > 5000) {
       Quickshell.execDetached(["opencode", "serve", "--service"]);
+      root.lastSpawnMs = now;
+    }
     if (++root.svcTries > 6) {
       root.error = "opencode service unreachable";
       return;
@@ -823,31 +838,6 @@ Pill {
     onFileChanged: svcFile.reload()
   }
 
-  // the panel's own chat store (see panelSessions). stateDir is created by
-  // quickshell itself; FileView caches the text, so a hand-edit only takes
-  // effect after a config reload — otherwise the next write clobbers it.
-  FileView {
-    id: panelSessionsFile
-    path: Quickshell.stateDir + "/opencode-panel-sessions.json"
-    blockAllReads: true
-    preload: true
-    printErrors: false
-    watchChanges: false
-    onLoaded: {
-      root.panelSessionsLoaded = true;
-      const raw = panelSessionsFile.text();
-      if (!raw) return;
-      let parsed = null;
-      try { parsed = JSON.parse(raw); } catch (e) { return; }
-      if (!parsed || typeof parsed !== "object") return;
-      const next = {};
-      for (const id in parsed) if (parsed[id]) next[id] = true;
-      root.panelSessions = next;
-    }
-    // no store yet (first run) — an empty store is a valid, loaded one
-    onLoadFailed: root.panelSessionsLoaded = true
-  }
-
   Timer {
     id: retryTimer
     interval: 1200
@@ -856,43 +846,27 @@ Pill {
   }
 
   // ---------- data loaders ----------
-  // remember/forget a session the panel owns (created here or opened from the
-  // picker). Persisted so a restart doesn't make the panel adopt whatever the
-  // TUI happens to be running.
-  function rememberPanelSession(id) {
-    if (!id || root.panelSessions[id]) return;
-    const next = Object.assign({}, root.panelSessions);
-    next[id] = true;
-    root.panelSessions = next;
-    panelSessionsFile.setText(JSON.stringify(next));
-  }
-
-  function forgetPanelSession(id) {
-    if (!id || !root.panelSessions[id]) return;
-    const next = Object.assign({}, root.panelSessions);
-    delete next[id];
-    root.panelSessions = next;
-    panelSessionsFile.setText(JSON.stringify(next));
-  }
-
-  // drop ids that no longer exist on the server, so the store (and the
-  // picker) can't grow forever. `known` must be the FULL session list — a
-  // truncated page would wrongly forget panel chats that fell off the end.
-  function prunePanelSessions(known) {
-    // never prune before the store was read from disk: the first server
-    // reply could otherwise wipe every remembered id
-    if (!root.panelSessionsLoaded) return;
-    const alive = {};
-    for (const s of (known || [])) alive[s.id] = true;
-    let changed = false;
-    const next = {};
-    for (const id in root.panelSessions) {
-      if (alive[id]) next[id] = true;
-      else changed = true;
+  // The remembered chat set, the current selection and the pending-new-chat
+  // flag live in the OpencodeShared singleton so every panel instance agrees.
+  // Mirrors OpencodeShared's selection into this panel. `own` is the filtered
+  // session list (defaults to root.sessionList). Never creates a session; a
+  // pending new chat clears the view.
+  function adoptShared(own) {
+    const list = own || root.sessionList || [];
+    if (OpencodeShared.newChatPending) {
+      if (root.session) root.newChatLocal();   // another window hit "+"
+      return;
     }
-    if (!changed) return;
-    root.panelSessions = next;
-    panelSessionsFile.setText(JSON.stringify(next));
+    const sid = OpencodeShared.currentSessionId;
+    if (sid === "") {
+      // nobody has selected yet: pick one and publish it for the others
+      const s = root.pickSession(list);
+      if (s) { root.switchSessionLocal(s); OpencodeShared.setCurrent(s.id); }
+      return;
+    }
+    if (root.session && root.session.id === sid) return;
+    const s = list.find(x => x.id === sid);
+    if (s) root.switchSessionLocal(s);
   }
 
   // one place owns the session list + the running-session map; it runs on
@@ -904,10 +878,10 @@ Pill {
       root.activeSessions = (okA && a && a.data) ? a.data : {};
       api("GET", "/api/session?limit=200&parentID=null", null, (ok, data) => {
         if (!ok || !data || !data.data) return;
-        root.prunePanelSessions(data.data);
+        OpencodeShared.prune(data.data);
         // the picker and the auto-pick only ever see panel-owned chats; the
         // full server list is used above to prune dead ids
-        const own = data.data.filter(s => root.panelSessions[s.id]);
+        const own = data.data.filter(s => OpencodeShared.panelSessions[s.id]);
         root.sessionList = own;
         // remember the model/agent last used anywhere — new chats start
         // with them instead of showing the placeholder chips
@@ -916,16 +890,9 @@ Pill {
           if (root.lastAgent === "" && s.agent) root.lastAgent = s.agent;
           if (root.lastModel && root.lastAgent !== "") break;
         }
-        // already chatting (or a "+" is pending): never yank the view
-        if (root.session || root.newChatPending) return;
-        root.session = root.pickSession(own);
-        root.chatLoading = root.session !== null;
-        chatView.pinned = true;
-        root.resetTurnState();
-        root.loadMessages();
-        root.loadPerms();
-        root.loadForms();
-        root.loadSessionInfo();
+        // mirror the shared selection (adopts another window's switch, or
+        // picks the newest chat on first load) without yanking a live view
+        root.adoptShared(own);
       });
     });
   }
@@ -982,6 +949,63 @@ Pill {
     let last = parts[parts.length - 1] || "";
     if (/^\d+$/.test(last) && parts.length > 1) last = parts[parts.length - 2];
     return last;
+  }
+
+  // ---------- full-mode history rail ----------
+  // The rail lists the SAME panel-owned chats as the sessions menu (never the
+  // TUI/other integrations), newest first, filtered by the rail's search box.
+  function sideFilteredSessions() {
+    const q = root.sideQuery.trim().toLowerCase();
+    if (q === "") return root.sessionList;
+    return root.sessionList.filter(s =>
+      root.sessionLabel(s).toLowerCase().indexOf(q) !== -1
+      || (s.agent || "").toLowerCase().indexOf(q) !== -1);
+  }
+
+  // bucket the filtered chats into Claude/ChatGPT-style date sections. One
+  // function on purpose: the Repeater binds to root.sideGroups() and QML
+  // re-evaluates it whenever sessionList / sideQuery change.
+  function sideGroups() {
+    const t0 = new Date();
+    t0.setHours(0, 0, 0, 0);
+    const base = t0.getTime();
+    const day = 86400000;
+    const groups = [
+      { label: "Today", items: [] },
+      { label: "Yesterday", items: [] },
+      { label: "Previous 7 days", items: [] },
+      { label: "Previous 30 days", items: [] },
+      { label: "Older", items: [] }
+    ];
+    for (const s of root.sideFilteredSessions()) {
+      const t = s.time || {};
+      const ts = t.updated || t.created || 0;
+      let gi = 4;
+      if (ts >= base) gi = 0;
+      else if (ts >= base - day) gi = 1;
+      else if (ts >= base - 7 * day) gi = 2;
+      else if (ts >= base - 30 * day) gi = 3;
+      groups[gi].items.push(s);
+    }
+    return groups.filter(g => g.items.length > 0);
+  }
+
+  function sideClearQuery() {
+    root.sideQuery = "";
+    if (sideSearch) sideSearch.text = "";
+  }
+
+  function sideNewChat() {
+    root.sideClearQuery();
+    root.newChat();
+  }
+
+  function sideSwitch(s) {
+    root.sideClearQuery();
+    root.switchSession(s);
+    // switchSession only refocuses when it closes a menu; clicking the rail
+    // must hand the keyboard back to the chat editor explicitly
+    root.focusChatEditor();
   }
 
   // refresh the open session's live fields (title, cost, model, agent) —
@@ -1374,9 +1398,13 @@ Pill {
     }
     if (mi !== known) return false;   // known rows finished early → out of order
 
-    // 3. apply: insert the missing rows back-to-front, then refresh the shared
-    //    ones. The trailing unknowns are left exactly as they are.
-    for (let i = inserts.length - 1; i >= 0; i--)
+    // 3. apply: insert the missing rows in FORWARD order, then refresh the
+    //    shared ones. The trailing unknowns (streamed-ahead tail) are left
+    //    exactly as they are. Inserting back-to-front (the old code) put an
+    //    insert whose desired index is >= `known` AFTER that tail, e.g.
+    //    [A, X] + desired [A, B, C] became [A, B, X, C] instead of
+    //    [A, B, C, X]; forward inserts land before the tail as intended.
+    for (let i = 0; i < inserts.length; i++)
       root.modelInsert(inserts[i], desired[inserts[i]]);
 
     for (let di = 0, mj = 0; di < desired.length && mj < chatModel.count; ) {
@@ -1465,7 +1493,16 @@ Pill {
           let idx = -1;
           for (let i = 0; i < root.msgCache.length; i++)
             if (root.msgCache[i].id === lastId) { idx = i; break; }
-          merged = idx >= 0 ? raw.concat(root.msgCache.slice(idx + 1)) : raw.slice();
+          if (idx < 0) {
+            // the newest page no longer overlaps the cache (more than a page
+            // of messages arrived since it was built): re-page the whole
+            // history instead of dropping everything older than this page
+            root.msgCacheSid = "";
+            done();
+            root.loadMessages();
+            return;
+          }
+          merged = raw.concat(root.msgCache.slice(idx + 1));
         }
         root.msgCache = merged;
         root.applyMessages(sid, merged);
@@ -1611,7 +1648,17 @@ Pill {
       // arrives here already cleared) on the structural path: the append-only
       // path leaves `rebuilding` clear, and a multi-frame append would flip
       // `pinned` off between chunks so the final stick-to-end is dropped.
-      const inPlace = !wasBuilding && chatModel.count > 0
+      //
+      // `staleTail`: a trailing "streamed ahead of the server" row is only
+      // legitimate while a turn is in flight (or just after it ended, before
+      // the server persists it). If the server list is shorter than the model
+      // and nothing is running, those extra rows are stale (a message removed
+      // elsewhere) and must be dropped by a rebuild — the in-place path and
+      // mergeShape would otherwise keep them forever.
+      const staleTail = !wasBuilding && !root.busy && !root.sending
+          && Date.now() - root.turnEndMs > 2000
+          && desired.length < chatModel.count;
+      const inPlace = !wasBuilding && !staleTail && chatModel.count > 0
           && (prefix === chatModel.count || prefix === desired.length);
       const tail = inPlace ? desired.slice(prefix) : desired;
 
@@ -1642,7 +1689,7 @@ Pill {
           for (const d of tail) root.modelAppend(d);
           root.chatLoading = false;
         }
-      } else if (!wasBuilding && root.mergeShape(desired)) {
+      } else if (!wasBuilding && !staleTail && root.mergeShape(desired)) {
         // the prefix broke but this is still the same chat with a part
         // inserted (a delta landed before the server persisted it): merge in
         // place instead of clearing the whole model — clearing made every
@@ -1668,10 +1715,25 @@ Pill {
       // `turnEndMs` is a short grace: `step.ended` already set busy=false, and
       // the message list can lag one reload behind, so an incomplete message
       // arriving right after the turn end must not flip `busy` back on.
-      const anyIncomplete = raw.some(m =>
+      //
+      // An incomplete assistant message is only evidence of a LIVE turn if we
+      // saw the turn start (`turnStartMs > 0`) or the message was updated
+      // recently. A stale incomplete message (a turn aborted/errored in a past
+      // session, reopened later) must NOT force busy: `turnEndMs` is 0 after a
+      // reset, so the old check kept the input disabled and "thinking…" on
+      // forever, and the slow poll could not clear it (it requires a known
+      // turn start).
+      const inc = raw.find(m =>
         m.type === "assistant" && !(m.time && m.time.completed));
-      if (anyIncomplete) {
+      const incTs = inc && inc.time ? (inc.time.updated || inc.time.created || 0) : 0;
+      const incFresh = incTs > 0 && Date.now() - incTs < 30000;
+      const turnLive = !!inc && (root.turnStartMs > 0 || incFresh);
+      if (turnLive) {
         if (Date.now() - root.turnEndMs > 1500) root.busy = true;
+      } else if (inc) {
+        // stale incomplete: not a live turn, so it must not wedge busy
+        root.busy = false;
+        root.clearBusyNextLoad = false;
       } else if (!root.panelOpen || root.clearBusyNextLoad
                  || (!root.streamLive && Date.now() - root.turnStartMs > 2000)) {
         root.busy = false;
@@ -1718,7 +1780,7 @@ Pill {
     const sid = root.session.id, pid = root.pendingPerm.id;
     root.pendingPerm = null;
     api("POST", "/api/session/" + sid + "/permission/" + pid + "/reply",
-        { reply: reply }, () => root.loadPerms());
+        { decision: reply }, () => root.loadPerms());
   }
 
   // ---------- select questions (forms) ----------
@@ -1744,6 +1806,14 @@ Pill {
       for (const f of list) if (!(f.id in ans)) ans[f.id] = {};
       for (const k in ans) if (!list.some(f => f.id === k)) delete ans[k];
       root.formAnswers = ans;
+      // a form being typed into can be answered/cancelled from another
+      // monitor: drop the text target so Enter cannot reply to a dead form
+      if (root.formTextTarget
+          && !list.some(f => f.id === root.formTextTarget.formID)) {
+        root.formTextTarget = null;
+        inputField.text = "";
+        hiddenInput.text = "";
+      }
     });
   }
 
@@ -1821,7 +1891,7 @@ Pill {
     hiddenInput.text = "";
     root.focusChatEditor();
     // closing any menu must not restore a parked draft into this field
-    if (root.menu !== "") { root.menuSavedInput = ""; root.menu = ""; }
+    if (root.menu !== "") root.menu = "";
   }
 
   function formCommitText() {
@@ -1866,8 +1936,13 @@ Pill {
   // first send. Creating it here would leave an empty untitled chat behind
   // every time the button is tapped (or the panel is poked by accident).
   function newChat() {
+    root.newChatLocal();
+    OpencodeShared.startNew();     // clear the view in every window
+  }
+
+  // clear THIS panel's view without touching the shared selection
+  function newChatLocal() {
     root.session = null;
-    root.newChatPending = true;   // survive a close/reopen without a reload
     root.modelClear();
     root.chatLoading = false;     // genuinely empty, not loading
     root.expanded = ({});         // fold-outs belong to the old chat
@@ -1877,16 +1952,25 @@ Pill {
     root.formAnswers = {};
     root.formTextTarget = null;
     root.closeMenu();
-    root.menuSavedInput = "";
     inputField.text = "";
     hiddenInput.text = "";
     root.focusChatEditor();
   }
 
+  // user picked a chat (picker / rail): show it here and in every other panel
   function switchSession(s) {
+    root.switchSessionLocal(s);
+    if (s && s.id) {
+      OpencodeShared.remember(s.id);   // opened here → panel owns it
+      OpencodeShared.setCurrent(s.id);
+    } else {
+      OpencodeShared.startNew();
+    }
+  }
+
+  // show a chat in THIS panel only (also used by adoptShared)
+  function switchSessionLocal(s) {
     root.session = s;
-    root.newChatPending = false;
-    if (s && s.id) root.rememberPanelSession(s.id);  // opened here → panel owns it
     root.modelClear();
     // show a loading state instead of the empty "ask opencode" splash while
     // the history arrives, and open the new chat pinned to the bottom
@@ -1915,11 +1999,12 @@ Pill {
       if (!ok) { root.showToast("could not delete chat"); return; }
       if (root.session && root.session.id === s.id) {
         root.session = null;
-        root.newChatPending = false;
         root.modelClear();
         root.resetTurnState();
       }
-      root.forgetPanelSession(s.id);
+      OpencodeShared.forget(s.id);
+      // if it was the shared selection, drop it so loadSession picks another
+      if (OpencodeShared.currentSessionId === s.id) OpencodeShared.setCurrent("");
       root.loadSession();
     });
   }
@@ -1970,20 +2055,12 @@ Pill {
     while ((m = re.exec(text)) !== null) {
       const quoted = m[2] !== undefined;
       const tok = quoted ? m[2] : m[3];
-      const start = m.index + m[1].length;
-      // the exact matched span (keeps the quotes and survives a token the
-      // user left unterminated)
-      const full = m[0].slice(m[1].length);
       let abs;
       if (tok.startsWith("/")) abs = tok;
       else if (tok.startsWith("~/")) abs = home + tok.slice(1);
       else abs = dir + "/" + tok;
       const uri = "file://" + abs.split("/").map(encodeURIComponent).join("/");
-      files.push({
-        uri: uri,
-        name: tok,
-        mention: { start: start, end: start + full.length, text: full }
-      });
+      files.push({ uri: uri, name: tok });
     }
     return files;
   }
@@ -2001,9 +2078,10 @@ Pill {
         return;
       }
       root.session = data.data;
-      root.newChatPending = false;
-      root.rememberPanelSession(data.data.id);   // the panel owns this chat
+      OpencodeShared.remember(data.data.id);   // the panel owns this chat
       root.loadSession();         // the new chat must appear in the picker
+      // publish the new chat so every other window follows it
+      OpencodeShared.setCurrent(data.data.id);
       cb(data.data.id);
     });
   }
@@ -2030,13 +2108,16 @@ Pill {
       if (!cmd) {
         root.sending = false;
         root.error = "unknown command: /" + name;
+        inputField.text = text;      // keep the draft so it can be fixed
         return;
       }
       const run = sid => api("POST", "/api/session/" + sid + "/command",
           { command: name, text: args }, (ok, d, status) => {
             root.sending = false;
-            if (!ok) root.error = "command failed (" + status + ")";
-            else { root.busy = true; root.turnStartMs = Date.now(); root.loadMessages(); }
+            if (!ok) {
+              root.error = "command failed (" + status + ")";
+              inputField.text = text;
+            } else { root.busy = true; root.turnStartMs = Date.now(); root.loadMessages(); }
           });
       // a command also needs a session: materialise the pending new chat
       if (root.session) run(root.session.id);
@@ -2047,7 +2128,8 @@ Pill {
     const files = collectFiles(text);
     for (const img of root.pendingImages)
       files.push({ uri: root.imageUri(img), name: img.name });
-    root.pendingImages = [];
+    // images are cleared only once the prompt is accepted, so a failed send
+    // does not drop attachments the user would have to re-add by hand
     const prompt = sid =>
       api("POST", "/api/session/" + sid + "/prompt",
           files.length ? { text: text, files: files } : { text: text },
@@ -2058,8 +2140,12 @@ Pill {
             if (!ok) {
               root.error = status === 409 ? "session is busy"
                 : "send failed (" + status + ")";
+              // keep the draft (and the images, cleared only on success)
+              // so a failed send is not lost
+              inputField.text = text;
               return;
             }
+            root.pendingImages = [];
             // the turn is in flight from here until the execution events
             // or the message reconciliation end it — no sending between
             // tool/reasoning steps
@@ -2099,10 +2185,12 @@ Pill {
     }
     // trailing @token → file finder (works before a session exists too).
     // A quoted token (@"a b" or an open @"a b) matches too, so a folder with
-    // spaces keeps the finder scoped to it after it is picked.
-    const m = text.match(/@(?:"([^"]*)"?|([^\s,;]*))$/);
+    // spaces keeps the finder scoped to it after it is picked. The leading
+    // (^|\s) matches collectFiles, so a trailing "@" in an email-like token
+    // (foo@bar) does not open the finder.
+    const m = text.match(/(^|\s)@(?:"([^"]*)"?|([^\s,;]*))$/);
     if (m) {
-      const q = m[1] !== undefined ? m[1] : m[2];
+      const q = m[2] !== undefined ? m[2] : m[3];
       if (q.length === 0) {
         finderTimer.stop();
         root.finderSeq++;          // cancel any in-flight reply
@@ -2197,8 +2285,7 @@ Pill {
 
   // ---------- list menus (models / agents / sessions) ----------
   // These open a search box inside the panel overlay; the bar's hiddenInput
-  // mirror keeps both editors in sync whichever has the keyboard, and the
-  // chat draft is parked in menuSavedInput while the menu is open.
+  // mirror keeps both editors in sync whichever has the keyboard.
   function menuSearchable() {
     return root.menu === "models" || root.menu === "agents"
         || root.menu === "sessions";
@@ -2271,7 +2358,6 @@ Pill {
   // cleared and kept in sync so closing restores the draft cleanly.
   function openMenu(name) {
     if (root.menu !== name) {
-      if (root.menu === "") root.menuSavedInput = inputField.text;
       root.inputSyncing = true;
       hiddenInput.text = "";
       menuSearchField.text = "";
@@ -2288,13 +2374,12 @@ Pill {
     root.menuSel = 0;
     root.inputSyncing = true;
     menuSearchField.text = "";
-    // the bar's editor goes back to the parked draft shown in the field.
-    // This mirrors the FIELD (not menuSavedInput, which is cleared below):
-    // the finder/menu edits the field in place, and trusting the parked copy
-    // here dropped an @file mention that was picked while a menu was open.
+    // the bar's editor goes back to the draft shown in the field. This
+    // mirrors the FIELD (not a parked copy): the finder/menu edits the field
+    // in place, and trusting a parked copy here dropped an @file mention that
+    // was picked while a menu was open.
     hiddenInput.text = inputField.text;
     root.inputSyncing = false;
-    root.menuSavedInput = "";
     // hand the keyboard back to the chat editor
     if (root.panelOpen) root.focusChatEditor();
   }
@@ -2312,9 +2397,8 @@ Pill {
 
   function closeMenuOrPanel() {
     if (root.menu !== "") { root.closeMenu(); return; }
-    // expanded: Escape steps back to the docked dropdown first, so a stray
-    // Escape does not throw the whole large window away
-    if (root.panelExpanded) { root.setPanelExpanded(false); return; }
+    // Escape closes the panel (the standalone full window included) — there is
+    // no docked<->full step any more
     root.panelOpen = false;
   }
 
@@ -2368,8 +2452,21 @@ Pill {
     sttProc.running = true;
   }
 
+  // abort an in-flight recording OR transcription (panel closed mid-voice).
+  // Both processes are stopped: closing during the transcribe phase used to
+  // only clear `recProc`, so whisper kept running and finishStt() auto-sent
+  // the transcript while the panel was closed.
+  function cancelStt() {
+    if (root.sttState === "idle") return;
+    root.sttCancel = true;
+    if (recProc.running) recProc.running = false;
+    if (sttProc.running) sttProc.running = false;
+  }
+
   function finishStt(code) {
     root.sttState = "idle";
+    // cancelled (panel closed / mic toggled off mid-transcribe): discard
+    if (root.sttCancel) { root.sttCancel = false; return; }
     const t = (sttProc.out || "").replace(/\s+/g, " ").trim();
     if (t === "") {
       root.showToast(code !== 0 ? "stt failed (exit " + code + ")" : "nothing captured");
@@ -2485,7 +2582,27 @@ Pill {
     if (root.formCommitText()) return;
     if (root.menuPickSelected()) return;
     if (root.mode === "translate") translateBox.translate();
+    else if (root.mode === "calc") root.calcSubmit();
     else if (root.mode === "chat" && !root.finderPickSelected()) root.send();
+  }
+
+  // calc tab: evaluate the echoed line, then clear the bar's real editor
+  function calcSubmit() {
+    calcBox.submit();
+    root.inputSyncing = true;
+    hiddenInput.text = "";
+    root.inputSyncing = false;
+  }
+
+  // calc tab: walk the submitted-line history and mirror the recalled line
+  // into the bar's real editor (both surfaces stay in sync)
+  function calcHistory(dir) {
+    if (dir < 0) calcBox.historyPrev();
+    else calcBox.historyNext();
+    root.inputSyncing = true;
+    hiddenInput.text = calcBox.draft;
+    hiddenInput.cursorPosition = calcBox.draft.length;
+    root.inputSyncing = false;
   }
 
   TextEdit {
@@ -2502,6 +2619,7 @@ Pill {
     onTextChanged: if (!root.inputSyncing) {
       root.inputSyncing = true;
       if (root.mode === "translate") translateBox.sourceText = text;
+      else if (root.mode === "calc") calcBox.draft = text;
       // while a search menu is open the query belongs to the menu's field,
       // NOT the chat input (no duplicate typing in both)
       else if (root.menuSearchOpen) {
@@ -2517,6 +2635,7 @@ Pill {
     onCursorPositionChanged: if (!root.inputSyncing) {
       root.inputSyncing = true;
       if (root.mode === "translate") translateBox.setCursorPos(cursorPosition);
+      else if (root.mode === "calc") calcBox.setCursorPos(cursorPosition);
       else inputField.cursorPosition = cursorPosition;
       root.inputSyncing = false;
     }
@@ -2547,6 +2666,18 @@ Pill {
         event.accepted = true;
         return;
       }
+      // calc tab: ↑/↓ recall submitted lines, Ctrl+L wipes the transcript
+      if (root.mode === "calc") {
+        if (event.key === Qt.Key_L && (event.modifiers & Qt.ControlModifier)) {
+          calcBox.clearScreen();
+          event.accepted = true;
+          return;
+        }
+        if (!(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.ShiftModifier))) {
+          if (event.key === Qt.Key_Up) { root.calcHistory(-1); event.accepted = true; return; }
+          if (event.key === Qt.Key_Down) { root.calcHistory(1); event.accepted = true; return; }
+        }
+      }
       // list menus (models/agents/sessions): arrows move the selection
       if (root.menuSearchable()
           && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier))) {
@@ -2560,8 +2691,7 @@ Pill {
       }
     }
     // Enter sends / Shift+Enter inserts a newline (see handleReturnKey).
-    // Enter only acts in the CHAT tab — a leftover draft must not be
-    // submitted from the calculator (which has no text field of its own).
+    // Enter also evaluates in the translate / calc tabs.
     Keys.onReturnPressed: event => root.handleReturnKey(event)
     Keys.onEnterPressed: event => root.handleReturnKey(event)
     Keys.onEscapePressed: {
@@ -2589,11 +2719,9 @@ Pill {
   }
 
   // ---- panel motion --------------------------------------------------------
-  // Open/close and the docked<->expanded swap all drive `panelFade` (and a
-  // little scale) instead of the window geometry. Only opacity/transform
-  // change per frame, so the compositor keeps the surface buffer as-is and
-  // the animation stays smooth; the size/position are snapped once while the
-  // panel is transparent (modeSwap's middle).
+  // Open/close drives `panelFade` (and a little scale) instead of the window
+  // geometry. Only opacity/transform change per frame, so the compositor keeps
+  // the surface buffer as-is and the animation stays smooth.
   ParallelAnimation {
     id: showAnim
     NumberAnimation {
@@ -2616,41 +2744,6 @@ Pill {
       to: 0.97; duration: 200; easing.type: Easing.OutCubic
     }
   }
-  SequentialAnimation {
-    id: modeSwap
-    ParallelAnimation {
-      NumberAnimation {
-        target: root; property: "panelFade"
-        to: 0; duration: 130; easing.type: Easing.OutCubic
-      }
-      NumberAnimation {
-        target: panelContent; property: "scale"
-        to: 0.98; duration: 130; easing.type: Easing.OutCubic
-      }
-    }
-    // invisible here: move the content to the other window and snap geometry
-    ScriptAction { script: {
-      root.panelExpanded = root.pendingMode;
-      panelContent.parent = root.panelExpanded ? fullWin.contentItem
-                                               : panel.contentItem;
-      panel.applyTargetCenter();
-      if (root.panelExpanded)
-        Qt.callLater(() => { if (inputField) inputField.forceActiveFocus(); });
-      else if (root.panelOpen)
-        root.focusPanelField();
-    } }
-    ParallelAnimation {
-      NumberAnimation {
-        target: root; property: "panelFade"
-        to: 1; duration: 190; easing.type: Easing.OutCubic
-      }
-      NumberAnimation {
-        target: panelContent; property: "scale"
-        to: 1; duration: 210; easing.type: Easing.OutCubic
-      }
-    }
-  }
-
   // Full mode is a real toplevel, not a layer-shell popup: Hyprland manages it
   // like any floating window (belongs to the workspace it was opened on, can
   // be moved/resized, takes focus normally). The single panelContent is
@@ -2668,10 +2761,7 @@ Pill {
     onVisibleChanged: {
       if (visible)
         Qt.callLater(() => { if (inputField) inputField.forceActiveFocus(); });
-      else if (root.sttState !== "idle") {
-        root.sttCancel = true;
-        recProc.running = false;
-      }
+      else if (!root.panelOpen) root.cancelStt();
     }
   }
 
@@ -2742,11 +2832,9 @@ Pill {
     // signal never fires and the panel would come back with no stream.
     onVisibleChanged: {
       if (visible) return;
-      // panel closed mid-recording: discard the take
-      if (root.sttState !== "idle") {
-        root.sttCancel = true;
-        recProc.running = false;
-      }
+      // only a real close cancels the take; a docked<->full reparent also
+      // hides this window while the panel stays open, and must not drop it
+      if (!root.panelOpen) root.cancelStt();
     }
 
     anchor {
@@ -2770,9 +2858,9 @@ Pill {
       x: 0
       y: 0
       // Two fixed sizes (dropdown / expanded) — SNAPPED, never tweened: the
-      // mode swap fades out, changes this, and fades back in (see modeSwap).
-      // Animating the size would resize the surface every frame, which makes
-      // the compositor reallocate the buffer each frame (~15fps).
+      // size is only ever set while the window is transparent. Animating the
+      // size would resize the surface every frame, which makes the compositor
+      // reallocate the buffer each frame (~15fps).
       width: root.panelExpanded
           ? (fullWin.width > 0 ? fullWin.width : panel.expandedW)
           : panel.collapsedW
@@ -2802,12 +2890,347 @@ Pill {
                            && root.menu === "" && root.pendingImages.length === 0
                            && !root.chatLoading
 
+      // full-mode chat-history rail (see the sidebar below). It is available
+      // ONLY in the large window's chat tab — the docked dropdown never gets
+      // it. `sidebarOpen` is the user toggle (header button); `sidebarW` is
+      // what the layout insets by, 0 while docked, collapsed or off the chat
+      // tab, so every other mode keeps its original full-width layout.
+      // Capped at 244px and always leaving ≥360px for the chat, so a manually
+      // shrunk full window can never push the chat area negative.
+      readonly property bool sidebarAvailable:
+          root.panelExpanded && root.mode === "chat"
+      readonly property bool sidebarVisible:
+          sidebarAvailable && root.sidebarOpen
+      readonly property real sidebarW:
+          sidebarVisible ? Math.min(244, Math.max(0, width - 360)) : 0
+
       // catch-all: Escape bubbling up from any focused child of the overlay
       Keys.onEscapePressed: root.closeMenuOrPanel()
+
+      // ----- full-mode chat history rail -----
+      // Claude/ChatGPT-style: only in the big window, the panel's own chats
+      // stacked by recency with a filter box and a new-chat action. The main
+      // column is inset by `sidebarW`, so this rail owns the left edge.
+      Rectangle {
+        id: sidebar
+        visible: panelContent.sidebarVisible
+        x: 0
+        y: 0
+        width: panelContent.sidebarW
+        height: parent.height
+        color: Theme.sidebar
+        topLeftRadius: panelContent.radius
+        bottomLeftRadius: panelContent.radius
+        topRightRadius: 0
+        bottomRightRadius: 0
+
+        // hairline seam against the chat surface
+        Rectangle {
+          anchors.right: parent.right
+          width: 1
+          height: parent.height
+          color: Theme.border
+        }
+
+        // new chat — full-width row, the rail's primary action
+        Rectangle {
+          id: newChatSide
+          anchors.top: parent.top
+          anchors.topMargin: 10
+          anchors.left: parent.left
+          anchors.leftMargin: 10
+          anchors.right: parent.right
+          anchors.rightMargin: 10
+          height: 32
+          radius: 6
+          color: newSideMa.containsMouse || OpencodeShared.newChatPending
+                 ? Theme.hover : "transparent"
+          Behavior on color { ColorAnimation { duration: 150 } }
+
+          Row {
+            anchors.left: parent.left
+            anchors.leftMargin: 8
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 8
+
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              text: "\uf067"
+              font.family: Theme.font
+              font.pixelSize: 11
+              color: OpencodeShared.newChatPending ? Theme.accent : Theme.text
+            }
+
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              text: "New chat"
+              font.family: Theme.font
+              font.pixelSize: 11
+              color: OpencodeShared.newChatPending ? Theme.accent : Theme.text
+            }
+          }
+
+          MouseArea {
+            id: newSideMa
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.sideNewChat()
+          }
+        }
+
+        // filter box
+        Rectangle {
+          id: sideSearchBox
+          anchors.top: newChatSide.bottom
+          anchors.topMargin: 10
+          anchors.left: parent.left
+          anchors.leftMargin: 10
+          anchors.right: parent.right
+          anchors.rightMargin: 10
+          height: 28
+          radius: 6
+          color: Theme.bg
+          border.color: sideSearch.activeFocus ? Theme.muted : Theme.border
+          border.width: 1
+          Behavior on border.color { ColorAnimation { duration: 150 } }
+
+          Text {
+            anchors.left: parent.left
+            anchors.leftMargin: 8
+            anchors.verticalCenter: parent.verticalCenter
+            text: "\uf002"
+            font.family: Theme.font
+            font.pixelSize: 10
+            color: Theme.muted
+          }
+
+          TextInput {
+            id: sideSearch
+            anchors.left: parent.left
+            anchors.leftMargin: 24
+            anchors.right: sideClear.left
+            anchors.rightMargin: 4
+            anchors.verticalCenter: parent.verticalCenter
+            text: ""
+            color: Theme.accent
+            font.family: Theme.font
+            font.pixelSize: 10
+            selectionColor: Theme.hover
+            selectedTextColor: Theme.accent
+            clip: true
+            onTextEdited: root.sideQuery = text
+            // before the TextInput's own editing so Up/Down/Escape/Enter are
+            // caught here (the rail is a real window, so it holds the keys)
+            Keys.priority: Keys.BeforeItem
+            Keys.onPressed: event => {
+              if (event.key === Qt.Key_Escape) {
+                event.accepted = true;
+                root.sideClearQuery();
+                root.focusChatEditor();
+              } else if (event.key === Qt.Key_Down) {
+                event.accepted = true;
+                sideFlick.contentY = Math.min(sideFlick.contentY + 34,
+                    Math.max(0, sideList.implicitHeight - sideFlick.height));
+              } else if (event.key === Qt.Key_Up) {
+                event.accepted = true;
+                sideFlick.contentY = Math.max(0, sideFlick.contentY - 34);
+              } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                event.accepted = true;
+                const l = root.sideFilteredSessions();
+                if (l.length > 0) root.sideSwitch(l[0]);
+              }
+            }
+          }
+
+          Text {
+            anchors.left: parent.left
+            anchors.leftMargin: 24
+            anchors.right: sideClear.left
+            anchors.rightMargin: 4
+            anchors.verticalCenter: parent.verticalCenter
+            visible: sideSearch.text === ""
+            text: "Search chats…"
+            color: Theme.idleText
+            font.family: Theme.font
+            font.pixelSize: 10
+            elide: Text.ElideRight
+          }
+
+          Rectangle {
+            id: sideClear
+            anchors.right: parent.right
+            anchors.rightMargin: 4
+            anchors.verticalCenter: parent.verticalCenter
+            width: 18; height: 18; radius: 4
+            visible: sideSearch.text !== ""
+            color: sideClearMa.containsMouse ? Theme.hover : "transparent"
+            Behavior on color { ColorAnimation { duration: 150 } }
+
+            Text {
+              anchors.centerIn: parent
+              text: "\uf00d"
+              font.family: Theme.font
+              font.pixelSize: 10
+              color: sideClearMa.containsMouse ? Theme.err : Theme.muted
+            }
+
+            MouseArea {
+              id: sideClearMa
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: {
+                root.sideClearQuery();
+                sideSearch.forceActiveFocus();
+              }
+            }
+          }
+        }
+
+        // history list: date section header + one row per chat
+        Flickable {
+          id: sideFlick
+          anchors.top: sideSearchBox.bottom
+          anchors.topMargin: 8
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.bottom: parent.bottom
+          anchors.leftMargin: 6
+          anchors.rightMargin: 4
+          anchors.bottomMargin: 6
+          contentWidth: width
+          contentHeight: sideList.implicitHeight
+          clip: true
+          interactive: contentHeight > height
+          boundsBehavior: Flickable.StopAtBounds
+
+          Column {
+            id: sideList
+            width: sideFlick.width
+            spacing: 2
+
+            Repeater {
+              model: root.sideGroups()
+
+              Column {
+                id: sideGroup
+                required property var modelData
+                width: sideList.width
+                spacing: 1
+
+                Text {
+                  width: parent.width
+                  height: 24
+                  leftPadding: 8
+                  verticalAlignment: Text.AlignVCenter
+                  text: sideGroup.modelData.label
+                  font.family: Theme.font
+                  font.pixelSize: 9
+                  font.bold: true
+                  color: Theme.muted
+                  elide: Text.ElideRight
+                }
+
+                Repeater {
+                  model: sideGroup.modelData.items
+
+                  Rectangle {
+                    id: sideRow
+                    required property var modelData
+                    readonly property bool cur: root.session
+                        && root.session.id === sideRow.modelData.id
+                    readonly property bool running:
+                        root.activeSessions[sideRow.modelData.id] !== undefined
+                    width: sideGroup.width
+                    height: 30
+                    radius: 6
+                    color: (sideRow.cur || sideHover.hovered
+                            || sideRowMa.containsMouse)
+                           ? Theme.hover : "transparent"
+                    Behavior on color { ColorAnimation { duration: 150 } }
+
+                    // HoverHandler (not MouseArea hover) so hovering the ✕
+                    // child never reports the row as un-hovered
+                    HoverHandler { id: sideHover }
+
+                    Text {
+                      anchors.left: parent.left
+                      anchors.leftMargin: 8
+                      anchors.right: parent.right
+                      anchors.rightMargin: sideDel.visible ? 30 : 8
+                      anchors.verticalCenter: parent.verticalCenter
+                      // running agents get a live dot, the open one a filled
+                      // dot; untitled chats never show the raw ses_ id
+                      text: (sideRow.cur ? "● " : sideRow.running ? "◌ " : "")
+                            + root.sessionLabel(sideRow.modelData)
+                      font.family: Theme.font
+                      font.pixelSize: 10
+                      font.bold: sideRow.cur
+                      color: sideRow.cur ? Theme.accent
+                           : sideRow.running ? Theme.live : Theme.text
+                      elide: Text.ElideRight
+                    }
+
+                    MouseArea {
+                      id: sideRowMa
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: root.sideSwitch(sideRow.modelData)
+                    }
+
+                    Rectangle {
+                      id: sideDel
+                      anchors.right: parent.right
+                      anchors.rightMargin: 6
+                      anchors.verticalCenter: parent.verticalCenter
+                      width: 20; height: 20; radius: 4
+                      visible: sideHover.hovered
+                      color: sideDelMa.containsMouse ? Theme.hover : "transparent"
+                      Behavior on color { ColorAnimation { duration: 150 } }
+
+                      Text {
+                        anchors.centerIn: parent
+                        text: "\uf00d"
+                        font.family: Theme.font
+                        font.pixelSize: 10
+                        color: sideDelMa.containsMouse ? Theme.err : Theme.muted
+                      }
+
+                      MouseArea {
+                        id: sideDelMa
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.deleteSession(sideRow.modelData)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+
+            // empty rail: no chats yet, or nothing matching the filter
+            Text {
+              visible: root.sideFilteredSessions().length === 0
+              width: sideList.width
+              height: 44
+              horizontalAlignment: Text.AlignHCenter
+              verticalAlignment: Text.AlignVCenter
+              text: root.sideQuery !== "" ? "none found" : "no chats yet"
+              font.family: Theme.font
+              font.pixelSize: 10
+              color: Theme.muted
+            }
+          }
+        }
+      }
 
       Column {
         anchors.fill: parent
         anchors.margins: 10
+        anchors.leftMargin: panelContent.sidebarW + 10
         anchors.bottomMargin: 0   // input row is a floating sibling below
         spacing: 8
 
@@ -2818,17 +3241,49 @@ Pill {
           height: 26
           spacing: 8
 
-          // central tabs: chat / translate / calculator
+          // history-rail toggle: only exists in the big window's chat tab, so
+          // it is the open/close control for `root.sidebarOpen` (hidden while
+          // docked, where the rail is never available)
+          Rectangle {
+            id: sidebarBtn
+            anchors.verticalCenter: parent.verticalCenter
+            visible: root.panelExpanded && root.mode === "chat"
+            width: 24; height: 20; radius: 5
+            color: sidebarMa.containsMouse ? Theme.hover : "transparent"
+            Behavior on color { ColorAnimation { duration: 200 } }
+            scale: sidebarMa.containsMouse ? 1.04 : 1
+            Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+
+            Text {
+              anchors.centerIn: parent
+              text: "\uf0c9"          // bars — open/close the history rail
+              font.family: Theme.font
+              font.pixelSize: 12
+              color: root.sidebarOpen ? Theme.accent : Theme.muted
+            }
+
+            MouseArea {
+              id: sidebarMa
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.sidebarOpen = !root.sidebarOpen
+            }
+          }
+
+          // central tabs: chat / translate / calculator.
+          // Hidden in full mode — that window is chat-only.
           Row {
             id: tabRow
             anchors.verticalCenter: parent.verticalCenter
+            visible: !root.panelExpanded
             spacing: 4
 
             Repeater {
               model: [
                 { id: "chat", icon: "󰆍" },
                 { id: "translate", icon: "\uf1ab" },
-                { id: "calc", icon: "\uf1ec" }
+                { id: "calc", icon: "\uf1ec" },
               ]
 
               delegate: Rectangle {
@@ -2868,10 +3323,11 @@ Pill {
             id: titleText
             anchors.verticalCenter: parent.verticalCenter
             visible: root.mode === "chat"
-            width: parent.width - tabRow.width
+            width: parent.width - (tabRow.visible ? tabRow.width : 0)
                    - costText.width
                    - modelBtn.width - agentBtn.width - newBtn.width
                    - expandBtn.width - 56
+                   - (sidebarBtn.visible ? sidebarBtn.width + 8 : 0)
                    - (stopBtn.visible ? stopBtn.width + 8 : 0)
             text: root.session ? (root.session.title || "opencode") : "opencode — new chat"
             font.family: Theme.font
@@ -3028,7 +3484,8 @@ Pill {
               anchors.fill: parent
               hoverEnabled: true
               cursorShape: Qt.PointingHandCursor
-              onClicked: root.setPanelExpanded(!root.panelExpanded)
+              onClicked: Quickshell.execDetached(
+                ["qs", "ipc", "call", "opencodeFull", "toggle"])
             }
           }
         }
@@ -3072,7 +3529,12 @@ Pill {
             // and sits at the bottom; past that it fills the area and scrolls
             anchors.bottom: parent.bottom
             width: parent.width
-            height: Math.min(parent.height, contentHeight)
+            // contentHeight can depend on the viewport (delegate sizes are
+            // estimated until laid out), so binding height straight to it
+            // makes Qt report a binding loop. Read it into a plain property
+            // on contentHeightChanged instead — that breaks the cycle.
+            property real wantedHeight: 0
+            height: Math.min(parent.height, wantedHeight)
             clip: true
             spacing: 8
             model: chatModel
@@ -3102,7 +3564,10 @@ Pill {
             onMovementEnded: if (!root.rebuilding) pinned = atYEnd
             onFlickStarted: if (!root.rebuilding) pinned = atYEnd
             onFlickEnded: if (!root.rebuilding) pinned = atYEnd
-            onContentHeightChanged: if (pinned) Qt.callLater(stick)
+            onContentHeightChanged: {
+              wantedHeight = contentHeight;
+              if (pinned) Qt.callLater(stick);
+            }
 
             // positionViewAtEnd() forces the LAST delegate into existence and
             // lands on the REAL end (contentY = contentHeight - height would
@@ -3163,7 +3628,7 @@ Pill {
                   text: msgDel.text
                   textFormat: Text.PlainText
                   font.family: Theme.font
-                  font.pixelSize: 12
+                  font.pixelSize: 13
                 }
 
                 SelText {
@@ -3174,8 +3639,9 @@ Pill {
                   height: contentHeight
                   text: msgDel.text
                   textFormat: TextEdit.PlainText
-                  font.pixelSize: 12
+                  font.pixelSize: 13
                   onSelectedTextChanged: if (selectedText !== "") root.selEdit = userText
+                  Component.onDestruction: if (root.selEdit === userText) root.selEdit = null
                   onCopied: root.showCopyToast()
                 }
 
@@ -3189,9 +3655,10 @@ Pill {
                   // code blocks, tables) — see renderMarkdown
                   textFormat: TextEdit.RichText
                   text: root.renderMarkdown(msgDel.text, !msgDel.live)
-                  font.pixelSize: 12
+                  font.pixelSize: 13
                   color: Theme.accent
                   onSelectedTextChanged: if (selectedText !== "") root.selEdit = asstText
+                  Component.onDestruction: if (root.selEdit === asstText) root.selEdit = null
                   onCopied: root.showCopyToast()
                 }
 
@@ -3243,6 +3710,7 @@ Pill {
                     font.pixelSize: 9
                     color: Theme.idleText
                     onSelectedTextChanged: if (selectedText !== "") root.selEdit = toolInEdit
+                    Component.onDestruction: if (root.selEdit === toolInEdit) root.selEdit = null
                     onCopied: root.showCopyToast()
                   }
 
@@ -3257,6 +3725,7 @@ Pill {
                     font.pixelSize: 9
                     color: Theme.muted
                     onSelectedTextChanged: if (selectedText !== "") root.selEdit = reasoningEdit
+                    Component.onDestruction: if (root.selEdit === reasoningEdit) root.selEdit = null
                     onCopied: root.showCopyToast()
                   }
 
@@ -3272,6 +3741,7 @@ Pill {
                     font.pixelSize: 9
                     color: Theme.text
                     onSelectedTextChanged: if (selectedText !== "") root.selEdit = diffEdit
+                    Component.onDestruction: if (root.selEdit === diffEdit) root.selEdit = null
                     onCopied: root.showCopyToast()
                   }
 
@@ -3288,6 +3758,7 @@ Pill {
                     font.pixelSize: 9
                     color: msgDel.kind === "reasoning" ? Theme.muted : Theme.text
                     onSelectedTextChanged: if (selectedText !== "") root.selEdit = toolOutEdit
+                    Component.onDestruction: if (root.selEdit === toolOutEdit) root.selEdit = null
                     onCopied: root.showCopyToast()
                   }
                 }
@@ -3350,9 +3821,12 @@ Pill {
               target: root
               function onFileSelChanged() {
                 if (root.menu !== "files") return;
-                const rowH = 26;
-                const top = root.fileSel * rowH;
-                const bottom = top + rowH;
+                // rows are 24px + 2px spacing, preceded by the 18px finder
+                // header — the old math ignored the header and used 26 as the
+                // row height, scrolling the selection out of alignment
+                const rowH = 26, headerH = 18, rowInner = 24;
+                const top = headerH + root.fileSel * rowH;
+                const bottom = top + rowInner;
                 if (top < menuFlick.contentY) menuFlick.contentY = top;
                 else if (bottom > menuFlick.contentY + menuFlick.height)
                   menuFlick.contentY = bottom - menuFlick.height;
@@ -4188,10 +4662,15 @@ Pill {
       Rectangle {
         id: inputRow
         // full width while chatting; capped + centered while empty
-        // (chatbot-style narrow prompt)
-        width: panelContent.empty ? Math.min(parent.width - 20, 640)
-                                  : parent.width - 20
-        x: panelContent.empty ? (parent.width - width) / 2 : 10
+        // (chatbot-style narrow prompt). Both are inset by the full-mode
+        // history rail so they never slide under it.
+        width: panelContent.empty
+               ? Math.min(parent.width - panelContent.sidebarW - 20, 640)
+               : parent.width - panelContent.sidebarW - 20
+        x: panelContent.empty
+           ? panelContent.sidebarW
+             + (parent.width - panelContent.sidebarW - width) / 2
+           : panelContent.sidebarW + 10
         Behavior on x { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
         Behavior on width { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
         visible: root.mode === "chat"
@@ -4326,6 +4805,18 @@ Pill {
           // so it has to handle them itself. BeforeItem so the caret does not
           // eat the event first; unhandled keys fall through to the caret.
           Keys.priority: Keys.BeforeItem
+          // Ctrl+V: attach a clipboard image when there is one, else fall
+          // back to a text paste. This field owns the keyboard in full mode
+          // (hiddenInput is unfocused there), so the image handler that lives
+          // on hiddenInput must be repeated here.
+          Keys.onPressed: event => {
+            if (root.mode === "chat" && root.formTextTarget === null
+                && event.key === Qt.Key_V
+                && (event.modifiers & Qt.ControlModifier)) {
+              root.pasteFromClipboard(true);
+              event.accepted = true;
+            }
+          }
           Keys.onUpPressed: event => {
             if (root.menuSearchable()) { root.menuMove(-1); event.accepted = true; }
             else if (root.menu === "files" && root.fileHits.length > 0) {
@@ -4536,8 +5027,8 @@ Pill {
       Item {
         id: emptyState
         transform: Translate { x: root.swipeOfs }
-        x: 10
-        width: parent.width - 20
+        x: panelContent.sidebarW + 10
+        width: parent.width - panelContent.sidebarW - 20
         // sits just above the input row's VISUAL top (visualY accounts for
         // the empty-state lift), so a grown draft never overlaps it
         y: panelContent.empty
@@ -4584,6 +5075,7 @@ Pill {
         id: chatLoadingLabel
         transform: Translate { x: root.swipeOfs }
         anchors.horizontalCenter: parent.horizontalCenter
+        anchors.horizontalCenterOffset: panelContent.sidebarW / 2
         y: inputRow.visualY - inputRow.height - 18
         visible: root.chatLoading && root.mode === "chat"
         text: "◌ loading chat…"
@@ -4631,10 +5123,23 @@ Pill {
 
         Calc {
           id: calcBox
-          anchors.centerIn: parent
-          width: 420
-          height: 540
+          anchors.fill: parent
           visible: root.mode === "calc"
+          panelActive: root.panelOpen && root.mode === "calc"
+          // popup field edited directly (compositor focus moved there in full
+          // mode) → mirror back into the bar's real editor
+          onDraftChanged: if (root.mode === "calc" && !root.inputSyncing) {
+            root.inputSyncing = true;
+            hiddenInput.text = calcBox.draft;
+            root.inputSyncing = false;
+          }
+          onCursorMoved: pos => {
+            if (!root.inputSyncing) {
+              root.inputSyncing = true;
+              hiddenInput.cursorPosition = pos;
+              root.inputSyncing = false;
+            }
+          }
           onCopyRequested: text => {
             if (text !== "") Quickshell.execDetached(["wl-copy", text]);
             root.showToast("copied");
@@ -4686,6 +5191,7 @@ Pill {
       Rectangle {
         id: copyToast
         anchors.horizontalCenter: parent.horizontalCenter
+        anchors.horizontalCenterOffset: panelContent.sidebarW / 2
         anchors.bottom: parent.bottom
         anchors.bottomMargin: inputRow.height + 14
         z: 10
@@ -4723,24 +5229,49 @@ Pill {
   // window-scoped Shortcut silently do nothing — application scope works.
   // Gated on panelOpen: two enabled application-scoped Escape shortcuts would
   // be treated as ambiguous and neither would fire (the launcher has one too,
-  // enabled only while it is open).
+  // enabled only while it is open). The standalone instance is a real focused
+  // window and handles Escape through its own Keys handlers, and the bar's
+  // shortcut is disabled while the standalone is open (Notifs.opencodeFullOpen)
+  // so the two never collide.
   Shortcut {
     sequence: "Escape"
     context: Qt.ApplicationShortcut
-    enabled: root.panelOpen
+    enabled: root.panelOpen && !root.standalone && !Notifs.opencodeFullOpen
     onActivated: root.closeMenuOrPanel()
   }
 
+  // A standalone instance opens straight into full mode and never uses the
+  // docked dropdown or the pill. Called by shell.qml's toggle/open.
+  function openStandalone() {
+    root.ensureService();
+    root.openExpanded();
+  }
+
+  // mirror the shared selection whenever any panel changes it, and re-fetch
+  // the list once the shared store has loaded (the first loadSession may run
+  // before the remembered ids are read, which would filter everything out)
+  Connections {
+    target: OpencodeShared
+    function onSwitchTickChanged() { root.adoptShared(); }
+    function onPanelSessionsLoadedChanged() {
+      if (OpencodeShared.panelSessionsLoaded) root.loadSession();
+    }
+  }
+
   onPanelOpenChanged: {
+    // let the bar's docked panel know the standalone is up (Escape coordination)
+    if (root.standalone) Notifs.opencodeFullOpen = root.panelOpen;
     if (panelOpen) {          // open: cancel any pending close so the
       hideAnim.stop();        // fade-in plays from fully transparent
       hideAnimFx.stop();
-      modeSwap.stop();
       // Reset the mode BEFORE the first paint. The window is not on screen
       // yet, so the reset is a snap and never flashes a move; SUPER+SHIFT+A
       // asks for expanded via pendingExpanded.
       const wantExpanded = root.pendingExpanded;
       root.pendingExpanded = false;
+      // full mode is chat-only; opening straight into it (SUPER+SHIFT+A)
+      // must not carry a translate/calc tab over
+      if (wantExpanded && root.mode !== "chat") root.mode = "chat";
       root.panelExpanded = wantExpanded;
       panelContent.parent = wantExpanded ? fullWin.contentItem : panel.contentItem;
       panel.applyTargetCenter();
@@ -4752,7 +5283,6 @@ Pill {
     hideAnim.restart();       // close: keep mapped while fading out
     if (root.panelExpanded) fullHideAnim.restart();   // ...the floating window too
     showAnim.stop();
-    modeSwap.stop();
     hideAnimFx.restart();     // fade + scale out
     root.closeMenu();
     activePoll.stop();
@@ -4778,7 +5308,8 @@ Pill {
     // it at the newly active tab's field (both directions stay in sync)
     root.inputSyncing = true;
     hiddenInput.text = mode === "translate" ? translateBox.sourceText
-                                            : inputField.text;
+                     : mode === "calc" ? calcBox.draft
+                     : inputField.text;
     root.inputSyncing = false;
     if (panelOpen) root.focusPanelField();
   }
@@ -4810,7 +5341,11 @@ Pill {
     running: root.panelOpen && root.busy && root.streamLive
     onTriggered: {
       root.loadMessages();
-      if (root.busy && root.turnStartMs > root.execEndMs
+      // end a stalled turn locally. `turnStartMs === 0` covers busy set by
+      // message reconciliation with no observed `execution.started` (the
+      // panel was reopened on a session left mid-turn) — that state could
+      // otherwise never satisfy `turnStartMs > execEndMs`.
+      if (root.busy && (root.turnStartMs > root.execEndMs || root.turnStartMs === 0)
           && Date.now() - root.lastChangeMs > 60000) {
         root.execEndMs = Date.now();
         root.busy = false;

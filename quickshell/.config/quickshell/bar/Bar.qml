@@ -145,14 +145,6 @@ PanelWindow {
     }
   }
 
-  // SUPER+SHIFT+A: one key for the big chat window — see
-  // Opencode.toggleExpanded() for the cycle (closed→full, docked→full,
-  // full→closed)
-  function toggleChatExpanded() {
-    if (!opencodePill.panelOpen) opencodePill.ensureService();
-    opencodePill.toggleExpanded();
-  }
-
   function closeChat() { opencodePill.panelOpen = false; }
 
   // SUPER+SHIFT+B / SUPER+SHIFT+W → settings dropdown, straight on a tab

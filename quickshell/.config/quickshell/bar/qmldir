@@ -1,5 +1,6 @@
 singleton Notifs 1.0 Notifs.qml
 singleton TasksStore 1.0 TasksStore.qml
+singleton OpencodeShared 1.0 OpencodeShared.qml
 Bar 1.0 Bar.qml
 Battery 1.0 Battery.qml
 Calc 1.0 Calc.qml
