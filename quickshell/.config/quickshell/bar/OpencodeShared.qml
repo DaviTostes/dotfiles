@@ -3,13 +3,13 @@ import Quickshell
 import Quickshell.Io
 import QtQuick
 
-// Shared opencode chat selection between every panel instance: the bars' docked
-// intelligence central and the standalone full chat. They all show the same
-// conversation list and the same current session, so switching a chat (or
-// starting one) in any window propagates to the others.
+// Shared opencode state between every panel instance: the bars' docked
+// intelligence central and the standalone full chat.
 //
-// Each instance still owns its own message model, SSE stream and turn state;
-// only the SELECTION (which chat, or a pending new chat) is shared here.
+// ONLY the chat HISTORY (which sessions the panel owns) and the recently-used
+// models are shared. The currently-open chat is per-instance, so the docked
+// panel and the standalone window can each show a different conversation at
+// the same time; switching one does not move the other.
 Item {
   id: root
 
@@ -18,26 +18,18 @@ Item {
   property var panelSessions: ({})
   property bool panelSessionsLoaded: false
 
-  // the session every panel displays. "" means "no explicit selection".
-  property string currentSessionId: ""
-  // true while the user has an unsaved "new chat" open (nothing created yet)
-  property bool newChatPending: false
-  // bumped on every selection change so watchers re-read even if the id is the
-  // same (e.g. re-adopting after a reload)
-  property int switchTick: 0
+  // recently used models, most-recent first: [{ id, providerID }]. Persisted
+  // so the picker can surface them at the top across restarts.
+  property var recentModels: []
 
-  // select an existing session everywhere
-  function setCurrent(id) {
-    root.currentSessionId = id ? id : "";
-    root.newChatPending = false;
-    root.switchTick++;
-  }
-
-  // open the pending "new chat" everywhere
-  function startNew() {
-    root.currentSessionId = "";
-    root.newChatPending = true;
-    root.switchTick++;
+  // push a model ref to the front of the recents list
+  function touchModel(ref) {
+    if (!ref || !ref.id) return;
+    const next = [{ id: ref.id, providerID: ref.providerID || "" }];
+    for (const r of root.recentModels)
+      if (!(r.id === ref.id && r.providerID === ref.providerID)) next.push(r);
+    root.recentModels = next.slice(0, 6);
+    recentStore.setText(JSON.stringify(root.recentModels));
   }
 
   function remember(id) {
@@ -92,5 +84,25 @@ Item {
       root.panelSessions = next;
     }
     onLoadFailed: root.panelSessionsLoaded = true
+  }
+
+  FileView {
+    id: recentStore
+    path: Quickshell.stateDir + "/opencode-recent-models.json"
+    blockAllReads: true
+    preload: true
+    printErrors: false
+    watchChanges: false
+    onLoaded: {
+      const raw = recentStore.text();
+      if (!raw) return;
+      let parsed = null;
+      try { parsed = JSON.parse(raw); } catch (e) { return; }
+      if (!Array.isArray(parsed)) return;
+      const next = [];
+      for (const r of parsed)
+        if (r && r.id) next.push({ id: r.id, providerID: r.providerID || "" });
+      root.recentModels = next.slice(0, 6);
+    }
   }
 }

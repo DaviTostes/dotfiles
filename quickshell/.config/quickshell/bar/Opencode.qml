@@ -85,10 +85,10 @@ Pill {
   property var session: null      // Session.Info or null
   property var sessionList: []
   property var activeSessions: ({})  // sessionID -> true while a turn is running
-  // Which chats are "panel-owned", which one is selected, and whether a new
-  // chat is pending are shared between every panel instance via OpencodeShared,
-  // so the docked intelligence central and the standalone full chat always show
-  // the same conversation. Only the message model / turn state are per-panel.
+  // The chat HISTORY (which sessions are panel-owned) is shared via
+  // OpencodeShared, but the CURRENT chat is per-instance: the docked panel and
+  // the standalone window can show different conversations at once.
+  property bool newChatPending: false  // "+" pressed, session not created yet
   property var agents: []
   property var models: []
   property var commands: []
@@ -106,6 +106,7 @@ Pill {
   property var expanded: ({})     // key -> bool, for tool/reasoning foldouts
   property bool sending: false
   property bool busy: false       // assistant turn in flight
+  property bool toolRunning: false // newest part is a running tool (robot's tool)
   property string error: ""
   property var pendingPerm: null  // Permission.Request or null
   property var lastModel: null    // last model seen on any session — new chats start with it
@@ -846,29 +847,6 @@ Pill {
   }
 
   // ---------- data loaders ----------
-  // The remembered chat set, the current selection and the pending-new-chat
-  // flag live in the OpencodeShared singleton so every panel instance agrees.
-  // Mirrors OpencodeShared's selection into this panel. `own` is the filtered
-  // session list (defaults to root.sessionList). Never creates a session; a
-  // pending new chat clears the view.
-  function adoptShared(own) {
-    const list = own || root.sessionList || [];
-    if (OpencodeShared.newChatPending) {
-      if (root.session) root.newChatLocal();   // another window hit "+"
-      return;
-    }
-    const sid = OpencodeShared.currentSessionId;
-    if (sid === "") {
-      // nobody has selected yet: pick one and publish it for the others
-      const s = root.pickSession(list);
-      if (s) { root.switchSessionLocal(s); OpencodeShared.setCurrent(s.id); }
-      return;
-    }
-    if (root.session && root.session.id === sid) return;
-    const s = list.find(x => x.id === sid);
-    if (s) root.switchSessionLocal(s);
-  }
-
   // one place owns the session list + the running-session map; it runs on
   // service connect, on panel open and whenever the server reports the list
   // changed (session.created/moved/deleted). `parentID=null` keeps subagent
@@ -890,9 +868,16 @@ Pill {
           if (root.lastAgent === "" && s.agent) root.lastAgent = s.agent;
           if (root.lastModel && root.lastAgent !== "") break;
         }
-        // mirror the shared selection (adopts another window's switch, or
-        // picks the newest chat on first load) without yanking a live view
-        root.adoptShared(own);
+        // already chatting (or a "+" is pending): never yank the view
+        if (root.session || root.newChatPending) return;
+        root.session = root.pickSession(own);
+        root.chatLoading = root.session !== null;
+        chatView.pinned = true;
+        root.resetTurnState();
+        root.loadMessages();
+        root.loadPerms();
+        root.loadForms();
+        root.loadSessionInfo();
       });
     });
   }
@@ -928,6 +913,7 @@ Pill {
     root.lastChangeMs = Date.now();
     root.prevTopKey = "";
     root.clearBusyNextLoad = false;
+    root.toolRunning = false;
   }
 
   // untitled sessions are common (integrations, never-used new chats);
@@ -1025,16 +1011,86 @@ Pill {
     api("GET", "/api/agent", null, (ok, d) => {
       root.agents = (ok && d && d.data ? d.data : [])
         .filter(a => !a.hidden && a.mode !== "subagent")
-        .map(a => ({ id: a.id, name: a.name }));
+        .map(a => ({ id: a.id, name: a.name, description: a.description || "" }));
     });
     api("GET", "/api/model", null, (ok, d) => {
       root.models = (ok && d && d.data ? d.data : [])
-        .map(m => ({ id: m.modelID, providerID: m.providerID, name: m.name || m.modelID }));
+        .map(m => {
+          const caps = m.capabilities || {};
+          const c = (m.cost && m.cost[0]) || null;
+          return {
+            id: m.modelID,
+            providerID: m.providerID,
+            name: m.name || m.modelID,
+            image: !!(caps.input && caps.input.indexOf("image") >= 0),
+            tools: !!caps.tools,
+            variants: (m.variants || []).map(v => v.id),
+            costIn: c ? c.input : 0,
+            costOut: c ? c.output : 0
+          };
+        })
+        // provider-grouped order so the picker's sections are stable
+        .sort((a, b) => a.providerID.localeCompare(b.providerID)
+                     || a.name.localeCompare(b.name));
     });
     api("GET", "/api/command", null, (ok, d) => {
       root.commands = (ok && d && d.data ? d.data : [])
         .map(c => ({ name: c.name, description: c.description || "" }));
     });
+  }
+
+  // ---------- model / agent labels + variants ----------
+  // the session model ref ({id, providerID, variant}) or the last one used
+  function modelRef() {
+    return (root.session && root.session.model) ? root.session.model
+         : root.lastModel;
+  }
+
+  function modelObjFor(ref) {
+    if (!ref) return null;
+    return root.models.find(m => m.id === ref.id && m.providerID === ref.providerID)
+        || root.models.find(m => m.id === ref.id) || null;
+  }
+
+  function currentModelObj() { return root.modelObjFor(root.modelRef()); }
+
+  // friendly name for the composer chip, never the raw id when we know it
+  function modelChipLabel() {
+    const ref = root.modelRef();
+    if (!ref) return "model";
+    const m = root.modelObjFor(ref);
+    let label = m ? m.name : ref.id;
+    if (ref.variant && ref.variant !== "default") label += " · " + ref.variant;
+    return label;
+  }
+
+  function currentVariants() {
+    const m = root.currentModelObj();
+    return m ? m.variants : [];
+  }
+
+  function currentVariant() {
+    const ref = root.modelRef();
+    return (ref && ref.variant) ? ref.variant : "default";
+  }
+
+  function agentChipLabel() {
+    const id = (root.session && root.session.agent) ? root.session.agent
+             : root.lastAgent;
+    if (!id) return "agent";
+    const a = root.agents.find(x => x.id === id);
+    return a ? a.name : id;
+  }
+
+  // capability / cost cue line under a model name
+  function modelMeta(m) {
+    const parts = [m.providerID];
+    if (m.image) parts.push("img");
+    if (m.tools) parts.push("tools");
+    if (m.variants && m.variants.length) parts.push("reason");
+    if (m.costIn > 0 || m.costOut > 0)
+      parts.push("$" + m.costIn + "/" + m.costOut);
+    return parts.join("  ·  ");
   }
 
   function toolOutText(state) {
@@ -1604,6 +1660,12 @@ Pill {
         }
       }
 
+      // the newest part drives the little robot's tool: a running tool shows a
+      // wrench instead of the hammer
+      const lastD = desired.length ? desired[desired.length - 1] : null;
+      root.toolRunning = !!(lastD && lastD.kind === "tool"
+          && /running|streaming/.test(lastD.state));
+
       // a load that arrives mid chunked-rebuild supersedes it: the partial
       // model is not a safe prefix (appending in place would duplicate), so
       // cancel and rebuild from scratch below
@@ -1936,13 +1998,8 @@ Pill {
   // first send. Creating it here would leave an empty untitled chat behind
   // every time the button is tapped (or the panel is poked by accident).
   function newChat() {
-    root.newChatLocal();
-    OpencodeShared.startNew();     // clear the view in every window
-  }
-
-  // clear THIS panel's view without touching the shared selection
-  function newChatLocal() {
     root.session = null;
+    root.newChatPending = true;   // survive a close/reopen without a reload
     root.modelClear();
     root.chatLoading = false;     // genuinely empty, not loading
     root.expanded = ({});         // fold-outs belong to the old chat
@@ -1957,20 +2014,12 @@ Pill {
     root.focusChatEditor();
   }
 
-  // user picked a chat (picker / rail): show it here and in every other panel
+  // user picked a chat (picker / rail): show it in THIS panel and remember it
+  // in the shared history
   function switchSession(s) {
-    root.switchSessionLocal(s);
-    if (s && s.id) {
-      OpencodeShared.remember(s.id);   // opened here → panel owns it
-      OpencodeShared.setCurrent(s.id);
-    } else {
-      OpencodeShared.startNew();
-    }
-  }
-
-  // show a chat in THIS panel only (also used by adoptShared)
-  function switchSessionLocal(s) {
     root.session = s;
+    root.newChatPending = false;
+    if (s && s.id) OpencodeShared.remember(s.id);   // opened here → panel owns it
     root.modelClear();
     // show a loading state instead of the empty "ask opencode" splash while
     // the history arrives, and open the new chat pinned to the bottom
@@ -1999,26 +2048,35 @@ Pill {
       if (!ok) { root.showToast("could not delete chat"); return; }
       if (root.session && root.session.id === s.id) {
         root.session = null;
+        root.newChatPending = false;
         root.modelClear();
         root.resetTurnState();
       }
       OpencodeShared.forget(s.id);
-      // if it was the shared selection, drop it so loadSession picks another
-      if (OpencodeShared.currentSessionId === s.id) OpencodeShared.setCurrent("");
       root.loadSession();
     });
   }
 
-  function switchModel(m) {
+  // `variant` is an optional reasoning-effort id; `keepOpen` leaves the picker
+  // open (used when changing effort so the levels stay visible)
+  function switchModel(m, variant, keepOpen) {
     const ref = { id: m.id, providerID: m.providerID };
+    if (variant) ref.variant = variant;
     root.lastModel = ref;
-    if (!root.session) { root.closeMenu(); return; }  // applied on creation
+    OpencodeShared.touchModel(ref);   // remember for the picker's Recent group
+    if (!root.session) { if (!keepOpen) root.closeMenu(); return; }  // applied on creation
     api("POST", "/api/session/" + root.session.id + "/model",
         { model: ref }, ok => {
           if (ok && root.session)
             root.session = Object.assign({}, root.session, { model: ref });
-          root.closeMenu();
+          if (!keepOpen) root.closeMenu();
         });
+  }
+
+  // change the reasoning effort of the current model
+  function switchVariant(v) {
+    const m = root.currentModelObj();
+    if (m) root.switchModel(m, v, true);
   }
 
   function switchAgent(a) {
@@ -2078,10 +2136,9 @@ Pill {
         return;
       }
       root.session = data.data;
+      root.newChatPending = false;
       OpencodeShared.remember(data.data.id);   // the panel owns this chat
       root.loadSession();         // the new chat must appear in the picker
-      // publish the new chat so every other window follows it
-      OpencodeShared.setCurrent(data.data.id);
       cb(data.data.id);
     });
   }
@@ -2301,9 +2358,57 @@ Pill {
         || (m.id || "").toLowerCase().indexOf(q) !== -1;
   }
 
+  // the models the user recently picked, resolved to catalog entries
+  function recentModelObjs() {
+    const out = [];
+    for (const ref of OpencodeShared.recentModels) {
+      const m = root.modelObjFor(ref);
+      if (m && !out.some(x => x.id === m.id && x.providerID === m.providerID))
+        out.push(m);
+    }
+    return out;
+  }
+
+  // flat list — the keyboard selection indexes this and it must match the
+  // visual order of modelGroups(). Recents come first while not searching.
   function filteredModels() {
     if (root.menu !== "models") return [];
-    return root.models.filter(root.modelMatches);
+    const list = root.models.filter(root.modelMatches);
+    if (root.menuQuery() !== "") return list;
+    const recents = root.recentModelObjs();
+    if (recents.length === 0) return list;
+    const rest = list.filter(m =>
+      !recents.some(r => r.id === m.id && r.providerID === m.providerID));
+    return recents.concat(rest);
+  }
+
+  // Group for rendering. Each item carries its FLAT index so the keyboard
+  // selection never relies on object identity: indexOf() on QML modelData is
+  // not reference-stable, which made every row share one selection (and all
+  // highlight on hover).
+  function modelGroups() {
+    if (root.menu !== "models") return [];
+    const list = root.filteredModels();
+    const groups = [];
+    let i = 0;
+    if (root.menuQuery() === "") {
+      const n = Math.min(root.recentModelObjs().length, list.length);
+      if (n > 0) {
+        const items = [];
+        for (; i < n; i++) items.push({ m: list[i], i: i });
+        groups.push({ provider: "Recent", items: items });
+      }
+    }
+    let cur = null;
+    for (; i < list.length; i++) {
+      const m = list[i];
+      if (!cur || cur.provider !== m.providerID) {
+        cur = { provider: m.providerID, items: [] };
+        groups.push(cur);
+      }
+      cur.items.push({ m: m, i: i });
+    }
+    return groups;
   }
 
   function filteredAgents() {
@@ -2312,7 +2417,8 @@ Pill {
     if (q === "") return root.agents;
     return root.agents.filter(a =>
       (a.name || "").toLowerCase().indexOf(q) !== -1
-      || (a.id || "").toLowerCase().indexOf(q) !== -1);
+      || (a.id || "").toLowerCase().indexOf(q) !== -1
+      || (a.description || "").toLowerCase().indexOf(q) !== -1);
   }
 
   function filteredSessions() {
@@ -2365,6 +2471,8 @@ Pill {
     }
     root.menu = name;
     root.menuSel = 0;
+    // always open at the top (the list is not scrolled to the active item)
+    menuFlick.contentY = 0;
     if (root.panelOpen) root.focusChatEditor();
   }
 
@@ -2385,10 +2493,29 @@ Pill {
   }
 
   // keep the keyboard-selected row in view (the search row is first)
+  // Keep the keyboard-selected row in view. Row heights differ per menu
+  // (sessions 24, agents 36, models 34 + a provider header), so the offset is
+  // computed per menu rather than assuming one row height.
   function ensureMenuSelVisible() {
     if (!root.menuSearchable()) return;
-    const rowH = 26;
-    const top = 26 + root.menuSel * rowH;
+    let top = 26;               // the search row (24) + spacing
+    let rowH = 26;
+    if (root.menu === "models") {
+      rowH = 36;                // 34 row + 2 spacing
+      // walk the groups so every section header is counted (including Recent)
+      outer: for (const g of root.modelGroups()) {
+        top += 26;              // header
+        for (const it of g.items) {
+          if (it.i === root.menuSel) break outer;
+          top += rowH;
+        }
+      }
+    } else if (root.menu === "agents") {
+      rowH = 38;                // 36 row + 2 spacing
+      top += root.menuSel * rowH;
+    } else {
+      top += root.menuSel * rowH;
+    }
     const bottom = top + rowH;
     if (top < menuFlick.contentY) menuFlick.contentY = top;
     else if (bottom > menuFlick.contentY + menuFlick.height)
@@ -2525,6 +2652,13 @@ Pill {
          : root.panelOpen ? Theme.accent
          : (mouse.containsMouse ? Theme.accent : Theme.text)
     Behavior on color { ColorAnimation { duration: 200 } }
+    // soft blink while a turn is running
+    SequentialAnimation on opacity {
+      running: root.busy
+      loops: Animation.Infinite
+      NumberAnimation { to: 0.45; duration: 480; easing.type: Easing.InOutSine }
+      NumberAnimation { to: 1; duration: 480; easing.type: Easing.InOutSine }
+    }
   }
 
   MouseArea {
@@ -2659,6 +2793,20 @@ Pill {
         event.accepted = true;
         return;
       }
+      // Ctrl+N: start a new chat (the header "+" button was removed)
+      if (root.mode === "chat" && root.formTextTarget === null
+          && event.key === Qt.Key_N && (event.modifiers & Qt.ControlModifier)) {
+        root.newChat();
+        event.accepted = true;
+        return;
+      }
+      // Ctrl+M: open the model picker (composer-level control)
+      if (root.mode === "chat" && event.key === Qt.Key_M
+          && (event.modifiers & Qt.ControlModifier)) {
+        root.menu === "models" ? root.closeMenu() : root.openMenu("models");
+        event.accepted = true;
+        return;
+      }
       // Ctrl+V: attach a clipboard image when there is one, else paste text
       if (root.mode === "chat" && root.formTextTarget === null
           && event.key === Qt.Key_V && (event.modifiers & Qt.ControlModifier)) {
@@ -2758,6 +2906,11 @@ Pill {
     implicitHeight: panel.expandedH
     visible: (root.panelOpen && root.panelExpanded) || fullHideAnim.running
     Timer { id: fullHideAnim; interval: 260 }
+    // the compositor can close the window itself (Hyprland killactive / a
+    // close request): mirror that into the QML state, otherwise panelOpen
+    // stays true and the next toggle only flips it back to false — needing
+    // two keypresses to reopen
+    onClosed: root.panelOpen = false
     onVisibleChanged: {
       if (visible)
         Qt.callLater(() => { if (inputField) inputField.forceActiveFocus(); });
@@ -2836,6 +2989,8 @@ Pill {
       // hides this window while the panel stays open, and must not drop it
       if (!root.panelOpen) root.cancelStt();
     }
+    // the compositor closed the popup: keep the QML state in sync (see fullWin)
+    onClosed: root.panelOpen = false
 
     anchor {
       window: root.QsWindow.window
@@ -2901,8 +3056,12 @@ Pill {
           root.panelExpanded && root.mode === "chat"
       readonly property bool sidebarVisible:
           sidebarAvailable && root.sidebarOpen
-      readonly property real sidebarW:
+      // NOTE: writable (not readonly) so the Behavior below can animate it
+      property real sidebarW:
           sidebarVisible ? Math.min(244, Math.max(0, width - 360)) : 0
+      // slide the rail in/out instead of snapping; the surface size is fixed
+      // so animating the internal layout is safe (unlike the window geometry)
+      Behavior on sidebarW { NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }
 
       // catch-all: Escape bubbling up from any focused child of the overlay
       Keys.onEscapePressed: root.closeMenuOrPanel()
@@ -2913,7 +3072,11 @@ Pill {
       // column is inset by `sidebarW`, so this rail owns the left edge.
       Rectangle {
         id: sidebar
-        visible: panelContent.sidebarVisible
+        // stays "visible" while the rail is available so the width/opacity
+        // animation is actually seen; opacity handles the open/close
+        visible: panelContent.sidebarAvailable
+        opacity: panelContent.sidebarVisible ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
         x: 0
         y: 0
         width: panelContent.sidebarW
@@ -2943,9 +3106,11 @@ Pill {
           anchors.rightMargin: 10
           height: 32
           radius: 6
-          color: newSideMa.containsMouse || OpencodeShared.newChatPending
+          color: newSideMa.containsMouse || root.newChatPending
                  ? Theme.hover : "transparent"
           Behavior on color { ColorAnimation { duration: 150 } }
+          scale: newSideMa.pressed ? 0.97 : (newSideMa.containsMouse ? 1.02 : 1)
+          Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
 
           Row {
             anchors.left: parent.left
@@ -2958,7 +3123,7 @@ Pill {
               text: "\uf067"
               font.family: Theme.font
               font.pixelSize: 11
-              color: OpencodeShared.newChatPending ? Theme.accent : Theme.text
+              color: root.newChatPending ? Theme.accent : Theme.text
             }
 
             Text {
@@ -2966,7 +3131,7 @@ Pill {
               text: "New chat"
               font.family: Theme.font
               font.pixelSize: 11
-              color: OpencodeShared.newChatPending ? Theme.accent : Theme.text
+              color: root.newChatPending ? Theme.accent : Theme.text
             }
           }
 
@@ -3149,10 +3314,24 @@ Pill {
                             || sideRowMa.containsMouse)
                            ? Theme.hover : "transparent"
                     Behavior on color { ColorAnimation { duration: 150 } }
+                    // slight slide-in on hover
+                    property real slide: sideHover.hovered ? 2 : 0
+                    transform: Translate { x: sideRow.slide }
+                    Behavior on slide { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
 
                     // HoverHandler (not MouseArea hover) so hovering the ✕
                     // child never reports the row as un-hovered
                     HoverHandler { id: sideHover }
+
+                    // the open chat gets an accent bar on the left
+                    Rectangle {
+                      visible: sideRow.cur
+                      anchors.left: parent.left
+                      anchors.leftMargin: 2
+                      anchors.verticalCenter: parent.verticalCenter
+                      width: 3; height: 16; radius: 1.5
+                      color: Theme.accent
+                    }
 
                     Text {
                       anchors.left: parent.left
@@ -3251,7 +3430,7 @@ Pill {
             width: 24; height: 20; radius: 5
             color: sidebarMa.containsMouse ? Theme.hover : "transparent"
             Behavior on color { ColorAnimation { duration: 200 } }
-            scale: sidebarMa.containsMouse ? 1.04 : 1
+            scale: sidebarMa.pressed ? 0.86 : (sidebarMa.containsMouse ? 1.04 : 1)
             Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
 
             Text {
@@ -3273,44 +3452,62 @@ Pill {
 
           // central tabs: chat / translate / calculator.
           // Hidden in full mode — that window is chat-only.
-          Row {
-            id: tabRow
+          Item {
+            id: tabWrap
             anchors.verticalCenter: parent.verticalCenter
             visible: !root.panelExpanded
-            spacing: 4
+            width: tabRow.width
+            height: 20
 
-            Repeater {
-              model: [
-                { id: "chat", icon: "󰆍" },
-                { id: "translate", icon: "\uf1ab" },
-                { id: "calc", icon: "\uf1ec" },
-              ]
+            // sliding highlight behind the active tab (segmented-control feel)
+            Rectangle {
+              id: tabIndicator
+              width: 24; height: 20; radius: 5
+              color: Theme.hover
+              x: (root.mode === "chat" ? 0
+                  : root.mode === "translate" ? 1 : 2) * (width + tabRow.spacing)
+              Behavior on x { NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }
+            }
 
-              delegate: Rectangle {
-                required property var modelData
+            Row {
+              id: tabRow
+              spacing: 4
 
-                readonly property bool cur: root.mode === modelData.id
-                width: 24; height: 20; radius: 5
-                color: cur ? Theme.hover
-                     : tabMa.containsMouse ? Theme.hover : "transparent"
-                Behavior on color { ColorAnimation { duration: 200 } }
-                scale: cur ? 1 : (tabMa.containsMouse ? 1.04 : 1)
-                Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+              Repeater {
+                model: [
+                  { id: "chat", icon: "󰆍" },
+                  { id: "translate", icon: "\uf1ab" },
+                  { id: "calc", icon: "\uf1ec" },
+                ]
 
-                Text {
-                  anchors.centerIn: parent
-                  text: parent.modelData.icon
-                  font.family: Theme.font
-                  font.pixelSize: 12
-                  color: parent.cur ? Theme.accent : Theme.muted
-                }
+                delegate: Rectangle {
+                  required property var modelData
 
-                MouseArea {
-                  id: tabMa
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: root.mode = parent.modelData.id
+                  readonly property bool cur: root.mode === modelData.id
+                  width: 24; height: 20; radius: 5
+                  // the sliding indicator draws the active background; the
+                  // delegate only tints on hover
+                  color: tabMa.containsMouse ? Theme.hover : "transparent"
+                  Behavior on color { ColorAnimation { duration: 200 } }
+                  scale: tabMa.pressed ? 0.88 : (cur ? 1 : (tabMa.containsMouse ? 1.06 : 1))
+                  Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+
+                  Text {
+                    anchors.centerIn: parent
+                    text: parent.modelData.icon
+                    font.family: Theme.font
+                    font.pixelSize: 12
+                    color: parent.cur ? Theme.accent : Theme.muted
+                    Behavior on color { ColorAnimation { duration: 200 } }
+                  }
+
+                  MouseArea {
+                    id: tabMa
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.mode = parent.modelData.id
+                  }
                 }
               }
             }
@@ -3325,8 +3522,8 @@ Pill {
             visible: root.mode === "chat"
             width: parent.width - (tabRow.visible ? tabRow.width : 0)
                    - costText.width
-                   - modelBtn.width - agentBtn.width - newBtn.width
-                   - expandBtn.width - 56
+                   - modelBtn.width - agentBtn.width
+                   - 56
                    - (sidebarBtn.visible ? sidebarBtn.width + 8 : 0)
                    - (stopBtn.visible ? stopBtn.width + 8 : 0)
             text: root.session ? (root.session.title || "opencode") : "opencode — new chat"
@@ -3365,13 +3562,14 @@ Pill {
             radius: 5
             color: modelMa.containsMouse ? Theme.hover : Theme.surface
             Behavior on color { ColorAnimation { duration: 200 } }
+            scale: modelMa.pressed ? 0.95 : (modelMa.containsMouse ? 1.05 : 1)
+            Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
             Text {
               id: modelText
               anchors.centerIn: parent
-              // a not-yet-created chat has no session.model — show the model
-              // it will be created with instead of a bare placeholder
-              text: root.session && root.session.model ? root.session.model.id
-                    : root.lastModel ? root.lastModel.id : "model"
+              // friendly model name (with the reasoning variant), never the raw
+              // id when the picker knows it
+              text: root.modelChipLabel()
               font.family: Theme.font
               font.pixelSize: 10
               color: Theme.text
@@ -3395,11 +3593,13 @@ Pill {
             radius: 5
             color: agentMa.containsMouse ? Theme.hover : Theme.surface
             Behavior on color { ColorAnimation { duration: 200 } }
+            scale: agentMa.pressed ? 0.95 : (agentMa.containsMouse ? 1.05 : 1)
+            Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
             Text {
               id: agentText
               anchors.centerIn: parent
-              text: root.session && root.session.agent ? root.session.agent
-                    : root.lastAgent !== "" ? root.lastAgent : "agent"
+              // friendly agent name, not the raw id
+              text: root.agentChipLabel()
               font.family: Theme.font
               font.pixelSize: 10
               color: Theme.text
@@ -3410,31 +3610,6 @@ Pill {
               hoverEnabled: true
               cursorShape: Qt.PointingHandCursor
               onClicked: root.menu === "agents" ? root.closeMenu() : root.openMenu("agents")
-            }
-          }
-
-          Rectangle {
-            id: newBtn
-            anchors.verticalCenter: parent.verticalCenter
-            visible: root.mode === "chat"
-            width: 22; height: 22; radius: 5
-            color: newChatMa.containsMouse ? Theme.hover : Theme.surface
-            Behavior on color { ColorAnimation { duration: 200 } }
-            scale: newChatMa.containsMouse ? 1.07 : 1
-            Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-            Text {
-              anchors.centerIn: parent
-              text: "\uf067"          // plus — the old oct glyph overflowed the 22px chip
-              font.family: Theme.font
-              font.pixelSize: 11
-              color: Theme.text
-            }
-            MouseArea {
-              id: newChatMa
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.newChat()
             }
           }
 
@@ -3458,34 +3633,6 @@ Pill {
               hoverEnabled: true
               cursorShape: Qt.PointingHandCursor
               onClicked: root.interrupt()
-            }
-          }
-
-          // expand / restore: grows the dropdown to a large, centered
-          // chatbot-style window and back
-          Rectangle {
-            id: expandBtn
-            anchors.verticalCenter: parent.verticalCenter
-            visible: root.mode === "chat"
-            width: 22; height: 22; radius: 5
-            color: expandMa.containsMouse ? Theme.hover : Theme.surface
-            Behavior on color { ColorAnimation { duration: 200 } }
-            scale: expandMa.containsMouse ? 1.07 : 1
-            Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-            Text {
-              anchors.centerIn: parent
-              text: root.panelExpanded ? "\uf066" : "\uf065"   // compress / expand
-              font.family: Theme.font
-              font.pixelSize: 11
-              color: root.panelExpanded ? Theme.accent : Theme.text
-            }
-            MouseArea {
-              id: expandMa
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: Quickshell.execDetached(
-                ["qs", "ipc", "call", "opencodeFull", "toggle"])
             }
           }
         }
@@ -3520,7 +3667,12 @@ Pill {
           height: root.mode === "chat"
               ? parent.height - headerRow.height - menuBox.height
                 - errorLine.height - permBanner.height - formBanner.height
-                - inputRow.height - 8 * 5 - 10
+                - inputRow.height - 10
+                // Column spacing only applies between VISIBLE children; the
+                // old hardcoded 8*5 reserved four gaps that are hidden in the
+                // normal case, leaving ~32px of dead space above the input
+                - 8 * (1 + (errorLine.visible ? 1 : 0) + (menuBox.visible ? 1 : 0)
+                       + (permBanner.visible ? 1 : 0) + (formBanner.visible ? 1 : 0))
               : 0
 
           ListView {
@@ -3618,6 +3770,22 @@ Pill {
                 color: msgDel.kind === "user" ? Theme.surface : "transparent"
                 border.width: msgDel.kind === "user" ? 1 : 0
                 border.color: Theme.border
+
+                // soft pulse behind the assistant message that is streaming,
+                // so the "live" one is obvious at a glance
+                Rectangle {
+                  visible: msgDel.kind === "assistant" && msgDel.live
+                  anchors.fill: parent
+                  radius: 8
+                  color: Theme.surface
+                  opacity: 0.08
+                  SequentialAnimation on opacity {
+                    running: visible
+                    loops: Animation.Infinite
+                    NumberAnimation { to: 0.32; duration: 750; easing.type: Easing.InOutSine }
+                    NumberAnimation { to: 0.08; duration: 750; easing.type: Easing.InOutSine }
+                  }
+                }
 
                 // invisible measure: TextEdit has no content-hugging width,
                 // this sizes the user bubble
@@ -3765,18 +3933,93 @@ Pill {
               }
             }
 
-            // thinking indicator while the assistant turn streams
-            footer: Text {
-              visible: root.busy
-              text: "◌ thinking…"
-              font.family: Theme.font
-              font.pixelSize: 11
-              color: Theme.muted
-              SequentialAnimation on opacity {
-                running: root.busy
-                loops: Animation.Infinite
-                NumberAnimation { to: 0.35; duration: 600 }
-                NumberAnimation { to: 1; duration: 600 }
+            // a little robot hard at work while the assistant turn streams.
+            // Its expression reflects the turn: a hammer for text, a wrench
+            // while a tool runs, and a dead red robot on error.
+            footer: Item {
+              id: workerScene
+              // stays up while a turn runs, and while an error is showing so
+              // the dead robot is actually seen
+              visible: root.busy || root.error !== ""
+              width: chatView.width
+              height: 20
+              readonly property bool errored: root.error !== ""
+
+              // spinning cog
+              Text {
+                id: cog
+                x: 34; y: 5
+                text: "󰒓"
+                font.family: Theme.font
+                font.pixelSize: 12
+                color: workerScene.errored ? Theme.err : Theme.muted
+                opacity: workerScene.errored ? 0.45 : 1
+                Behavior on opacity { NumberAnimation { duration: 200 } }
+                transformOrigin: Item.Center
+                NumberAnimation on rotation {
+                  running: root.busy && !workerScene.errored
+                  loops: Animation.Infinite
+                  from: 0; to: 360; duration: 2800
+                }
+              }
+
+              // the little robot, bobbing (dead + still on error)
+              Text {
+                id: robot
+                x: 8; y: 4
+                text: workerScene.errored ? "󱚡" : "󰚩"
+                font.family: Theme.font
+                font.pixelSize: 14
+                color: workerScene.errored ? Theme.err : Theme.live
+                Behavior on color { ColorAnimation { duration: 200 } }
+                property real bob: 0
+                transform: Translate { y: robot.bob }
+                SequentialAnimation on bob {
+                  running: root.busy && !workerScene.errored
+                  loops: Animation.Infinite
+                  NumberAnimation { to: -2.5; duration: 300; easing.type: Easing.OutQuad }
+                  NumberAnimation { to: 0; duration: 300; easing.type: Easing.InQuad }
+                  PauseAnimation { duration: 180 }
+                }
+              }
+
+              // the tool: a hammer for text, a wrench while a tool runs
+              Text {
+                id: hammer
+                x: 18; y: 1
+                text: root.toolRunning ? "󰖷" : "󰣪"
+                font.family: Theme.font
+                font.pixelSize: 12
+                color: root.toolRunning ? Theme.accent2 : Theme.accent
+                visible: !workerScene.errored
+                transformOrigin: Item.BottomLeft
+                SequentialAnimation on rotation {
+                  running: root.busy && !workerScene.errored
+                  loops: Animation.Infinite
+                  NumberAnimation { to: -32; duration: 240; easing.type: Easing.OutCubic }
+                  NumberAnimation { to: 14; duration: 180; easing.type: Easing.InCubic }
+                  PauseAnimation { duration: 260 }
+                }
+              }
+
+              // sparks fly on each hit
+              Text {
+                id: spark
+                x: 26; y: 9
+                text: "󰶳"
+                font.family: Theme.font
+                font.pixelSize: 9
+                color: Theme.live
+                visible: !workerScene.errored
+                opacity: 0
+                SequentialAnimation on opacity {
+                  running: root.busy && !workerScene.errored
+                  loops: Animation.Infinite
+                  PauseAnimation { duration: 420 }
+                  NumberAnimation { to: 1; duration: 70 }
+                  NumberAnimation { to: 0; duration: 150 }
+                  PauseAnimation { duration: 320 }
+                }
               }
             }
           }
@@ -3788,7 +4031,7 @@ Pill {
           transform: Translate { x: root.swipeOfs }
           width: parent.width
           height: root.menu !== "" && root.mode === "chat"
-              ? Math.min(root.panelExpanded ? 320 : 200, menuCol.implicitHeight + 12) : 0
+              ? Math.min(root.panelExpanded ? 400 : 260, menuCol.implicitHeight + 12) : 0
           visible: height > 0
           radius: 6
           color: Theme.surface
@@ -3976,6 +4219,61 @@ Pill {
               }
             }
 
+            // reasoning effort (model variants) for the active model. Kept at
+            // the top of the model list so it is visible without scrolling.
+            Row {
+              visible: root.menu === "models" && root.currentVariants().length > 0
+              width: menuCol.width - 4
+              height: 26
+              spacing: 4
+
+              Text {
+                text: "effort"
+                height: parent.height
+                verticalAlignment: Text.AlignVCenter
+                font.family: Theme.font
+                font.pixelSize: 9
+                color: Theme.muted
+              }
+
+              Repeater {
+                model: root.menu === "models" ? root.currentVariants() : []
+
+                Item {
+                  required property var modelData
+                  width: vLabel.implicitWidth + 16
+                  height: parent.height
+
+                  Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width
+                    height: 20
+                    radius: 4
+                    color: root.currentVariant() === modelData ? Theme.accent
+                         : vMa.containsMouse ? Theme.hover : Theme.bg
+                    Behavior on color { ColorAnimation { duration: 150 } }
+
+                    Text {
+                      id: vLabel
+                      anchors.centerIn: parent
+                      text: modelData
+                      font.family: Theme.font
+                      font.pixelSize: 9
+                      color: root.currentVariant() === modelData ? Theme.deep : Theme.text
+                    }
+                  }
+
+                  MouseArea {
+                    id: vMa
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.switchVariant(modelData)
+                  }
+                }
+              }
+            }
+
             // file finder: header that doubles as the loading/empty state
             // (the menu is never a blank box) + the result rows
             Text {
@@ -4010,6 +4308,8 @@ Pill {
                 radius: 4
                 color: sel ? Theme.hover
                      : fileMa.containsMouse ? Theme.hover : "transparent"
+                scale: fileMa.pressed ? 0.97 : 1
+                Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
                 Behavior on color { ColorAnimation { duration: 150 } }
                 Text {
                   anchors.left: parent.left
@@ -4074,6 +4374,8 @@ Pill {
                 HoverHandler { id: sesHover }
                 color: (index === root.menuSel || sesHover.hovered)
                        ? Theme.hover : "transparent"
+                scale: sesMa.pressed ? 0.97 : 1
+                Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
                 Text {
                   anchors.left: parent.left
                   anchors.leftMargin: 8
@@ -4136,105 +4438,172 @@ Pill {
               }
             }
 
-            // models menu (searchable: name / provider / id)
+            // models menu (searchable): grouped by provider, with capability /
+            // cost cues and a fixed check column on the active model
             Repeater {
               id: modelsRep
-              model: {
-                if (root.menu !== "models") return [];
-                const q = menuSearchField.text.trim().toLowerCase();
-                if (q === "") return root.models;
-                return root.models.filter(m =>
-                  (m.name || "").toLowerCase().indexOf(q) !== -1
-                  || (m.providerID || "").toLowerCase().indexOf(q) !== -1
-                  || (m.id || "").toLowerCase().indexOf(q) !== -1);
-              }
+              model: root.modelGroups()
 
-              Rectangle {
+              Column {
+                id: modelGroup
                 required property var modelData
-                required property int index
-                readonly property bool cur: root.session && root.session.model
-                    && root.session.model.id === modelData.id
                 width: menuCol.width - 4
-                height: 24
-                radius: 4
-                color: (index === root.menuSel || modMa.containsMouse)
-                       ? Theme.hover : "transparent"
+                spacing: 2
+
+                // provider section header
                 Text {
-                  anchors.left: parent.left
-                  anchors.leftMargin: 8
-                  anchors.right: provText.left
-                  anchors.rightMargin: 8
-                  anchors.verticalCenter: parent.verticalCenter
-                  text: (parent.cur ? "● " : "") + parent.modelData.name
-                  font.family: Theme.font
-                  font.pixelSize: 10
-                  font.bold: parent.cur
-                  color: parent.cur ? Theme.accent : Theme.text
-                  elide: Text.ElideRight
-                }
-                // provider on the right, dim, so the list scans by model name
-                Text {
-                  id: provText
-                  anchors.right: parent.right
-                  anchors.rightMargin: 8
-                  anchors.verticalCenter: parent.verticalCenter
-                  text: parent.modelData.providerID
+                  width: parent.width
+                  height: 24
+                  leftPadding: 8
+                  verticalAlignment: Text.AlignVCenter
+                  text: modelGroup.modelData.provider
                   font.family: Theme.font
                   font.pixelSize: 9
+                  font.bold: true
                   color: Theme.muted
+                  elide: Text.ElideRight
                 }
-                MouseArea {
-                  id: modMa
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  onEntered: root.menuSel = index
-                  onClicked: root.switchModel(parent.modelData)
+
+                Repeater {
+                  model: modelGroup.modelData.items
+
+                  Rectangle {
+                    id: modRow
+                    required property var modelData   // { m: model, i: flat index }
+                    readonly property var entry: modRow.modelData.m
+                    readonly property int flatIndex: modRow.modelData.i
+                    readonly property bool cur: root.session && root.session.model
+                        && root.session.model.id === modRow.entry.id
+                        && root.session.model.providerID === modRow.entry.providerID
+                    width: modelGroup.width
+                    height: 34
+                    radius: 4
+                    color: (modRow.flatIndex === root.menuSel || modMa.containsMouse)
+                           ? Theme.hover : "transparent"
+                    scale: modMa.pressed ? 0.98 : 1
+                    Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+
+                    Column {
+                      anchors.left: parent.left
+                      anchors.leftMargin: 8
+                      anchors.right: modCheck.left
+                      anchors.rightMargin: 6
+                      anchors.verticalCenter: parent.verticalCenter
+                      spacing: 1
+
+                      Text {
+                        width: parent.width
+                        text: modRow.entry.name
+                        font.family: Theme.font
+                        font.pixelSize: 10
+                        font.bold: modRow.cur
+                        color: modRow.cur ? Theme.accent : Theme.text
+                        elide: Text.ElideRight
+                      }
+                      Text {
+                        width: parent.width
+                        text: root.modelMeta(modRow.entry)
+                        font.family: Theme.font
+                        font.pixelSize: 8
+                        color: Theme.muted
+                        elide: Text.ElideRight
+                      }
+                    }
+
+                    // fixed-width check column so rows never shift
+                    Text {
+                      id: modCheck
+                      anchors.right: parent.right
+                      anchors.rightMargin: 8
+                      anchors.verticalCenter: parent.verticalCenter
+                      width: 12
+                      horizontalAlignment: Text.AlignHCenter
+                      text: modRow.cur ? "✓" : ""
+                      font.family: Theme.font
+                      font.pixelSize: 11
+                      color: Theme.accent
+                    }
+
+                    MouseArea {
+                      id: modMa
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      onEntered: root.menuSel = modRow.flatIndex
+                      onClicked: root.switchModel(modRow.entry)
+                    }
+                  }
                 }
               }
             }
 
-            // agents menu (searchable)
+            // agents menu (searchable): name + description, active check
             Repeater {
               id: agentsRep
-              model: {
-                if (root.menu !== "agents") return [];
-                const q = menuSearchField.text.trim().toLowerCase();
-                if (q === "") return root.agents;
-                return root.agents.filter(a =>
-                  (a.name || "").toLowerCase().indexOf(q) !== -1
-                  || (a.id || "").toLowerCase().indexOf(q) !== -1);
-              }
+              model: root.filteredAgents()
 
               Rectangle {
+                id: agRow
                 required property var modelData
                 required property int index
-                readonly property bool cur: root.session && root.session.agent === modelData.id
+                readonly property bool cur: root.session && root.session.agent === agRow.modelData.id
                 width: menuCol.width - 4
-                height: 24
+                height: 36
                 radius: 4
                 color: (index === root.menuSel || agMa.containsMouse)
                        ? Theme.hover : "transparent"
-                Text {
+                scale: agMa.pressed ? 0.98 : 1
+                Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+
+                Column {
                   anchors.left: parent.left
                   anchors.leftMargin: 8
+                  anchors.right: agCheck.left
+                  anchors.rightMargin: 6
+                  anchors.verticalCenter: parent.verticalCenter
+                  spacing: 1
+
+                  Text {
+                    width: parent.width
+                    text: agRow.modelData.name
+                    font.family: Theme.font
+                    font.pixelSize: 10
+                    font.bold: agRow.cur
+                    color: agRow.cur ? Theme.accent : Theme.text
+                    elide: Text.ElideRight
+                  }
+                  Text {
+                    width: parent.width
+                    visible: agRow.modelData.description !== ""
+                    text: agRow.modelData.description
+                    font.family: Theme.font
+                    font.pixelSize: 8
+                    color: Theme.muted
+                    elide: Text.ElideRight
+                  }
+                }
+
+                // fixed-width check column so rows never shift
+                Text {
+                  id: agCheck
                   anchors.right: parent.right
                   anchors.rightMargin: 8
                   anchors.verticalCenter: parent.verticalCenter
-                  text: (parent.cur ? "● " : "") + parent.modelData.name
+                  width: 12
+                  horizontalAlignment: Text.AlignHCenter
+                  text: agRow.cur ? "✓" : ""
                   font.family: Theme.font
-                  font.pixelSize: 10
-                  font.bold: parent.cur
-                  color: parent.cur ? Theme.accent : Theme.text
-                  elide: Text.ElideRight
+                  font.pixelSize: 11
+                  color: Theme.accent
                 }
+
                 MouseArea {
                   id: agMa
                   anchors.fill: parent
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
                   onEntered: root.menuSel = index
-                  onClicked: root.switchAgent(parent.modelData)
+                  onClicked: root.switchAgent(agRow.modelData)
                 }
               }
             }
@@ -4254,6 +4623,8 @@ Pill {
                 height: 24
                 radius: 4
                 color: cmdMa.containsMouse ? Theme.hover : "transparent"
+                scale: cmdMa.pressed ? 0.97 : 1
+                Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
                 Text {
                   anchors.left: parent.left
                   anchors.leftMargin: 8
@@ -4287,14 +4658,12 @@ Pill {
               visible: (root.menu === "models" || root.menu === "agents"
                      || root.menu === "sessions")
                      && menuSearchField.text.trim() !== ""
-                     && (root.menu === "models" ? modelsRep.count
-                         : root.menu === "agents" ? agentsRep.count
-                         : sessionsRep.count) === 0
+                     && root.menuCount() === 0
               width: menuCol.width - 4
               height: 24
               horizontalAlignment: Text.AlignHCenter
               verticalAlignment: Text.AlignVCenter
-              text: "nenhum resultado"
+              text: "no matches"
               font.family: Theme.font
               font.pixelSize: 10
               color: Theme.muted
@@ -4805,28 +5174,34 @@ Pill {
           // so it has to handle them itself. BeforeItem so the caret does not
           // eat the event first; unhandled keys fall through to the caret.
           Keys.priority: Keys.BeforeItem
-          // Ctrl+V: attach a clipboard image when there is one, else fall
-          // back to a text paste. This field owns the keyboard in full mode
-          // (hiddenInput is unfocused there), so the image handler that lives
-          // on hiddenInput must be repeated here.
           Keys.onPressed: event => {
+            // Ctrl+N: new chat; Ctrl+M: model picker; Ctrl+V: clipboard image
+            // / text paste; Up/Down: menu navigation. This field owns the
+            // keyboard in full mode (hiddenInput is unfocused there), so the
+            // handlers that live on hiddenInput are repeated here. Up/Down are
+            // handled in this generic handler (not Keys.onUpPressed) so they
+            // never race the specific key handlers.
             if (root.mode === "chat" && root.formTextTarget === null
+                && event.key === Qt.Key_N
+                && (event.modifiers & Qt.ControlModifier)) {
+              root.newChat();
+              event.accepted = true;
+            } else if (root.mode === "chat" && event.key === Qt.Key_M
+                && (event.modifiers & Qt.ControlModifier)) {
+              root.menu === "models" ? root.closeMenu() : root.openMenu("models");
+              event.accepted = true;
+            } else if (root.mode === "chat" && root.formTextTarget === null
                 && event.key === Qt.Key_V
                 && (event.modifiers & Qt.ControlModifier)) {
               root.pasteFromClipboard(true);
               event.accepted = true;
-            }
-          }
-          Keys.onUpPressed: event => {
-            if (root.menuSearchable()) { root.menuMove(-1); event.accepted = true; }
-            else if (root.menu === "files" && root.fileHits.length > 0) {
-              root.finderMove(-1); event.accepted = true;
-            }
-          }
-          Keys.onDownPressed: event => {
-            if (root.menuSearchable()) { root.menuMove(1); event.accepted = true; }
-            else if (root.menu === "files" && root.fileHits.length > 0) {
-              root.finderMove(1); event.accepted = true;
+            } else if ((event.key === Qt.Key_Down || event.key === Qt.Key_Up)
+                && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier))) {
+              const dir = event.key === Qt.Key_Down ? 1 : -1;
+              if (root.menuSearchable()) { root.menuMove(dir); event.accepted = true; }
+              else if (root.menu === "files" && root.fileHits.length > 0) {
+                root.finderMove(dir); event.accepted = true;
+              }
             }
           }
           // Enter sends / Shift+Enter newline, in case this surface holds the
@@ -4850,7 +5225,7 @@ Pill {
           width: 28; height: 26; radius: 5
           color: pasteMa.containsMouse ? Theme.hover : Theme.bg
           Behavior on color { ColorAnimation { duration: 200 } }
-          scale: pasteMa.containsMouse ? 1.07 : 1
+          scale: pasteMa.pressed ? 0.86 : (pasteMa.containsMouse ? 1.07 : 1)
           Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
 
           Text {
@@ -4880,7 +5255,7 @@ Pill {
           color: micMa.containsMouse && root.sttState === "idle"
                  ? Theme.hover : Theme.bg
           Behavior on color { ColorAnimation { duration: 200 } }
-          scale: micMa.containsMouse ? 1.07 : 1
+          scale: micMa.pressed ? 0.86 : (micMa.containsMouse ? 1.07 : 1)
           Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
 
           Text {
@@ -4917,16 +5292,22 @@ Pill {
           anchors.top: parent.top
           anchors.topMargin: 6
           width: 28; height: 26; radius: 5
-          color: sendMa.containsMouse ? Theme.hover : Theme.bg
+          // light up only when there is actually something to send
+          readonly property bool canSend: !root.busy && !root.sending
+              && (inputField.text.trim() !== "" || root.pendingImages.length > 0)
+          color: sendMa.containsMouse ? Theme.hover
+               : (canSend ? Theme.surface : Theme.bg)
           Behavior on color { ColorAnimation { duration: 200 } }
-          scale: sendMa.containsMouse ? 1.07 : 1
+          scale: sendMa.pressed ? 0.86 : (sendMa.containsMouse ? 1.07 : (canSend ? 1.03 : 1))
           Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
           Text {
             anchors.centerIn: parent
             text: root.busy || root.sending ? "\uf04d" : "➤"
             font.family: Theme.font
             font.pixelSize: 12
-            color: root.busy || root.sending ? Theme.err : Theme.live
+            color: root.busy || root.sending ? Theme.err
+                 : (sendBtn.canSend ? Theme.live : Theme.muted)
+            Behavior on color { ColorAnimation { duration: 200 } }
           }
           MouseArea {
             id: sendMa
@@ -5044,7 +5425,17 @@ Pill {
           spacing: 8
 
           Text {
+            id: emptyIcon
             anchors.horizontalCenter: parent.horizontalCenter
+            // gentle float so the empty state feels alive
+            property real bob: 0
+            transform: Translate { y: emptyIcon.bob }
+            SequentialAnimation on bob {
+              running: panelContent.empty
+              loops: Animation.Infinite
+              NumberAnimation { to: -7; duration: 1700; easing.type: Easing.InOutSine }
+              NumberAnimation { to: 0; duration: 1700; easing.type: Easing.InOutSine }
+            }
             text: "󰆍"
             font.family: Theme.font
             font.pixelSize: 40
@@ -5158,8 +5549,12 @@ Pill {
         anchors.bottomMargin: inputRow.height + 16   // clears a grown input row
         z: 5
         visible: opacity > 0
-        opacity: (!chatView.pinned && root.panelOpen && root.mode === "chat") ? 1 : 0
+        // springy entrance/exit
+        property bool shown: !chatView.pinned && root.panelOpen && root.mode === "chat"
+        opacity: shown ? 1 : 0
         Behavior on opacity { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
+        scale: shown ? 1 : 0.6
+        Behavior on scale { NumberAnimation { duration: 280; easing.type: Easing.OutBack } }
         width: 30
         height: 22
         radius: 5
@@ -5203,6 +5598,13 @@ Pill {
         border.width: 1
         opacity: toastTimer.running ? 1 : 0
         Behavior on opacity { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
+        // slide up + pop in instead of a plain fade
+        property real rise: toastTimer.running ? 0 : 12
+        transform: Translate { y: copyToast.rise }
+        Behavior on rise { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+        property real pop: toastTimer.running ? 1 : 0.85
+        scale: pop
+        Behavior on pop { NumberAnimation { duration: 240; easing.type: Easing.OutBack } }
 
         Text {
           id: toastText
@@ -5247,12 +5649,11 @@ Pill {
     root.openExpanded();
   }
 
-  // mirror the shared selection whenever any panel changes it, and re-fetch
-  // the list once the shared store has loaded (the first loadSession may run
-  // before the remembered ids are read, which would filter everything out)
+  // re-fetch the list once the shared store has loaded (the first loadSession
+  // may run before the remembered ids are read, which would filter everything
+  // out). The current chat is NOT mirrored across panels.
   Connections {
     target: OpencodeShared
-    function onSwitchTickChanged() { root.adoptShared(); }
     function onPanelSessionsLoadedChanged() {
       if (OpencodeShared.panelSessionsLoaded) root.loadSession();
     }
