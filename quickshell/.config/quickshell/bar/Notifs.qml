@@ -40,6 +40,11 @@ Item {
   // Same idea for "opencode asked something" (a select-question form or a
   // permission request): one notification per question, not one per monitor.
   property string lastOpencodeAskKey: ""
+  // True while the standalone full opencode chat is open. The bar's docked
+  // panel reads it to disable its application-scoped Escape shortcut, so only
+  // one Escape shortcut is ever enabled (two would be ambiguous and neither
+  // would fire).
+  property bool opencodeFullOpen: false
   readonly property var toastList: {
     root.hiddenTick;
     return server.trackedNotifications.values.filter(n => !root.hiddenIds[n.id]);

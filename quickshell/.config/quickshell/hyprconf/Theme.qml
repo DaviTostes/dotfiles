@@ -15,6 +15,7 @@ QtObject {
     readonly property color muted: "#949eab"    // secondary text
     readonly property color accent: "#d3d9e0"   // selected / accent fills
     readonly property color accent2: "#8b95a3"  // secondary accent
+    readonly property color sidebar: "#191b1f"  // full-mode chat history rail
 
     // chrome + status colors shared with the bar pills
     readonly property color pill: "#222222"     // pill background chrome

@@ -23,9 +23,16 @@ Item {
   property bool busy: false
   property bool syncing: false
   property bool panelActive: false
+  // request sequencing: a debounced keystroke can arrive while the previous
+  // curl is still in flight. The in-flight result must not overwrite a newer
+  // query, and the newest query must still be sent once it settles.
+  property int reqSeq: 0
+  property string lastKey: ""      // query+target currently in flight/rendered
 
   // cursor mirror from the bar's real editor
   function setCursorPos(p) { sourceField.cursorPosition = p; }
+
+  function reqKey(q) { return q + "\u0000" + root.target; }
 
   onSourceTextChanged: if (!root.syncing) {
     root.syncing = true;
@@ -37,11 +44,30 @@ Item {
   // ---------- translation (unofficial web endpoint, auto-detect) ----------
   function translate() {
     const q = sourceText.trim();
-    if (q === "") { root.output = ""; root.detected = ""; return; }
-    root.busy = true;
+    if (q === "") {
+      // clearing the source cancels an in-flight request and its result
+      root.reqSeq++;
+      if (curlProc.running) curlProc.running = false;
+      root.busy = false;
+      root.output = "";
+      root.detected = "";
+      root.lastKey = "";
+      return;
+    }
+    // one request at a time; if one is already running, onExited re-checks
+    // whether the text/target changed and runs the newest query then
+    if (curlProc.running) return;
+    root.startRequest(q);
+  }
+
+  function startRequest(q) {
+    const my = ++root.reqSeq;
+    curlProc.seq = my;
     curlProc.url = "https://clients5.google.com/translate_a/t"
         + "?client=dict-chrome-ex&sl=auto&tl=" + root.target
         + "&q=" + encodeURIComponent(q);
+    root.lastKey = root.reqKey(q);
+    root.busy = true;
     curlProc.running = true;
   }
 
@@ -49,32 +75,40 @@ Item {
     id: curlProc
     property string url: ""
     property string out: ""
+    property int seq: 0
     command: ["curl", "-s", "-m", "12", curlProc.url]
     stdout: SplitParser {
       onRead: data => curlProc.out += data
     }
-  onStarted: { root.busy = true; curlProc.out = ""; }
+    onStarted: { root.busy = true; curlProc.out = ""; }
     onExited: code => {
+      // a newer request (or a clear) superseded this one: its late reply
+      // must not be rendered
+      if (curlProc.seq !== root.reqSeq) return;
       root.busy = false;
       if (code !== 0 || curlProc.out === "") {
         root.output = "translation failed";
         root.detected = "";
-        return;
+      } else {
+        // [[seg, detected], ...] → join the translated segments
+        // (single-word replies nest: [[["sexo"]]])
+        let data;
+        try { data = JSON.parse(curlProc.out); } catch (e) { data = null; }
+        if (!data || !data.length) {
+          root.output = "translation failed";
+          root.detected = "";
+        } else {
+          root.detected = (data[0] && data[0].length > 1) ? data[0][1] : "";
+          root.output = data.map(seg => {
+            if (!seg || !seg.length) return "";
+            return Array.isArray(seg[0]) ? (seg[0][0] || "") : (seg[0] || "");
+          }).join(" ").trim();
+        }
       }
-      // [[seg, detected], ...] → join the translated segments
-      // (single-word replies nest: [[["sexo"]]])
-      let data;
-      try { data = JSON.parse(curlProc.out); } catch (e) { data = null; }
-      if (!data || !data.length) {
-        root.output = "translation failed";
-        root.detected = "";
-        return;
-      }
-      root.detected = (data[0] && data[0].length > 1) ? data[0][1] : "";
-      root.output = data.map(seg => {
-        if (!seg || !seg.length) return "";
-        return Array.isArray(seg[0]) ? (seg[0][0] || "") : (seg[0] || "");
-      }).join(" ").trim();
+      // the user kept typing (or switched target) while this was in flight:
+      // translate the newest text now that the process is free
+      const want = root.sourceText.trim();
+      if (want !== "" && root.reqKey(want) !== root.lastKey) root.translate();
     }
   }
 
@@ -162,7 +196,8 @@ Item {
     // ----- output (response on top, like a chat) -----
     Rectangle {
       width: parent.width
-      height: parent.height - root.inputH - 20 - 8 - 8 - 8
+      // chips row (20) + two 8px column gaps; the old -44 left an 8px gap
+      height: parent.height - root.inputH - 20 - 16
       radius: 6
       color: Theme.bg
       border.color: Theme.border
@@ -180,15 +215,27 @@ Item {
         color: Theme.muted
       }
 
-      SelText {
-        id: outText
+      // scrollable: a long translation used to overflow the box with no way
+      // to reach the clipped part (the chat delegates use the same pattern)
+      Flickable {
+        id: outFlick
         anchors.fill: parent
         anchors.margins: 10
-        text: root.output
-        textFormat: TextEdit.PlainText
-        font.pixelSize: 13
-        color: root.output === "translation failed" ? Theme.err : Theme.accent
-        onCopied: root.copyRequested("")
+        clip: true
+        contentWidth: width
+        contentHeight: outText.height
+        boundsBehavior: Flickable.StopAtBounds
+
+        SelText {
+          id: outText
+          width: outFlick.width
+          height: contentHeight
+          text: root.output
+          textFormat: TextEdit.PlainText
+          font.pixelSize: 13
+          color: root.output === "translation failed" ? Theme.err : Theme.accent
+          onCopied: root.copyRequested("")
+        }
       }
 
       // busy hint
