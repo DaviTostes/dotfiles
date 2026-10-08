@@ -14,6 +14,16 @@ PopupWindow {
   property bool shown: false
   property Component content: null
 
+  // tooltips flip above their target when there is not enough space below it
+  // (pills near the bottom of the vertical side bar)
+  readonly property bool above: {
+    if (!tip.target || !tip.target.QsWindow || !tip.target.QsWindow.window) return false;
+    const win = tip.target.QsWindow.window;
+    const sh = win.screen ? win.screen.height : 1080;
+    const p = tip.target.mapToItem(null, 0, 0);
+    return (p.y + tip.target.height + 8 + tip.implicitHeight) > (sh - 4);
+  }
+
   // body reports its measured size here (ids are not always resolvable
   // from window-level bindings during hot reload)
   property int contentW: 64
@@ -36,8 +46,8 @@ PopupWindow {
 
   anchor {
     window: tip.target ? tip.target.QsWindow.window : null
-    edges: Edges.Top
-    gravity: Edges.Bottom
+    edges: tip.above ? Edges.Bottom : Edges.Top
+    gravity: tip.above ? Edges.Top : Edges.Bottom
   }
 
   anchor.onAnchoring: {
@@ -45,10 +55,19 @@ PopupWindow {
     // edges/gravity the popup is centered on the rect, so a 1px rect would
     // center the popup on the pill's left edge instead of its middle.
     const p = tip.target.mapToItem(null, 0, 0);
-    anchor.rect.x = p.x;
-    anchor.rect.y = p.y + tip.target.height + 6;
-    anchor.rect.width = tip.target.width;
+    const win = tip.target.QsWindow.window;
+    const sw = win && win.screen ? win.screen.width : 1920;
+    if ((p.x + tip.target.width / 2) > sw / 2) {
+      // right-hand bar: right-align the tip with the pill so it stays on screen
+      anchor.rect.x = p.x + tip.target.width - tip.implicitWidth;
+      anchor.rect.width = tip.implicitWidth;
+    } else {
+      anchor.rect.x = p.x;
+      anchor.rect.width = tip.target.width;
+    }
     anchor.rect.height = 1;
+    // flip above the target when it sits too low for the tip to fit below
+    anchor.rect.y = tip.above ? p.y - 7 : p.y + tip.target.height + 6;
   }
 
   // the frame and the body share one wrapper so the fade + slide animates

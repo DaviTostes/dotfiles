@@ -261,6 +261,17 @@ hl.window_rule({
   no_shadow  = true,
 })
 
+-- Proton Authenticator is a Tauri/WebKitGTK app whose tauri-plugin-window-state
+-- restores the saved "maximized": true from ~/.config/me.proton.authenticator/
+-- .window-state.json on every launch, so it opened filling the whole workspace
+-- (hyprctl reports fullscreen=1 / the maximize state) and could not be tiled.
+-- Ignore the maximize request; the app then maps as a normal tile.
+hl.window_rule({
+  name           = "proton-authenticator-no-maximize",
+  match          = { class = "proton-authenticator" },
+  suppress_event = "maximize",
+})
+
 -- kitty 0.49.1 sends xdg_toplevel.set_maximized on map even when started
 -- with --start-as=normal: 'normal' and 'maximized' are indistinguishable, so
 -- every new terminal swallows the whole work area and ignores the split
@@ -315,7 +326,6 @@ hl.bind(mod("T"), hl.dsp.layout("togglesplit"))
 
 hl.bind(mod("B"), exec(browser))
 hl.bind(mod("D"), exec(discord))
-hl.bind(mod("S"), exec("steam"))
 hl.bind(mod("Z"), exec("zapfast"))
 hl.bind(shift("Z"), exec("Telegram"))
 hl.bind(mod("O"), exec("qs ipc call tasks toggle"))    -- tasks panel (was: omm launcher)
@@ -329,8 +339,8 @@ hl.bind(mod("U"), exec("pavucontrol"))
 hl.bind(mod("N"), exec("qs ipc call notifs toggle"))    -- calendar + notifications panel
 hl.bind(shift("N"), exec("qs ipc call notifs clear"))
 
-hl.bind(mod("A"), exec("qs ipc call opencode toggle"))  -- opencode chat panel
-hl.bind(shift("A"), exec("qs ipc call opencode toggleExpanded"))  -- opencode: big window / close
+hl.bind(mod("A"), exec("qs ipc call opencode toggle"))  -- opencode: docked intelligence central
+hl.bind(shift("A"), exec("qs ipc call opencode toggleExpanded"))  -- opencode: standalone full chat / close
 
 hl.bind("PRINT", exec("hyprshot -m window"))
 hl.bind("SHIFT + PRINT", exec("hyprshot -m region"))

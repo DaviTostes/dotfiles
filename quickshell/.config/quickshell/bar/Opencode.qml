@@ -2961,9 +2961,14 @@ Pill {
       if (root.panelExpanded)
         return { x: (panel.screen ? panel.screen.width : 1920) / 2,
                  y: (panel.screen ? panel.screen.height : 1080) / 2 };
+      // docked: the pill lives in the right side bar, so open the panel to its
+      // LEFT, top-aligned with the pill and clamped to the screen
       const p = root.mapToItem(null, 0, 0);
-      return { x: p.x + 2 + root.width - panel.collapsedW / 2,
-               y: p.y + root.height + 6 + panel.collapsedH / 2 };
+      const sh = panel.screen ? panel.screen.height : 1080;
+      const h = panel.collapsedH;
+      const w = panel.collapsedW;
+      const top = Math.max(0, Math.min(p.y, sh - h));
+      return { x: (p.x - 6 - w) + w / 2, y: top + h / 2 };
     }
 
     // set the center target (always a snap — the surface geometry is only

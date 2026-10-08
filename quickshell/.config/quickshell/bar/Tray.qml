@@ -1,4 +1,5 @@
 import Quickshell
+import Quickshell.Io
 import Quickshell.Services.SystemTray
 import QtQuick
 
@@ -20,6 +21,14 @@ Pill {
 
   TrayMenu {
     id: trayMenu
+  }
+
+  // Steam's tray item (libayatana-appindicator) exposes no Activate method,
+  // so item.activate() is a silent no-op. Relaunching the client instead
+  // focuses (or opens) its main window.
+  Process {
+    id: steamOpen
+    command: ["steam", "steam://open/main"]
   }
 
   Row {
@@ -55,21 +64,27 @@ Pill {
           cursorShape: Qt.PointingHandCursor
           onClicked: mouse => {
             const item = icon.modelData;
-            // left activates the app (falls back to the menu for
-            // menu-only items); right toggles the menu; middle does the
-            // item's secondary action
+
+            const toggleMenu = () => {
+              if (trayMenu.open && trayMenu.targetItem === icon)
+                trayMenu.closeMenu();
+              else
+                trayMenu.openFor(icon, item.menu);
+            };
+
+            // left activates the app (menu-only items open the menu;
+            // Steam, whose appindicator item has no Activate method, gets
+            // its window re-opened through the steam:// handler); right
+            // toggles the menu; middle does the item's secondary action
             if (mouse.button === Qt.RightButton) {
-              if (item.menu) {
-                if (trayMenu.open && trayMenu.targetItem === icon)
-                  trayMenu.closeMenu();
-                else
-                  trayMenu.openFor(icon, item.menu);
-              }
+              if (item.menu) toggleMenu();
             } else if (mouse.button === Qt.MiddleButton) {
               item.secondaryActivate();
             } else if (mouse.button === Qt.LeftButton) {
               if (item.onlyMenu && item.menu)
-                trayMenu.openFor(icon, item.menu);
+                toggleMenu();
+              else if (item.id === "steam")
+                steamOpen.running = true;
               else
                 item.activate();
             }

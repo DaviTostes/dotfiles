@@ -1,138 +1,282 @@
 import Quickshell
 import Quickshell.Hyprland
 import QtQuick
+import QtQuick.Shapes
 import "../hyprconf"
 
-PanelWindow {
+// Two opaque bars per monitor, fused into an "L" at the top-RIGHT, flush
+// against the screen edges:
+//
+//   topBar   workspaces (left) · clock + notifications (center) · tray (right)
+//   sideBar  intelligence central + tasks (top) · volume + settings (bottom)
+//
+// The side bar hangs from the top bar's right end. An Arch logo sits in the
+// square where they meet, and the inner (inverted) radius below it fuses the
+// two surfaces. Both reserve their workspace (exclusive zone) so windows do
+// not slide underneath. The component root is a Scope: shell.qml still
+// instantiates one `Bar` per monitor and routes the keybind IPC calls here.
+Scope {
   id: root
 
-  // panel state is per-bar (per monitor), like the Pomodoro's panelOpen
+  required property var screen
+
+  // ----- geometry (px) ---------------------------------------------------
+  readonly property int topBarH: 28
+  readonly property int sideBarW: 28
+  readonly property int radius: 8        // inner fillet at the junction
+
+  // ----- panel state (lives on the side bar / settings pill) -------------
   property bool panelOpen: false
-  // which tab the settings dropdown opens on (see openSettings below)
   property int settingsTab: 0
-  // set by the opencode pill when its DOCKED dropdown is on screen. The full
-  // mode is a real window with its own focus, so the bar holds no grab for it.
   property bool chatPanelOpen: false
-  // set by the tasks pill while its dropdown is open (same signal-driven
-  // pattern as chatPanelOpen: a direct binding races object creation)
   property bool tasksPanelOpen: false
 
-  // lets a panel popup receive keyboard input while it is open (popups
-  // can't grab focus themselves; OnDemand only grabs on click) — covers
-  // the settings panel, the opencode docked input field, the tasks
-  // panel's fields, and the tray menu's Esc-to-close
-  focusable: root.panelOpen || root.chatPanelOpen || root.tasksPanelOpen
-             || trayPill.menuOpen
+  // =======================================================================
+  //  top bar
+  // =======================================================================
+  PanelWindow {
+    id: topBar
 
-  anchors {
-    top: true
-    left: true
-    right: true
-  }
+    screen: root.screen
+    anchors { top: true; left: true; right: true }
+    implicitHeight: root.topBarH
+    color: "transparent"
+    // reserve the top strip so windows stay clear of the opaque bar. The side
+    // bar (Normal) respects this zone and is pushed down to start right below.
+    exclusiveZone: root.topBarH
+    // holds the keyboard while the tray menu is open (Esc closes it)
+    focusable: trayPill.menuOpen
 
-  margins {
-    top: 2
-    left: 4
-    right: 4
-  }
-
-  implicitHeight: 30
-  color: "transparent"
-
-  // full-screen catcher: while the panel is open, any click outside it
-  // lands here and closes it (same pattern as the Pomodoro panel).
-  // Suspended while a native file dialog is open — the dialog lives on a
-  // layer below this overlay and its clicks must go through.
-  Catcher {
-    active: root.panelOpen && !HyprSettings.modalDialogOpen
-    onClicked: {
-      root.panelOpen = false;
-      HyprSettings.galleryOpen = false;
+    Rectangle {
+      anchors.fill: parent
+      color: Theme.bg
     }
-  }
 
-  Workspaces {
-    anchors.left: parent.left
-    anchors.verticalCenter: parent.verticalCenter
-    monitor: Hyprland.monitorFor(root.screen)
-  }
+    Workspaces {
+      anchors.left: parent.left
+      anchors.leftMargin: 8
+      anchors.verticalCenter: parent.verticalCenter
+      monitor: Hyprland.monitorFor(root.screen)
+      color: "transparent"
+    }
 
-  Clock {
-    id: clockPill
-    anchors.centerIn: parent
-  }
+    Clock {
+      id: clockPill
+      anchors.centerIn: parent
+      color: "transparent"
+    }
 
-  Row {
-    anchors.right: parent.right
-    anchors.verticalCenter: parent.verticalCenter
-    spacing: 7
+    Row {
+      anchors.right: parent.right
+      // leave the rightmost sideBarW px for the Arch block. The tray pill has
+      // ~10px of internal padding, so use a smaller outer gap than the side
+      // bar's top margin (10) to make the visual spacing to the logo match.
+      anchors.rightMargin: root.sideBarW + 6
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: 7
 
-    Tray { id: trayPill }
-    // Player {}
-    Battery {}
-    // Pomodoro {}
-    Tasks {
-      id: tasksPill
+      Tray { id: trayPill; color: "transparent" }
+      Battery { color: "transparent" }
     }
-    // propagate the tasks panel state into the bar's keyboard-focus decision.
-    // A Connections (not an `onPanelOpenChanged` on the instance) so the
-    // pill's own open/close handler — animations, focus, tab reset — is not
-    // shadowed by the outer handler.
-    Connections {
-      target: tasksPill
-      function onPanelOpenChanged() { root.tasksPanelOpen = tasksPill.panelOpen; }
-    }
-    Opencode {
-      id: opencodePill
-    }
-    // docked dropdown owns the bar keyboard grab; full mode is a real window
-    // with normal focus. A direct binding races object creation, so drive it
-    // from signals.
-    Connections {
-      target: opencodePill
-      function onPanelOpenChanged() { root.chatPanelOpen = opencodePill.panelOpen && !opencodePill.panelExpanded; }
-      function onPanelExpandedChanged() { root.chatPanelOpen = opencodePill.panelOpen && !opencodePill.panelExpanded; }
-    }
-    // Notifications {}
 
     // native toast popups for incoming notifications (Notifs server)
     Toasts {}
-    Sound {}
+  }
 
-    // wallpaper / hyprlock / hypridle settings panel
-    Pill {
-      id: settingsPill
+  // =======================================================================
+  //  side bar (right)
+  // =======================================================================
+  PanelWindow {
+    id: sideBar
 
-      implicitWidth: settingsText.implicitWidth + 12
+    screen: root.screen
+    anchors { top: true; right: true; bottom: true }
+    implicitWidth: root.sideBarW
+    color: "transparent"
+    // reserve the right strip; the top bar's zone pushes this down so its top
+    // lands exactly on the top bar's bottom edge (fused, no gap)
+    exclusiveZone: root.sideBarW
+    focusable: root.panelOpen || root.chatPanelOpen || root.tasksPanelOpen
+    // exposed for HyprConfig (it reads `barWindow.settingsTab`)
+    property int settingsTab: root.settingsTab
 
-      Text {
-        id: settingsText
-        anchors.centerIn: parent
-        text: "\uf013"
-        font.family: Theme.font
-        font.pixelSize: 13
-        color: root.panelOpen ? Theme.accent : Theme.text
-        Behavior on color { ColorAnimation { duration: 200 } }
+    Rectangle {
+      anchors.fill: parent
+      color: Theme.bg
+    }
+
+    // full-screen catcher: closes the settings dropdown on an outside click
+    // (suspended while a native file dialog is open — its clicks must pass)
+    Catcher {
+      active: root.panelOpen && !HyprSettings.modalDialogOpen
+      onClicked: {
+        root.panelOpen = false;
+        HyprSettings.galleryOpen = false;
+      }
+    }
+
+    // ----- top group: ic + tasks -----
+    Column {
+      id: sideTop
+
+      anchors.top: parent.top
+      anchors.topMargin: 10
+      anchors.left: parent.left
+      anchors.right: parent.right
+      spacing: 4
+
+      Opencode {
+        id: opencodePill
+        width: parent.width
+        color: "transparent"
+      }
+      // docked dropdown owns the side bar's keyboard grab; full mode is a
+      // real window with normal focus. Driven from signals (a direct binding
+      // races object creation).
+      Connections {
+        target: opencodePill
+        function onPanelOpenChanged() { root.chatPanelOpen = opencodePill.panelOpen && !opencodePill.panelExpanded; }
+        function onPanelExpandedChanged() { root.chatPanelOpen = opencodePill.panelOpen && !opencodePill.panelExpanded; }
       }
 
-      MouseArea {
-        anchors.fill: parent
-        cursorShape: Qt.PointingHandCursor
-        onClicked: root.panelOpen = !root.panelOpen
+      Tasks {
+        id: tasksPill
+        width: parent.width
+        color: "transparent"
+      }
+      Connections {
+        target: tasksPill
+        function onPanelOpenChanged() { root.tasksPanelOpen = tasksPill.panelOpen; }
+      }
+    }
+
+    // ----- bottom group: volume + settings -----
+    Column {
+      id: sideBottom
+
+      anchors.bottom: parent.bottom
+      anchors.bottomMargin: 10
+      anchors.left: parent.left
+      anchors.right: parent.right
+      spacing: 4
+
+      Sound {
+        width: parent.width
+        color: "transparent"
+      }
+
+      // wallpaper / hyprlock / hypridle settings panel
+      Pill {
+        id: settingsPill
+
+        width: parent.width
+        color: "transparent"
+
+        implicitWidth: settingsText.implicitWidth + 12
+
+        Text {
+          id: settingsText
+          anchors.centerIn: parent
+          text: "\uf013"
+          font.family: Theme.font
+          font.pixelSize: 13
+          color: root.panelOpen ? Theme.accent : Theme.text
+          Behavior on color { ColorAnimation { duration: 200 } }
+        }
+
+        MouseArea {
+          anchors.fill: parent
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.panelOpen = !root.panelOpen
+        }
+      }
+    }
+
+    // media soundwave, vertically centered; hover opens the player panel
+    Player {
+      id: playerPill
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.left: parent.left
+      anchors.right: parent.right
+      color: "transparent"
+    }
+
+    // settings dropdown, anchored to this bar's settings pill
+    HyprConfig {
+      id: hyprConfig
+      barWindow: sideBar
+      pill: settingsPill
+      panelOpen: root.panelOpen
+    }
+  }
+
+  // =======================================================================
+  //  fused corner: inner radius where the two bars meet
+  // =======================================================================
+  PanelWindow {
+    id: corner
+
+    screen: root.screen
+    anchors { top: true; right: true }
+    margins {
+      top: root.topBarH
+      right: root.sideBarW
+    }
+    implicitWidth: root.radius
+    implicitHeight: root.radius
+    color: "transparent"
+    exclusionMode: ExclusionMode.Ignore
+
+    // inverted quarter circle: fills the notch between the top bar's bottom
+    // edge and the side bar's left edge (mirrored for the right-hand corner)
+    Shape {
+      anchors.fill: parent
+      preferredRendererType: Shape.CurveRenderer
+
+      ShapePath {
+        strokeWidth: 0
+        fillColor: Theme.bg
+        startX: 0
+        startY: 0
+
+        PathLine { x: root.radius; y: 0 }
+        PathLine { x: root.radius; y: root.radius }
+        PathArc {
+          x: 0
+          y: 0
+          radiusX: root.radius
+          radiusY: root.radius
+          direction: PathArc.Counterclockwise
+        }
       }
     }
   }
 
-  // opens anchored under the pill, on this bar's monitor
-  HyprConfig {
-    id: hyprConfig
-    barWindow: root
-    pill: settingsPill
-    panelOpen: root.panelOpen
+  // =======================================================================
+  //  Arch logo, in the square block where the two bars meet
+  // =======================================================================
+  PanelWindow {
+    id: archBlock
+
+    screen: root.screen
+    anchors { top: true; right: true }
+    implicitWidth: root.sideBarW
+    implicitHeight: root.topBarH
+    color: Theme.bg
+    exclusionMode: ExclusionMode.Ignore
+
+    Text {
+      anchors.centerIn: parent
+      text: "\uf303"        // Arch Linux (Nerd Font)
+      font.family: Theme.font
+      font.pixelSize: 16
+      color: Theme.accent
+    }
   }
 
-  // IPC bridge entry points — shell.qml routes keybind calls to the
-  // focused monitor's bar (the chat panel is per-bar, like its pill)
+  // =======================================================================
+  //  IPC bridge entry points (shell.qml routes keybind calls here)
+  // =======================================================================
   function toggleChat() {
     opencodePill.panelOpen = !opencodePill.panelOpen;
     if (opencodePill.panelOpen) opencodePill.ensureService();
@@ -147,8 +291,7 @@ PanelWindow {
 
   function closeChat() { opencodePill.panelOpen = false; }
 
-  // SUPER+SHIFT+B / SUPER+SHIFT+W → settings dropdown, straight on a tab
-  // (name resolved by HyprConfig, which owns the tab list)
+  // SUPER+SHIFT+B / SUPER+SHIFT+W / SUPER+SHIFT+V → settings on a tab
   function openSettings(name) {
     const i = hyprConfig.tabIndex(name);
     root.settingsTab = i >= 0 ? i : 0;

@@ -18,11 +18,11 @@ function dlvid
         return 1
     end
 
-    if not command -v yt-dlp >/dev/null
+    if not command -q yt-dlp
         echo "Error: yt-dlp not installed"
         return 1
     end
-    if not command -v wl-copy >/dev/null
+    if not command -q wl-copy
         echo "Error: wl-copy not installed (install wl-clipboard)"
         return 1
     end
@@ -30,7 +30,7 @@ function dlvid
     mkdir -p $download_dir
 
     if test $mp3 = true
-        if not command -v ffmpeg >/dev/null
+        if not command -q ffmpeg
             echo "Error: ffmpeg not installed (required for mp3 conversion)"
             return 1
         end
@@ -39,7 +39,7 @@ function dlvid
         set -l format_args -f "best[ext=mp4]/best"
     end
 
-    # Capture filepath via temp file to avoid mixing with progress output
+    # Unique file to capture the final path, so concurrent downloads don't clash
     set -l tmp (mktemp)
 
     yt-dlp $format_args \
@@ -47,16 +47,31 @@ function dlvid
         --no-playlist \
         --newline \
         --print after_move:filepath \
-        "$url" | awk '
-        /^\[download\].*[0-9]+\.[0-9]+%/ {
+        "$url" | awk -v outf="$tmp" '
+        /^\[download\].*[0-9]\.[0-9]+%/ {
             # Parse: [download]  42.3% of ~  12.34MiB at  1.23MiB/s ETA 00:05
-            match($0, /([0-9]+\.[0-9]+)%.*at +([^ ]+).*ETA +([^ ]+)/, m)
-            pct = int(m[1])
-            filled = int(pct * 40 / 100)
+            line = $0
+            pct = line
+            sub(/^.*\[download\][[:space:]]*/, "", pct)
+            sub(/%.*/, "", pct)
+
+            speed = "--"
+            if (match(line, /at[[:space:]]+[^[:space:]]+/)) {
+                speed = substr(line, RSTART, RLENGTH)
+                sub(/at[[:space:]]+/, "", speed)
+            }
+            eta = "--"
+            if (match(line, /ETA[[:space:]]+[^[:space:]]+/)) {
+                eta = substr(line, RSTART, RLENGTH)
+                sub(/ETA[[:space:]]+/, "", eta)
+            }
+
+            p = int(pct)
+            filled = int(p * 40 / 100)
             bar = ""
             for (i = 0; i < filled; i++)   bar = bar "█"
             for (i = filled; i < 40; i++)  bar = bar "░"
-            printf "\r  %s %3d%%  %s/s  ETA %s   ", bar, pct, m[2], m[3]
+            printf "\r  %s %3d%%  %s  ETA %s   ", bar, p, speed, eta
             fflush()
             next
         }
@@ -68,11 +83,11 @@ function dlvid
             next
         }
         # Last line printed by --print after_move:filepath
-        /^\// { print > "/tmp/dlvid_path" }
-    '
+        /^\// { print > outf; next }
+        '
 
-    set -l filepath (cat /tmp/dlvid_path 2>/dev/null)
-    rm -f /tmp/dlvid_path $tmp
+    set -l filepath (cat $tmp 2>/dev/null)
+    rm -f $tmp
 
     if test -n "$filepath" -a -f "$filepath"
         echo "file://$filepath" | wl-copy --type text/uri-list

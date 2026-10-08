@@ -190,16 +190,19 @@ Pill {
 
     anchor {
       window: root.QsWindow.window
-      edges: Edges.Top
-      gravity: Edges.Bottom
+      edges: Edges.Right
+      gravity: Edges.Left
       onAnchoring: {
-        // pill coords are relative to the bar window; hang the popup below
-        // the pill, right-aligned with its right edge
+        // the bar is on the right: open to the LEFT of the pill, clamped so a
+        // pill near the bottom does not push the popup off-screen
         const p = root.mapToItem(null, 0, 0);
-        anchor.rect.x = p.x + root.width - panel.implicitWidth;
-        anchor.rect.y = p.y + root.height + 6;
-        anchor.rect.width = panel.implicitWidth;
-        anchor.rect.height = 1;
+        const win = root.QsWindow.window;
+        const sh = win && win.screen ? win.screen.height : 1080;
+        const h = panel.implicitHeight;
+        anchor.rect.x = p.x - 7;
+        anchor.rect.y = Math.max(0, Math.min(p.y, sh - h));
+        anchor.rect.width = 1;
+        anchor.rect.height = h;
       }
     }
 
