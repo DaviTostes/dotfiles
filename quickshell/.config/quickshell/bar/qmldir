@@ -7,6 +7,7 @@ Calc 1.0 Calc.qml
 Catcher 1.0 Catcher.qml
 ClipHistory 1.0 ClipHistory.qml
 Clock 1.0 Clock.qml
+EdgeCorner 1.0 EdgeCorner.qml
 IntelTranslate 1.0 IntelTranslate.qml
 Launcher 1.0 Launcher.qml
 Notifications 1.0 Notifications.qml

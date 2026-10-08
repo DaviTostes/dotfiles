@@ -4,17 +4,18 @@ import QtQuick
 import QtQuick.Shapes
 import "../hyprconf"
 
-// Two opaque bars per monitor, fused into an "L" at the top-RIGHT, flush
-// against the screen edges:
+// One opaque bar frame around the whole monitor, flush to the edges, with
+// rounded outer corners and concave inner corners so it reads as a single
+// rounded border:
 //
-//   topBar   workspaces (left) · clock + notifications (center) · tray (right)
-//   sideBar  intelligence central + tasks (top) · volume + settings (bottom)
+//   top     workspaces · clock + notifications · tray · Arch logo
+//   right   intelligence central + tasks (top) · media wave · volume + settings
+//   left    (empty)
+//   bottom  (empty)
 //
-// The side bar hangs from the top bar's right end. An Arch logo sits in the
-// square where they meet, and the inner (inverted) radius below it fuses the
-// two surfaces. Both reserve their workspace (exclusive zone) so windows do
-// not slide underneath. The component root is a Scope: shell.qml still
-// instantiates one `Bar` per monitor and routes the keybind IPC calls here.
+// The four edges are separate PanelWindows that each reserve their strip, so
+// windows never slide underneath. The component root is a Scope: shell.qml
+// instantiates one per monitor and routes the keybind IPC calls here.
 Scope {
   id: root
 
@@ -23,16 +24,17 @@ Scope {
   // ----- geometry (px) ---------------------------------------------------
   readonly property int topBarH: 28
   readonly property int sideBarW: 28
-  readonly property int radius: 8        // inner fillet at the junction
+  readonly property int thinW: 10         // thin left/bottom edges
+  readonly property int radius: 8        // inner corner radius
 
-  // ----- panel state (lives on the side bar / settings pill) -------------
+  // ----- panel state (lives on the right bar / settings pill) ------------
   property bool panelOpen: false
   property int settingsTab: 0
   property bool chatPanelOpen: false
   property bool tasksPanelOpen: false
 
   // =======================================================================
-  //  top bar
+  //  top edge
   // =======================================================================
   PanelWindow {
     id: topBar
@@ -41,8 +43,6 @@ Scope {
     anchors { top: true; left: true; right: true }
     implicitHeight: root.topBarH
     color: "transparent"
-    // reserve the top strip so windows stay clear of the opaque bar. The side
-    // bar (Normal) respects this zone and is pushed down to start right below.
     exclusiveZone: root.topBarH
     // holds the keyboard while the tray menu is open (Esc closes it)
     focusable: trayPill.menuOpen
@@ -68,9 +68,7 @@ Scope {
 
     Row {
       anchors.right: parent.right
-      // leave the rightmost sideBarW px for the Arch block. The tray pill has
-      // ~10px of internal padding, so use a smaller outer gap than the side
-      // bar's top margin (10) to make the visual spacing to the logo match.
+      // leave the rightmost sideBarW px for the Arch logo block, plus a gap
       anchors.rightMargin: root.sideBarW + 6
       anchors.verticalCenter: parent.verticalCenter
       spacing: 7
@@ -79,22 +77,53 @@ Scope {
       Battery { color: "transparent" }
     }
 
+    // Arch logo, centered in the square block at the top-right corner
+    Text {
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.rightMargin: Math.max(0, (root.sideBarW - implicitWidth) / 2)
+      text: "\uf303"        // Arch Linux (Nerd Font)
+      font.family: Theme.font
+      font.pixelSize: 16
+      color: Theme.accent
+    }
+
     // native toast popups for incoming notifications (Notifs server)
     Toasts {}
   }
 
   // =======================================================================
-  //  side bar (right)
+  //  bottom edge (thin)
+  // =======================================================================
+  PanelWindow {
+    screen: root.screen
+    anchors { bottom: true; left: true; right: true }
+    implicitHeight: root.thinW
+    color: Theme.bg
+    exclusiveZone: root.thinW
+  }
+
+  // =======================================================================
+  //  left edge (thin, empty)
+  // =======================================================================
+  PanelWindow {
+    screen: root.screen
+    anchors { left: true; top: true; bottom: true }
+    implicitWidth: root.thinW
+    color: Theme.bg
+    exclusiveZone: root.thinW
+  }
+
+  // =======================================================================
+  //  right edge (pills)
   // =======================================================================
   PanelWindow {
     id: sideBar
 
     screen: root.screen
-    anchors { top: true; right: true; bottom: true }
+    anchors { right: true; top: true; bottom: true }
     implicitWidth: root.sideBarW
     color: "transparent"
-    // reserve the right strip; the top bar's zone pushes this down so its top
-    // lands exactly on the top bar's bottom edge (fused, no gap)
     exclusiveZone: root.sideBarW
     focusable: root.panelOpen || root.chatPanelOpen || root.tasksPanelOpen
     // exposed for HyprConfig (it reads `barWindow.settingsTab`)
@@ -211,68 +240,12 @@ Scope {
   }
 
   // =======================================================================
-  //  fused corner: inner radius where the two bars meet
+  //  inner corner fillets (fuse the four edges)
   // =======================================================================
-  PanelWindow {
-    id: corner
-
-    screen: root.screen
-    anchors { top: true; right: true }
-    margins {
-      top: root.topBarH
-      right: root.sideBarW
-    }
-    implicitWidth: root.radius
-    implicitHeight: root.radius
-    color: "transparent"
-    exclusionMode: ExclusionMode.Ignore
-
-    // inverted quarter circle: fills the notch between the top bar's bottom
-    // edge and the side bar's left edge (mirrored for the right-hand corner)
-    Shape {
-      anchors.fill: parent
-      preferredRendererType: Shape.CurveRenderer
-
-      ShapePath {
-        strokeWidth: 0
-        fillColor: Theme.bg
-        startX: 0
-        startY: 0
-
-        PathLine { x: root.radius; y: 0 }
-        PathLine { x: root.radius; y: root.radius }
-        PathArc {
-          x: 0
-          y: 0
-          radiusX: root.radius
-          radiusY: root.radius
-          direction: PathArc.Counterclockwise
-        }
-      }
-    }
-  }
-
-  // =======================================================================
-  //  Arch logo, in the square block where the two bars meet
-  // =======================================================================
-  PanelWindow {
-    id: archBlock
-
-    screen: root.screen
-    anchors { top: true; right: true }
-    implicitWidth: root.sideBarW
-    implicitHeight: root.topBarH
-    color: Theme.bg
-    exclusionMode: ExclusionMode.Ignore
-
-    Text {
-      anchors.centerIn: parent
-      text: "\uf303"        // Arch Linux (Nerd Font)
-      font.family: Theme.font
-      font.pixelSize: 16
-      color: Theme.accent
-    }
-  }
+  EdgeCorner { screen: root.screen; corner: 0; radius: root.radius; edgeX: root.thinW; edgeY: root.topBarH }
+  EdgeCorner { screen: root.screen; corner: 1; radius: root.radius; edgeX: root.sideBarW; edgeY: root.topBarH }
+  EdgeCorner { screen: root.screen; corner: 2; radius: root.radius; edgeX: root.sideBarW; edgeY: root.thinW }
+  EdgeCorner { screen: root.screen; corner: 3; radius: root.radius; edgeX: root.thinW; edgeY: root.thinW }
 
   // =======================================================================
   //  IPC bridge entry points (shell.qml routes keybind calls here)
