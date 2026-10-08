@@ -104,6 +104,10 @@ Rectangle {
                     id: cell
                     required property string p
 
+                    // animated GIFs get a distinct outline + badge so they are
+                    // easy to spot in the grid
+                    readonly property bool isGif: /\.gif$/i.test(cell.p)
+
                     width: view.cellWidth - 8
                     height: view.cellHeight - 8
 
@@ -113,9 +117,10 @@ Rectangle {
                         radius: 5
                         color: Theme.deep
                         clip: true
-                        border.width: selected ? 2 : 1
+                        border.width: (selected || cell.isGif) ? 2 : 1
                         border.color: selected ? Theme.accent
-                                     : (cellMa.containsMouse ? Theme.accent2 : Theme.border)
+                                     : (cellMa.containsMouse ? Theme.accent2
+                                     : (cell.isGif ? Theme.live : Theme.border))
 
                         readonly property bool selected:
                             Conf.expandPath(cell.p, root.homeDir)
@@ -129,6 +134,28 @@ Rectangle {
                             animate: root.animate
                             scale: cellMa.containsMouse ? 1.06 : 1
                             Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+                        }
+
+                        // GIF badge (bottom-right)
+                        Rectangle {
+                            visible: cell.isGif
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            anchors.margins: 4
+                            width: gifLabel.implicitWidth + 8
+                            height: 14
+                            radius: 3
+                            color: Theme.live
+
+                            Text {
+                                id: gifLabel
+                                anchors.centerIn: parent
+                                text: "GIF"
+                                font.family: Theme.font
+                                font.bold: true
+                                font.pixelSize: 8
+                                color: Theme.deep
+                            }
                         }
 
                         MouseArea {

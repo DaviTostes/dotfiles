@@ -238,7 +238,7 @@ PopupWindow {
         color: "transparent"
 
         implicitWidth: 560
-        implicitHeight: 280
+        implicitHeight: 520
 
         Timer { id: gHideTimer; interval: 220 }
 
