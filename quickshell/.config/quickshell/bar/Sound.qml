@@ -262,7 +262,7 @@ Pill {
     onImplicitHeightChanged: if (visible) anchor.updateAnchor()
 
     anchor {
-      window: catcher
+      window: root.QsWindow.window
       edges: Edges.Right
       gravity: Edges.Left
     }
