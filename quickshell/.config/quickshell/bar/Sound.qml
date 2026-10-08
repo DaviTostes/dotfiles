@@ -263,16 +263,21 @@ Pill {
 
     anchor {
       window: catcher
-      edges: Edges.Top
-      gravity: Edges.Bottom
+      edges: Edges.Right
+      gravity: Edges.Left
     }
 
     anchor.onAnchoring: {
+      // the bar is on the right: open to the LEFT of the pill, clamped so the
+      // volume pill (near the bottom) does not push the panel off-screen
       const p = root.mapToItem(null, 0, 0);
-      anchor.rect.x = p.x + 2;
-      anchor.rect.y = p.y + 4 + root.height + 6;
-      anchor.rect.width = root.width;
-      anchor.rect.height = 1;
+      const win = root.QsWindow.window;
+      const sh = win && win.screen ? win.screen.height : 1080;
+      const h = root.implicitHeight;
+      anchor.rect.x = p.x - 7;
+      anchor.rect.y = Math.max(0, Math.min(p.y, sh - h));
+      anchor.rect.width = 1;
+      anchor.rect.height = h;
     }
 
     Rectangle {

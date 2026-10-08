@@ -41,16 +41,19 @@ PopupWindow {
 
     anchor {
         window: root.barWindow
-        edges: Edges.Top
-        gravity: Edges.Bottom
+        edges: Edges.Right
+        gravity: Edges.Left
         onAnchoring: {
-            // pill coords are relative to the bar window; hang the
-            // popup below the pill, right-aligned with its right edge
+            // pill coords are relative to the bar window; the settings bar is
+            // on the right, so open the panel to the LEFT of the pill,
+            // clamped so it never runs off the top/bottom of the screen
             const p = root.pill.mapToItem(null, 0, 0);
-            anchor.rect.x = p.x + root.pill.width - root.implicitWidth;
-            anchor.rect.y = p.y + root.pill.height + 6;
-            anchor.rect.width = root.implicitWidth;
-            anchor.rect.height = 1;
+            const sh = root.barWindow.screen ? root.barWindow.screen.height : 1080;
+            const top = Math.max(0, Math.min(p.y, sh - root.implicitHeight));
+            anchor.rect.x = p.x - 7;
+            anchor.rect.y = top;
+            anchor.rect.width = 1;
+            anchor.rect.height = root.implicitHeight;
         }
     }
 
@@ -252,15 +255,18 @@ PopupWindow {
 
         anchor {
             window: root.barWindow
-            edges: Edges.Top
-            gravity: Edges.Bottom
+            edges: Edges.Right
+            gravity: Edges.Left
             onAnchoring: {
-                // below the panel, right-aligned with the panel's right edge
+                // to the LEFT of the settings panel (top-aligned with it)
                 const p = root.pill.mapToItem(null, 0, 0);
-                anchor.rect.x = p.x + root.pill.width - galleryWin.implicitWidth;
-                anchor.rect.y = p.y + root.pill.height + 6 + root.implicitHeight + 6;
-                anchor.rect.width = galleryWin.implicitWidth;
-                anchor.rect.height = 1;
+                const sh = root.barWindow.screen ? root.barWindow.screen.height : 1080;
+                const top = Math.max(0, Math.min(p.y, sh - root.implicitHeight));
+                const rightEdge = p.x - 6 - root.implicitWidth - 6;
+                anchor.rect.x = rightEdge - 1;
+                anchor.rect.y = top;
+                anchor.rect.width = 1;
+                anchor.rect.height = galleryWin.implicitHeight;
             }
         }
 

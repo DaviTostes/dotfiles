@@ -95,6 +95,78 @@ lands at `~/.config/quickshell/shell.qml`.
   Opened via `qs ipc call clipboard toggle`; same fullscreen `Overlay` +
   `Exclusive` keyboard approach as the launcher. `results` is only filled on
   open (that is when `cliphist list` runs), so nothing queries it while closed.
+- `bar/Calc.qml` is the calculator tab of the intelligence central: a
+  terminal-style REPL around the `calc` CLI (the arbitrary-precision
+  calculator written in C), not a button pad. One long-lived
+  `calc -q -c -u` process is driven over stdin via `Process.write`
+  (`stdinEnabled`), so variables, user functions and precision set on one
+  line survive into the next; `-c` survives scan/parse errors and `-u` keeps
+  stdout unbuffered. Every submitted line is echoed into a scrollback
+  transcript (input, output, errors inline) and `show globals` feeds the
+  variables column — names/types from the table, then a short second pass
+  reprints each numeric global in real mode via `print`, so the column shows
+  `56810.22` rather than calc's exact fraction `2840511/50`. Enter evaluates,
+  Up/Down recall submitted lines, Ctrl+L
+  clears the screen. The bar's `hiddenInput` is the real editor while docked
+  (same mirroring as the translate tab); `submit()`/`historyPrev()`/
+  `historyNext()` are its API, wired in Opencode.qml. Unbalanced `( [ {` or
+  quotes are rejected up front — `calc` otherwise waits for the rest of the
+  expression and desyncs the sentinel (`__QS_CALC_DONE__`) protocol.
+- `bar/Opencode.qml`'s **full chat is now a standalone instance** from the
+  docked intelligence central, so both can be open at once. `shell.qml` hosts a
+  second `Opencode` (`id: opencodeFull`, `standalone: true`) in a hidden
+  `PanelWindow`; a standalone instance opens straight into full mode
+  (`openStandalone()` → `ensureService()` + `openExpanded()`) and never uses the
+  pill/docked dropdown. The bar's pill is now docked-only: SUPER+SHIFT+A
+  (`qs ipc call opencode toggleExpanded`, which routes to
+  `shell.toggleFullChat()`) drives the standalone. The header's **+** (new
+  chat) and **expand** buttons were removed: **Ctrl+N** starts a new chat in
+  either window (handled in `hiddenInput`/`inputField`), and the standalone is
+  opened by keybind only (`opencodeFull` IPC remains for scripting). `Notifs
+  .opencodeFullOpen` disables the bar's application-scoped Escape shortcut while
+  the standalone is open (two would be ambiguous). The in-pill docked↔full swap
+  (`setPanelExpanded`/`modeSwap`/`pendingMode`) was removed as dead code.
+- **Panels share the chat HISTORY, not the current chat.** The
+  `OpencodeShared` singleton (registered in `bar/qmldir`) owns the remembered
+  chat set (`panelSessions`, persisted once at `opencode-panel-sessions.json`,
+  via `remember`/`forget`/`prune`) and the recently-used models; every
+  `Opencode` reads it so the docked panel and the standalone see the same list.
+  The currently-open chat is per-instance (`root.session`/`newChatPending`), so
+  the two windows can show **different conversations at once** — switching or
+  starting a chat in one does not move the other. Each instance also keeps its
+  own message model, SSE stream and turn state.
+- The **full window** is chat-only (`tabRow.visible = !panelExpanded`) and shows
+  a Claude/ChatGPT-style chat history rail down the left: a full-width **New
+  chat** row, a filter box, then the panel-owned chats bucketed by recency
+  (Today / Yesterday / Previous 7 days / Previous 30 days / Older, from each
+  session's `time.updated`). The rail is available only when `panelExpanded &&
+  mode === "chat"` (`panelContent.sidebarAvailable`); the docked dropdown never
+  gets it. A bars button at the top-left of the full window toggles
+  `root.sidebarOpen`, and the main column plus every floating sibling (input
+  row, image chips, empty state, centered labels) are inset by
+  `panelContent.sidebarW` (244px, 0 while docked, off the chat tab, or
+  collapsed) so every other mode keeps its full-width layout. Rows highlight the
+  open chat, show a live dot while its turn runs, and a hover ✕ to delete;
+  `sideGroups()` / `sideFilteredSessions()` / `sideSwitch()` / `sideNewChat()`
+  are its API.
+- **Model / agent pickers** (`menu === "models" | "agents"` in Opencode.qml)
+  follow the assistant-ui / ChatGPT patterns: the composer chips show the
+  *friendly* name (`modelChipLabel()` / `agentChipLabel()`, with the reasoning
+  variant appended), and the pickers are searchable. Models are **grouped by
+  provider** (`modelGroups()`; the flat `filteredModels()` order drives the
+  keyboard index), each row showing capability/cost cues (`modelMeta()`:
+  `img` / `tools` / `reason` / `$in/$out`) and a fixed-width ✓ on the active
+  one; agents show their `description`. Opening preselects the active item and
+  scrolls to it (`ensureMenuSelVisible()` walks `modelGroups()` so every section
+  header is counted). Models that declare `variants` get a reasoning-**effort**
+  chip row at the top (`currentVariants()` / `switchVariant()`), and
+  `switchModel(m, variant, keepOpen)` carries the variant in the session model
+  ref. A **Recent** section is shown first when not searching, backed by
+  `OpencodeShared.recentModels` (persisted at `opencode-recent-models.json`,
+  updated via `touchModel()`). `modelGroups()` items carry their flat index
+  (`{ m, i }`) so the keyboard selection never relies on `indexOf()` on QML
+  `modelData` — that is not reference-stable and made every row share one
+  selection (all highlighted on hover). **Ctrl+M** opens the model picker.
 - Per-component QML files are registered in `hyprconf/qmldir`; shared state
   lives in singletons (`HyprSettings`, `Theme`) and is referenced directly by
   name from files in the same directory — no import needed.
@@ -107,9 +179,9 @@ lands at `~/.config/quickshell/shell.qml`.
 - **Style:** everything must follow the Pomodoro dropdown palette, defined
   once in `hyprconf/Theme.qml` (bg `#161719`, border `#282a2e`, surface
   `#1e2126`, hover `#282c33`, text `#a9afb8`, muted `#5c6470`, accent
-  `#d3d9e0`, secondary accent `#8b95a3`, dark-on-accent `#101216`, font
-  `Agave Nerd Font`). Never hardcode colors or the font family in
-  components — reference `Theme.*`.
+  `#d3d9e0`, secondary accent `#8b95a3`, dark-on-accent `#101216`, sidebar
+  `#191b1f`, font `Agave Nerd Font`). Never hardcode colors or the font family
+  in components — reference `Theme.*`.
 - Interactions use Pomodoro-style motion: `ColorAnimation` 150–200ms on
   colors, small hover scale pops (`1.04`–`1.07`) with `OutCubic` easing.
 - Validate changes with `qmllint <file>.qml` (run from
