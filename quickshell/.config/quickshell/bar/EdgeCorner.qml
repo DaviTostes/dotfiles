@@ -9,7 +9,6 @@ import "../hyprconf"
 PanelWindow {
   id: root
 
-  required property var screen
   required property int corner
   property real radius: 8
   // distance of the inner corner from the screen edges (bar thickness),
