@@ -3,7 +3,7 @@ vim.opt.rtp:prepend("/home/toast/opencode-nvim")
 require("opencode-nvim").setup({
   server = { command = "opencode", autostart = true },
   agent = "build",           -- agente padrão
-  model = { providerID = "opencode-go", id = "space-bunny" },
+  model = { providerID = "opencode-go", id = "deepseek-v4.1-flash" },
   approval = false,
   -- approval = {
   --   review = "popup",        -- "popup" | "notify"
