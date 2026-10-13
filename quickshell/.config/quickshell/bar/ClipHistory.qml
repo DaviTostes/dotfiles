@@ -49,15 +49,15 @@ PanelWindow {
   // ---------------------------------------------------------------
 
   // Subsequence scorer, same as Launcher.qml's. Kept local instead of
-  // shared so the two panels stay independent (~20 lines).
+  // shared so the two panels stay independent (~20 lines). Both arguments
+  // must already be lowercase — parseList() keeps a lowercase preview so the
+  // per-keystroke pass never re-lowercases the whole history.
   function wordStart(t, i) {
     return i === 0 || t[i - 1] === " " || t[i - 1] === "\t"
         || t[i - 1] === "-" || t[i - 1] === "/";
   }
 
-  function score(query, text) {
-    const q = query.toLowerCase();
-    const t = text.toLowerCase();
+  function score(q, t) {
     let qi = 0;
     let sc = 0;
     let streak = 0;
@@ -92,18 +92,35 @@ PanelWindow {
       const id = line.slice(0, tab);
       if (!/^\d+$/.test(id)) continue;
 
-      out.push({ id: id, preview: line.slice(tab + 1) });
+      const preview = line.slice(tab + 1);
+      out.push({ id: id, preview: preview, previewL: preview.toLowerCase() });
     }
 
     root.items = out;
     root.update();
   }
 
+  // The previous listing deliberately stays on screen while cliphist
+  // answers: clearing it here made the panel open empty and then pop in —
+  // a second layout pass plus the card growing under the cursor. The rows
+  // are replaced the moment the process returns (and the single entry
+  // point is the shell warm-up below, so the first open is never empty at
+  // all).
   function refresh() {
-    root.items = [];
-    root.results = [];
     root.selected = 0;
     if (!listProc.running) listProc.running = true;
+  }
+
+  function setResults(out) {
+    // Replacing the model array makes the ListView destroy and rebuild every
+    // delegate. Most keystrokes keep the same visible rows, so only hand the
+    // view a new array when the slice actually changed (the entry records
+    // are stable between `cliphist list` runs, so identity works).
+    const old = root.results;
+    let same = old.length === out.length;
+    for (let i = 0; same && i < out.length; i++) same = old[i] === out[i];
+    if (!same) root.results = out;
+    root.selected = 0;
   }
 
   function update() {
@@ -111,23 +128,22 @@ PanelWindow {
 
     if (q === "") {
       // no query → cliphist's order, newest first
-      root.results = root.items.slice(0, root.maxResults);
-      root.selected = 0;
+      root.setResults(root.items.slice(0, root.maxResults));
       return;
     }
 
+    const ql = q.toLowerCase();
     const hits = [];
     for (let i = 0; i < root.items.length; i++) {
       const it = root.items[i];
-      const s = root.score(q, it.preview);
+      const s = root.score(ql, it.previewL);
       if (s > 0) hits.push({ s: s, i: i, it: it });
     }
     hits.sort((a, b) => (b.s - a.s) || (a.i - b.i));
 
     const out = [];
     for (let i = 0; i < hits.length && i < root.maxResults; i++) out.push(hits[i].it);
-    root.results = out;
-    root.selected = 0;
+    root.setResults(out);
   }
 
   function move(delta) {
@@ -159,6 +175,10 @@ PanelWindow {
   }
 
   Process { id: copyProc }
+
+  // warm the listing up at shell start so the first open is populated
+  // immediately instead of waiting for the process to answer
+  Component.onCompleted: root.refresh()
 
   // ---------------------------------------------------------------
   // open / close

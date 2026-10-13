@@ -440,6 +440,8 @@ Pill {
   Tip {
     target: root
     shown: root.calOpen
+    // opened by a click, not by hover — no dwell before the calendar appears
+    showDelay: 0
     content: calendarView
   }
 }
