@@ -48,11 +48,26 @@ PanelWindow {
   // desktop entries
   // ---------------------------------------------------------------
 
-  // DesktopEntries.applications is an ObjectModel; snapshot it into a plain
-  // JS array so it can be filtered and sorted by score.
+  // DesktopEntries.applications is an ObjectModel; snapshot it into plain
+  // records once per (re)scan so the per-keystroke filter never re-lowercases
+  // every name and never localeCompares.
+  //
+  // Each record is `{ id, entry, nameL, genericL }` — `entry` is the live
+  // DesktopEntry, so the delegate still shows name/genericName live (a
+  // localized rename repaints without a rescan), while the search only uses
+  // the pre-lowercased copies.
   property var apps: []
   property var results: []
   property int selected: 0
+  // the app list is only rebuilt when DesktopEntries reports a change; the
+  // launcher can then open without paying a full rescan + re-sort
+  property bool appsDirty: true
+  // icon name → resolved URL. Resolving goes through QIcon::fromTheme (a
+  // theme/directory probe, expensive when the name does not resolve), and it
+  // used to run again for every delegate that was built — i.e. on every
+  // keystroke, since the model array is replaced. Memoizing keeps it to once
+  // per app for the life of the shell.
+  property var iconUrls: ({})
 
   readonly property int maxRows: 8
   readonly property int rowHeight: 38
@@ -68,10 +83,9 @@ PanelWindow {
 
   // Subsequence match, like wofi's default: every query character must
   // appear in order. Bonuses for word starts and runs, penalty for late
-  // matches. Returns 0 when the text does not match.
-  function score(query, text) {
-    const q = query.toLowerCase();
-    const t = text.toLowerCase();
+  // matches. Returns 0 when the text does not match. Both arguments must
+  // already be lowercase (the caller keeps lowercase copies of every field).
+  function score(q, t) {
     let qi = 0;
     let sc = 0;
     let streak = 0;
@@ -89,18 +103,49 @@ PanelWindow {
     return qi === q.length ? sc : 0;
   }
 
+  // plain string compare of the pre-lowercased names — localeCompare is
+  // ~an order of magnitude slower and this runs on every entry of every
+  // sort (the full alphabetical sort, and the frecency tie-break)
+  function cmpName(a, b) {
+    return a.nameL < b.nameL ? -1 : a.nameL > b.nameL ? 1 : 0;
+  }
+
+  function makeApp(e) {
+    const name = e.name || "";
+    const generic = e.genericName || "";
+    return {
+      id: e.id,
+      entry: e,
+      nameL: name.toLowerCase(),
+      genericL: generic.toLowerCase()
+    };
+  }
+
   function refresh() {
-    const out = [];
     const entries = DesktopEntries.applications.values;
+    const out = [];
 
     for (let i = 0; i < entries.length; i++) {
       const e = entries[i];
-      if (e && !e.noDisplay) out.push(e);
+      if (e && !e.noDisplay) out.push(root.makeApp(e));
     }
 
-    out.sort((a, b) => a.name.localeCompare(b.name));
+    out.sort(root.cmpName);
     root.apps = out;
+    root.appsDirty = false;
     root.update();
+  }
+
+  // Replacing the model array makes the ListView destroy and rebuild every
+  // delegate (and with them every IconImage). Most keystrokes keep the same
+  // visible rows, so only hand the view a new array when the slice actually
+  // changed — record identity is stable between rescans.
+  function setResults(out) {
+    const old = root.results;
+    let same = old.length === out.length;
+    for (let i = 0; same && i < out.length; i++) same = old[i] === out[i];
+    if (!same) root.results = out;
+    root.selected = 0;
   }
 
   function update() {
@@ -115,20 +160,22 @@ PanelWindow {
     }
 
     if (q === "") {
-      // no query → frecency: most used first, alphabetical for the rest
+      // no query → frecency: most used first, alphabetical for the rest.
+      // `apps` is already alphabetical, so the tie-break only has to be a
+      // name compare (not a localeCompare).
       const ranked = root.apps.slice();
-      ranked.sort((a, b) => (rank[b.id] - rank[a.id])
-                            || a.name.localeCompare(b.name));
-      root.results = ranked.slice(0, root.maxResults);
-      root.selected = 0;
+      ranked.sort((a, b) => (rank[b.id] - rank[a.id]) || root.cmpName(a, b));
+      const out = ranked.slice(0, root.maxResults);
+      root.setResults(out);
       return;
     }
 
+    const ql = q.toLowerCase();
     const hits = [];
     for (let i = 0; i < root.apps.length; i++) {
       const e = root.apps[i];
-      const s = Math.max(root.score(q, e.name),
-                         root.score(q, e.genericName) * 0.6);
+      const s = Math.max(root.score(ql, e.nameL),
+                         root.score(ql, e.genericL) * 0.6);
       // usage is a capped bonus, not a replacement for match quality: it
       // breaks ties between similar matches without letting a stale
       // favourite jump over a much better one
@@ -138,8 +185,7 @@ PanelWindow {
 
     const out = [];
     for (let i = 0; i < hits.length && i < root.maxResults; i++) out.push(hits[i].e);
-    root.results = out;
-    root.selected = 0;
+    root.setResults(out);
   }
 
   // ---------------------------------------------------------------
@@ -150,8 +196,8 @@ PanelWindow {
   // the list but never outweigh a clearly better match.
   // `now` is passed in by update() so a whole ranking pass shares one clock
   // read instead of calling Date.now() inside a sort comparator
-  function usageRank(entry, now) {
-    const u = entry ? root.usage[entry.id] : null;
+  function usageRank(app, now) {
+    const u = app ? root.usage[app.id] : null;
     if (!u) return 0;
 
     const day = 86400000;
@@ -192,10 +238,10 @@ PanelWindow {
     usageFile.setText(JSON.stringify(out));
   }
 
-  function record(entry) {
-    if (!entry || !entry.id) return;
-    const u = root.usage[entry.id] || { n: 0 };
-    root.usage[entry.id] = { n: (u.n || 0) + 1, t: Date.now() };
+  function record(app) {
+    if (!app || !app.id) return;
+    const u = root.usage[app.id] || { n: 0 };
+    root.usage[app.id] = { n: (u.n || 0) + 1, t: Date.now() };
     root.saveUsage();
   }
 
@@ -214,16 +260,21 @@ PanelWindow {
   }
 
   function activate() {
-    const entry = root.results[root.selected];
-    if (!entry) return;
-    root.record(entry);
+    const app = root.results[root.selected];
+    if (!app) return;
+    root.record(app);
     root.close();
-    entry.execute();
+    app.entry.execute();
   }
 
-  function iconFor(entry) {
-    if (!entry || !entry.icon) return "";
-    return Quickshell.iconPath(entry.icon, true);
+  // resolved icon URL for a record, resolved at most once per app
+  function iconUrl(app) {
+    if (!app || !app.entry || !app.entry.icon) return "";
+    const cached = root.iconUrls[app.id];
+    if (cached !== undefined) return cached;
+    const url = Quickshell.iconPath(app.entry.icon, true);
+    root.iconUrls[app.id] = url;
+    return url;
   }
 
   Component.onCompleted: {
@@ -246,10 +297,15 @@ PanelWindow {
     watchChanges: false
   }
 
-  // the launcher stays in sync with installs/removals
+  // installs/removals mark the snapshot dirty instead of rescanning right
+  // away: while the launcher is closed there is nothing to repaint, and the
+  // rescan then happens on the next open (or on the next change while open)
   Connections {
     target: DesktopEntries
-    function onApplicationsChanged() { root.refresh(); }
+    function onApplicationsChanged() {
+      root.appsDirty = true;
+      if (root.open) root.refresh();
+    }
   }
 
   // ---------------------------------------------------------------
@@ -271,7 +327,12 @@ PanelWindow {
 
     hideTimer.stop();
     field.text = "";
-    root.refresh();
+    // opening must not pay for a full rescan + re-sort: the snapshot is only
+    // rebuilt when DesktopEntries actually changed (and then it happens at
+    // startup or while the launcher is open). Otherwise the (cheap) filter
+    // pass is enough.
+    if (root.appsDirty) root.refresh();
+    else root.update();
     root.open = true;
     // focus only sticks once the surface is mapped
     Qt.callLater(() => field.forceActiveFocus());
@@ -420,7 +481,7 @@ PanelWindow {
             anchors.verticalCenter: parent.verticalCenter
             width: 20
             height: 20
-            source: root.iconFor(modelData)
+            source: root.iconUrl(modelData)
           }
 
           Text {
@@ -431,7 +492,7 @@ PanelWindow {
             anchors.right: rowSub.left
             anchors.rightMargin: 8
             anchors.verticalCenter: parent.verticalCenter
-            text: modelData.name
+            text: modelData.entry.name
             color: index === root.selected ? Theme.accent : Theme.text
             font.family: Theme.font
             font.pixelSize: 13
@@ -447,7 +508,7 @@ PanelWindow {
             anchors.rightMargin: 10
             anchors.verticalCenter: parent.verticalCenter
             width: Math.min(implicitWidth, 180)
-            text: modelData.genericName
+            text: modelData.entry.genericName
             color: Theme.muted
             font.family: Theme.font
             font.pixelSize: 11

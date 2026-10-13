@@ -29,10 +29,54 @@ PopupWindow {
   property int contentW: 64
   property int contentH: 0
 
-  // stays mapped briefly while hiding so the fade can play
-  visible: (tip.shown && target != null) || hideTimer.running
-  Timer { id: hideTimer; interval: 170 }
-  onShownChanged: tip.shown ? hideTimer.stop() : hideTimer.restart()
+  // ----- window lifetime -------------------------------------------------
+  // quickshell tears a layer/popup window down as soon as it stops being
+  // visible and rebuilds it — Wayland surface, GL context, glyph atlas and
+  // all — on the next show (ProxyWindowBase::deleteOnInvisible, and both
+  // WlrLayershell and ProxyPopupWindow override it to true). A tip that
+  // mapped straight off `mouse.containsMouse` therefore paid that whole cost
+  // every time the pointer crossed a pill, which is by far the most frequent
+  // window churn in the shell.
+  //
+  // `showDelay` makes the window wait for a short dwell first, so sweeping
+  // the pointer across the bar creates nothing and only a deliberate hover
+  // pops the tip. The close fade still lingers (`hideTimer`) — but only when
+  // a window actually exists, which is why visibility is driven by the
+  // explicit `windowUp` flag instead of a binding.
+  property int showDelay: 260
+  property bool dwelled: showDelay <= 0
+  /// true while the window should exist (`active` plus the close fade)
+  property bool windowUp: false
+  readonly property bool active: tip.shown && tip.target != null
+
+  visible: tip.windowUp
+  Timer { id: hideTimer; interval: 170; onTriggered: tip.windowUp = false }
+  Timer { id: showTimer; interval: tip.showDelay; onTriggered: tip.dwelled = true }
+
+  // the one place that decides whether the window exists
+  function syncWindow() {
+    if (!tip.active) {
+      showTimer.stop();
+      if (tip.showDelay > 0) tip.dwelled = false;
+      if (tip.windowUp) hideTimer.restart();
+      return;
+    }
+    if (tip.dwelled) {
+      hideTimer.stop();
+      tip.windowUp = true;
+    } else {
+      // still waiting out the dwell: never create a window for a pointer
+      // that is only passing through. If one is already up (its close fade
+      // is running) hold it instead of tearing it down to rebuild it a
+      // moment later — the tip just fades back in.
+      if (tip.windowUp) hideTimer.stop();
+      showTimer.restart();
+    }
+  }
+
+  onActiveChanged: tip.syncWindow()
+  onDwelledChanged: tip.syncWindow()
+
   color: "transparent"
 
   implicitWidth: contentW + 24

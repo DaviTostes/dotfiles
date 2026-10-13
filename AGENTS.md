@@ -93,8 +93,11 @@ lands at `~/.config/quickshell/shell.qml`.
   `StdioCollector` (parsing `<id>\t<preview>`, first tab only) and copies with
   `cliphist decode <id> | wl-copy` (the pipe is what keeps images working).
   Opened via `qs ipc call clipboard toggle`; same fullscreen `Overlay` +
-  `Exclusive` keyboard approach as the launcher. `results` is only filled on
-  open (that is when `cliphist list` runs), so nothing queries it while closed.
+  `Exclusive` keyboard approach as the launcher. `Component.onCompleted` warms
+  the listing once at shell start and `refresh()` then re-runs `cliphist list`
+  in the background on every open **without clearing it**, so the panel never
+  opens empty and pops in a moment later; the rows are swapped in when the
+  process answers.
 - `bar/Calc.qml` is the calculator tab of the intelligence central: a
   terminal-style REPL around the `calc` CLI (the arbitrary-precision
   calculator written in C), not a button pad. One long-lived
@@ -184,6 +187,26 @@ lands at `~/.config/quickshell/shell.qml`.
   in components — reference `Theme.*`.
 - Interactions use Pomodoro-style motion: `ColorAnimation` 150–200ms on
   colors, small hover scale pops (`1.04`–`1.07`) with `OutCubic` easing.
+- **Window lifetime is the shell's dominant performance cost.** quickshell
+  destroys a layer/popup window the moment it stops being visible
+  (`WlrLayershell::deleteOnInvisible` and `ProxyPopupWindow` both return true)
+  and rebuilds it — Wayland surface, GL context, render thread, glyph atlas —
+  on the next show. Anything bound to `mouse.containsMouse` therefore pays a
+  whole window build per hover. `bar/Tip.qml` waits out a `showDelay` dwell
+  (260ms) before its window is created and tracks existence with the explicit
+  `windowUp` flag, so sweeping the pointer across the bar maps nothing and a
+  tip that never appeared never lingers; click-driven tips (the clock's
+  calendar) pass `showDelay: 0`. Keep that in mind before adding a
+  hover-driven `visible`.
+- The launcher and the clipboard picker *cannot* stay mapped (Exclusive
+  keyboard focus would swallow every key while hidden), so each open really
+  does build a fullscreen window — keep the open path cheap instead.
+  `bar/Launcher.qml` snapshots the entries into plain records (`{ id, entry,
+  nameL, genericL }`) only when `DesktopEntries` changes, searches the
+  pre-lowercased copies with plain string sorts (no `localeCompare`), memoizes
+  resolved icon URLs, and both panels hand the `ListView` a new array only when
+  the visible slice actually changed — assigning a fresh array rebuilds every
+  delegate.
 - Validate changes with `qmllint <file>.qml` (run from
   `quickshell/.config/quickshell/`) before finishing. Live reload with
   `qs` only if the user asks for it.
