@@ -24,7 +24,7 @@ Scope {
   // ----- geometry (px) ---------------------------------------------------
   readonly property int topBarH: 28
   readonly property int sideBarW: 28
-  readonly property int thinW: 10         // thin left/bottom edges
+  readonly property int thinW: 8         // thin left/bottom edges
   readonly property int radius: 8        // inner corner radius
 
   // ----- panel state (lives on the right bar / settings pill) ------------
