@@ -122,10 +122,11 @@ lands at `~/.config/quickshell/shell.qml`.
   (`openStandalone()` → `ensureService()` + `openExpanded()`) and never uses the
   pill/docked dropdown. The bar's pill is now docked-only: SUPER+SHIFT+A
   (`qs ipc call opencode toggleExpanded`, which routes to
-  `shell.toggleFullChat()`) drives the standalone. The header's **+** (new
-  chat) and **expand** buttons were removed: **Ctrl+N** starts a new chat in
-  either window (handled in `hiddenInput`/`inputField`), and the standalone is
-  opened by keybind only (`opencodeFull` IPC remains for scripting). `Notifs
+  `shell.toggleFullChat()`) drives the standalone. The **expand** button was
+  removed (the standalone is opened by keybind only; `opencodeFull` IPC remains
+  for scripting); the docked (pill) header keeps a **+** new-chat button, while
+  the big window uses the history rail's "New chat" row. **Ctrl+N** starts a new
+  chat in either window (handled in `hiddenInput`/`inputField`). `Notifs
   .opencodeFullOpen` disables the bar's application-scoped Escape shortcut while
   the standalone is open (two would be ambiguous). The in-pill docked↔full swap
   (`setPanelExpanded`/`modeSwap`/`pendingMode`) was removed as dead code.
@@ -207,6 +208,37 @@ lands at `~/.config/quickshell/shell.qml`.
   resolved icon URLs, and both panels hand the `ListView` a new array only when
   the visible slice actually changed — assigning a fresh array rebuilds every
   delegate.
+- `bar/Cava.qml` is a singleton that runs **one** `cava` process for the whole
+  shell (the Player pill is per-monitor, so running it inside the pill would
+  spawn one per screen) and publishes `levels`/`live`. cava runs with its own
+  config (`quickshell/.config/quickshell/cava.conf`, reached via
+  `Quickshell.shellPath`) that emits raw ASCII frames on stdout; `Process` +
+  `SplitParser` read them, `stdbuf -oL` defeats pipe block-buffering.
+  `bar/Player.qml`'s soundwave renders `Cava.levels` while `Cava.live`, and
+  falls back to its synthetic animation otherwise — so the shell works fine
+  when `cava` is not installed.
+- `bar/TypeTest.qml` is the desktop "desk toys" window: a fullscreen
+  **Bottom**-layer `PanelWindow` (namespace `quickshell-desk`) shown only while
+  the focused monitor's active workspace has no toplevels
+  (`monitor.activeWorkspace.toplevels`), following the focused monitor like the
+  launcher. It hosts the monkeytype-style typing test AND the arcade games
+  (`bar/DeskGames.qml`: 2048 / mines / dice — the old arcade bar pill is gone).
+  `view` picks what shows: -1 nothing, 0 typing, 1..3 games; a row of tabs at
+  the bottom center toggles it — idle they sit flush in the bar's colour with
+  only their outer top corners rounded (ONE "mound"), and on hover the gaps
+  open, they lift and become pills (all one animation; `HoverHandler`, not a
+  MouseArea, so the tabs keep their own hover/click). Keyboard is
+  `WlrKeyboardFocus.OnDemand` (constant), **not** `Exclusive` — so Hyprland
+  keybinds are never swallowed — and the surface unmaps whenever a window exists
+  (an unmapped surface grabs nothing, which also dodges Hyprland's bug where
+  dropping interactivity back to `None` strands the keyboard). Typed into
+  directly via a hidden `TextInput` (launcher model); the 2048 board reads the
+  arrow keys through it too. Modes: time (15/30/60) / words (10/25/50) +
+  difficulty (normal/punct/num); metrics WPM/raw/accuracy/consistency. The word
+  list is run-grouped RichText in a read-only `TextEdit` (only
+  TextEdit/TextInput expose `positionToRectangle`, which the caret needs). PBs
+  persist through the `TypeStore` singleton (`typing-pbs.json` in `stateDir`);
+  `qs ipc call typetest toggle|enable|disable` flips the typing view.
 - Validate changes with `qmllint <file>.qml` (run from
   `quickshell/.config/quickshell/`) before finishing. Live reload with
   `qs` only if the user asks for it.

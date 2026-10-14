@@ -93,12 +93,12 @@ Pill {
 
     Repeater {
       id: rep
-      model: 11
+      model: Cava.bars
 
       Item {
         width: root.width
         height: 2
-        // 0..1 per-bar level; set by waveTimer while playing
+        // 0..1 per-bar level; driven by cava while it is live, else waveTimer
         property real level: 0
 
         Rectangle {
@@ -115,11 +115,24 @@ Pill {
     }
   }
 
-  // animate the bars only while media plays; otherwise the wave sits still
-  // (it stays visible the whole time)
+  // real spectrum: while cava is feeding frames, mirror its levels onto the
+  // bars (the Cava singleton runs the one shared process for every bar)
+  Connections {
+    target: Cava
+    function onLevelsChanged() {
+      const lv = Cava.levels;
+      for (let i = 0; i < rep.count; i++) {
+        const it = rep.itemAt(i);
+        if (it) it.level = (lv && i < lv.length) ? lv[i] : 0;
+      }
+    }
+  }
+
+  // fallback: synthetic animation while media plays but cava is not live
+  // (not installed, or between frames). The wave stays visible regardless.
   Timer {
     id: waveTimer
-    running: root.visible && root.anyPlaying
+    running: root.visible && root.anyPlaying && !Cava.live
     interval: 120
     repeat: true
     onTriggered: {

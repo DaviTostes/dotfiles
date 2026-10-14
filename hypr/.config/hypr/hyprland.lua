@@ -291,7 +291,7 @@ for _, app in ipairs(sideApps) do
     name  = app,
     match = { title = app },
     float = true,
-    move  = { 1100, 50 },
+    move  = { 1086, 50 },
     size  = { 800, 1000 },
   })
 end
@@ -329,6 +329,7 @@ hl.bind(mod("D"), exec(discord))
 hl.bind(mod("Z"), exec("zapfast"))
 hl.bind(shift("Z"), exec("Telegram"))
 hl.bind(mod("O"), exec("qs ipc call tasks toggle"))    -- tasks panel (was: omm launcher)
+hl.bind(shift("T"), exec("qs ipc call typetest toggle"))  -- desktop typing test on/off
 hl.bind(shift("B"), exec(btManager))
 hl.bind(shift("W"), exec(wifiManager))
 hl.bind(shift("V"), exec(vpnManager))

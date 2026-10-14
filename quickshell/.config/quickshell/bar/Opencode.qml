@@ -3518,6 +3518,38 @@ Pill {
             }
           }
 
+          // new chat — the docked panel has no history rail, so this is its
+          // "New chat" action (the big window uses the rail's row instead)
+          Rectangle {
+            id: newChatBtn
+
+            anchors.verticalCenter: parent.verticalCenter
+            visible: !root.panelExpanded && root.mode === "chat"
+            width: 24; height: 20; radius: 5
+            color: newChatMa.containsMouse || root.newChatPending
+                   ? Theme.hover : "transparent"
+            Behavior on color { ColorAnimation { duration: 200 } }
+            scale: newChatMa.pressed ? 0.86 : (newChatMa.containsMouse ? 1.04 : 1)
+            Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+
+            Text {
+              anchors.centerIn: parent
+              text: "\uf067"        // plus
+              font.family: Theme.font
+              font.pixelSize: 12
+              color: root.newChatPending ? Theme.accent : Theme.muted
+              Behavior on color { ColorAnimation { duration: 200 } }
+            }
+
+            MouseArea {
+              id: newChatMa
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.newChat()
+            }
+          }
+
           // session title — click for the session list. Width accounts for
           // every sibling (incl. the stop button, which appears mid-turn)
           // so the header never overflows the panel edge
@@ -3530,6 +3562,7 @@ Pill {
                    - modelBtn.width - agentBtn.width
                    - 56
                    - (sidebarBtn.visible ? sidebarBtn.width + 8 : 0)
+                   - (newChatBtn.visible ? newChatBtn.width + 8 : 0)
                    - (stopBtn.visible ? stopBtn.width + 8 : 0)
             text: root.session ? (root.session.title || "opencode") : "opencode — new chat"
             font.family: Theme.font

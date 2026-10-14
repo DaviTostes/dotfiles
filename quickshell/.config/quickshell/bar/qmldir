@@ -1,12 +1,15 @@
+singleton Cava 1.0 Cava.qml
 singleton Notifs 1.0 Notifs.qml
 singleton TasksStore 1.0 TasksStore.qml
 singleton OpencodeShared 1.0 OpencodeShared.qml
+singleton TypeStore 1.0 TypeStore.qml
 Bar 1.0 Bar.qml
 Battery 1.0 Battery.qml
 Calc 1.0 Calc.qml
 Catcher 1.0 Catcher.qml
 ClipHistory 1.0 ClipHistory.qml
 Clock 1.0 Clock.qml
+DeskGames 1.0 DeskGames.qml
 EdgeCorner 1.0 EdgeCorner.qml
 IntelTranslate 1.0 IntelTranslate.qml
 Launcher 1.0 Launcher.qml
@@ -21,4 +24,5 @@ Tip 1.0 Tip.qml
 Toasts 1.0 Toasts.qml
 Tray 1.0 Tray.qml
 TrayMenu 1.0 TrayMenu.qml
+TypeTest 1.0 TypeTest.qml
 Workspaces 1.0 Workspaces.qml

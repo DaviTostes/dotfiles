@@ -47,6 +47,13 @@ Scope {
     id: clipboard
   }
 
+  // Monkeytype-style typing test, shown in the middle of the desktop while the
+  // focused workspace has no windows. `qs ipc call typetest toggle` (or the
+  // widget's hide button) turns it on/off; the choice persists.
+  TypeTest {
+    id: typeTest
+  }
+
   // Standalone full-size opencode chat: a second Opencode instance pinned to
   // full mode and hosted in a hidden window, so its FloatingWindow can be open
   // at the same time as a bar's docked intelligence central. Both instances
@@ -153,6 +160,15 @@ Scope {
     function toggle() { clipboard.toggle(); }
 
     function close() { clipboard.close(); }
+  }
+
+  // desk typing test on/off (the dock's type tab does the same)
+  IpcHandler {
+    target: "typetest"
+
+    function toggle() { typeTest.view = typeTest.view === 0 ? -1 : 0; }
+    function enable() { typeTest.view = 0; }
+    function disable() { if (typeTest.view === 0) typeTest.view = -1; }
   }
 
   // settings dropdown, straight on a tab by name: `qs ipc call settings open
