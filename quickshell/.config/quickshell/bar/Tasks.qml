@@ -51,8 +51,7 @@ Pill {
     font.pixelSize: 13
     color: root.panelOpen ? Theme.accent : Theme.text
     Behavior on color { ColorAnimation { duration: 200 } }
-    text: root.pendingTasks.length > 0
-        ? "\uf0ae " + root.pendingTasks.length : "\uf0ae"
+    text: "\uf0ae"
   }
 
   MouseArea {
