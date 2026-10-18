@@ -22,6 +22,51 @@ Item {
   // so the picker can surface them at the top across restarts.
   property var recentModels: []
 
+  // --- live Voice Mode preferences (shared by every panel, persisted) ---
+  property string voiceLang: "pt"     // pt | en | auto
+  property real voiceVolume: 0.85     // assistant speech volume (0..1.5)
+  // speech-to-text quality: "accurate" (whisper medium, ~2x fewer word errors,
+  // ~3.7s/utterance) or "fast" (whisper small, ~1s). Accuracy is the default
+  // because getting the words wrong is what actually breaks a voice turn.
+  property string voiceStt: "accurate"
+  // default model Voice Mode always uses, or null to follow the session's own
+  // model: { id, providerID }
+  property var voiceModel: null
+  property bool voicePrefsLoaded: false
+
+  function setVoiceLang(l) {
+    if (l !== "pt" && l !== "en" && l !== "auto") return;
+    root.voiceLang = l;
+    root.saveVoicePrefs();
+  }
+
+  function setVoiceStt(q) {
+    if (q !== "fast" && q !== "accurate") return;
+    root.voiceStt = q;
+    root.saveVoicePrefs();
+  }
+
+  function setVoiceVolume(v) {
+    root.voiceVolume = Math.round(Math.max(0, Math.min(1.5, v)) * 100) / 100;
+    root.saveVoicePrefs();
+  }
+
+  // `m` is a model record ({ id, providerID, … }) or null to clear the override
+  function setVoiceModel(m) {
+    root.voiceModel = (m && m.id)
+        ? { id: m.id, providerID: m.providerID || "" } : null;
+    root.saveVoicePrefs();
+  }
+
+  function saveVoicePrefs() {
+    voiceStore.setText(JSON.stringify({
+      lang: root.voiceLang,
+      volume: root.voiceVolume,
+      stt: root.voiceStt,
+      model: root.voiceModel
+    }));
+  }
+
   // push a model ref to the front of the recents list
   function touchModel(ref) {
     if (!ref || !ref.id) return;
@@ -104,5 +149,34 @@ Item {
         if (r && r.id) next.push({ id: r.id, providerID: r.providerID || "" });
       root.recentModels = next.slice(0, 6);
     }
+  }
+
+  // Voice Mode preferences (language + spoken volume), persisted so the panel
+  // remembers them across restarts.
+  FileView {
+    id: voiceStore
+    path: Quickshell.stateDir + "/opencode-voice-prefs.json"
+    blockAllReads: true
+    preload: true
+    printErrors: false
+    watchChanges: false
+    onLoaded: {
+      root.voicePrefsLoaded = true;
+      const raw = voiceStore.text();
+      if (!raw) return;
+      let parsed = null;
+      try { parsed = JSON.parse(raw); } catch (e) { return; }
+      if (!parsed || typeof parsed !== "object") return;
+      if (parsed.lang === "pt" || parsed.lang === "en" || parsed.lang === "auto")
+        root.voiceLang = parsed.lang;
+      if (typeof parsed.volume === "number" && parsed.volume >= 0 && parsed.volume <= 1.5)
+        root.voiceVolume = parsed.volume;
+      if (parsed.stt === "fast" || parsed.stt === "accurate")
+        root.voiceStt = parsed.stt;
+      if (parsed.model && parsed.model.id)
+        root.voiceModel = { id: parsed.model.id,
+                            providerID: parsed.model.providerID || "" };
+    }
+    onLoadFailed: root.voicePrefsLoaded = true
   }
 }

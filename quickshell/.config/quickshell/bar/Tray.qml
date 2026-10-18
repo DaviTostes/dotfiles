@@ -13,6 +13,9 @@ Pill {
   // (popups can't grab focus themselves) — this is what lets Esc reach it
   readonly property alias menuOpen: trayMenu.open
 
+  // border while the tray menu is open
+  pillOpen: menuOpen
+
   // click-outside duty for the tray menu
   Catcher {
     active: trayMenu.open

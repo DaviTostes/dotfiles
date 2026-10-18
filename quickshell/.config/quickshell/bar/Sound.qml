@@ -83,6 +83,9 @@ Pill {
   // opens/closes ONLY on pill click — same pattern as the Pomodoro panel
   property bool panelOpen: false
 
+  // border while the volume dropdown is open
+  pillOpen: root.panelOpen
+
   implicitWidth: label.implicitWidth + 16
 
   // ---------- pill ----------

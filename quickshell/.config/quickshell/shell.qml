@@ -89,12 +89,21 @@ Scope {
       if (bar) bar.openChat();
     }
 
-    // SUPER+SHIFT+A — the standalone full chat window (independent of the
-    // docked intelligence central, so both can be open at once)
+    // SUPER+A — the standalone full chat window (independent of the docked
+    // intelligence central, so both can be open at once)
     function toggleExpanded() { root.toggleFullChat(); }
+
+    // SUPER+SHIFT+A — the standalone full chat, straight into live Voice Mode
+    function voiceFull() { root.toggleFullVoice(); }
 
     function close() {
       for (const k in root.bars) root.bars[k].closeChat();
+    }
+
+    function voice() {
+      const m = Hyprland.focusedMonitor;
+      const bar = m ? root.bars[m.name] : null;
+      if (bar) bar.toggleVoiceChat();
     }
   }
 
@@ -102,14 +111,24 @@ Scope {
   // toggle used by the keybind and by the pill's expand button
   function toggleFullChat() {
     if (opencodeFull.panelOpen) opencodeFull.panelOpen = false;
-    else opencodeFull.openStandalone();
+    else opencodeFull.openStandalone(false);
+  }
+
+  // SUPER+SHIFT+A: closed → open the standalone in Voice Mode; already open in
+  // Voice Mode → close it; open as a text chat → start Voice Mode on it.
+  function toggleFullVoice() {
+    if (!opencodeFull.panelOpen) opencodeFull.openStandalone(true);
+    else if (opencodeFull.voiceMode) opencodeFull.panelOpen = false;
+    else opencodeFull.startVoiceMode();
   }
 
   IpcHandler {
     target: "opencodeFull"
 
     function toggle() { root.toggleFullChat(); }
-    function open() { opencodeFull.openStandalone(); }
+    function voice() { root.toggleFullVoice(); }
+    function open() { opencodeFull.openStandalone(false); }
+    function openVoice() { opencodeFull.openStandalone(true); }
     function close() { opencodeFull.panelOpen = false; }
   }
 

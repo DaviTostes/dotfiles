@@ -22,18 +22,25 @@ lands at `~/.config/quickshell/shell.qml`.
 ## Quickshell (`quickshell/.config/quickshell/`)
 
 - `shell.qml` is the entry point; `bar/` holds the bar and its pill widgets;
-  `hyprconf/` holds the Hypr Config dropdown panel (edits wallpaper / hyprlock /
-  hypridle confs via `Quickshell.Io.FileView`, parsing logic in `Conf.js`).
+  `hyprconf/` holds the Hypr Config dropdown panel (edits compositor settings in
+  `hyprpanel.lua` via `HyprPanel.js` and `wallpaper.conf` / `hyprlock.conf` /
+  `hypridle.conf` via `Conf.js`).
   The panel is a `PopupWindow` anchored under the bar's settings pill
   (Pomodoro-style, one per monitor); click-outside close uses
   `HyprlandFocusGrab` — do not turn it back into a standalone window.
-- The dropdown has six tabs, in `HyprConfig.tabs` order: Wallpaper, Lock
-  Screen, Idle, **Bluetooth** (`BluetoothTab.qml`), **Wi-Fi** (`WifiTab.qml`),
-  **VPN** (`VpnTab.qml`).
+- The dropdown has four tabs, in `HyprConfig.tabs` order: **Hyprland**
+  (`HyprlandTab.qml`), **Bluetooth** (`BluetoothTab.qml`), **Wi-Fi**
+  (`WifiTab.qml`), **VPN** (`VpnTab.qml`).
+  `HyprlandTab.qml` stacks all Hyprland-related configuration in one scrollable
+  tab (`LookFeelSection`, `InputSection`, `AnimationsSection`,
+  `WallpaperSection`, `LockSection`, `IdleSection`, `MonitorsSection`,
+  `AutostartSection`) with a single footer Save that writes and applies only
+  dirty sections.
   The bar's `openSettings(name)` resolves a tab by name and the IPC
-  `qs ipc call settings open bluetooth|wifi|vpn` (SUPER+SHIFT+B / SUPER+SHIFT+W
-  / SUPER+SHIFT+V) opens straight on one; clicking a tab button still owns
-  `root.tab`. `HyprConfig.tabIndex()` normalises names (`wifi` == `Wi-Fi`).
+  `qs ipc call settings open hyprland|bluetooth|wifi|vpn` (plus legacy aliases
+  `wallpaper|lock|lockscreen|idle` → `Hyprland`) opens straight on one;
+  clicking a tab button still owns `root.tab`. `HyprConfig.tabIndex()`
+  normalises names (`wifi` == `Wi-Fi`).
 - `BluetoothTab.qml` drives BlueZ through `Quickshell.Bluetooth` (no bzmenu):
   bonded devices connect/disconnect/forget natively. Device *icons* are mapped
   from BlueZ icon names to Nerd Font glyphs — `Quickshell.iconPath()` does not
@@ -171,6 +178,20 @@ lands at `~/.config/quickshell/shell.qml`.
   (`{ m, i }`) so the keyboard selection never relies on `indexOf()` on QML
   `modelData` — that is not reference-stable and made every row share one
   selection (all highlighted on hover). **Ctrl+M** opens the model picker.
+- **Big pastes collapse, TUI-style.** The composer grows with its draft up to
+  a cap, so a pasted log used to bury the panel; a paste reaching
+  `pasteCollapseLines` (6) lines or `pasteCollapseChars` (1200) characters is
+  now swapped for a `[Pasted +N lines]` marker as it lands and the real text
+  goes into `root.pastes` — `send()` runs the draft through `expandPastes()`
+  first, so the transcript (and the session title) still get the full text.
+  Both editors detect it the same way, in `onTextChanged`: `pasteCollapse()`
+  diffs the new text against the *other* editor's (they mirror each other, so
+  that is the pre-paste draft) and replaces the inserted slice with the marker,
+  returning the caret to put after it. Markers are unique (a second paste of
+  the same size gets `(2)`), so deleting one can never re-route another, and a
+  marker edited by hand simply goes out as the literal text it looks like.
+  `pastes` is cleared when the draft is actually consumed (successful send,
+  `newChat()`), never on a failed send — a retry restores the raw draft.
 - Per-component QML files are registered in `hyprconf/qmldir`; shared state
   lives in singletons (`HyprSettings`, `Theme`) and is referenced directly by
   name from files in the same directory — no import needed.
@@ -239,6 +260,95 @@ lands at `~/.config/quickshell/shell.qml`.
   TextEdit/TextInput expose `positionToRectangle`, which the caret needs). PBs
   persist through the `TypeStore` singleton (`typing-pbs.json` in `stateDir`);
   `qs ipc call typetest toggle|enable|disable` flips the typing view.
+- **Live Voice Mode** (`bar/voice-daemon.py` + `bar/VoiceStage.qml`) is a
+  ChatGPT-style hands-free spoken conversation: continuous mic → adaptive VAD →
+  Whisper → opencode → neural TTS, with turn-taking and barge-in. It is a
+  long-lived Python daemon spawned by `bar/Opencode.qml` (`Process` +
+  `stdinEnabled`, JSON-lines protocol on stdin/stdout) rather than a QML
+  re-implementation, because the models must stay warm in RAM: `whisper-server`
+  (`ggml-small.bin`, or `ggml-medium-q5_0.bin` in accurate mode) answers
+  `/inference` in **~250 ms** because `audio_ctx` is
+  scaled to each clip's length (50 ctx frames = 1 s, +headroom, clamped
+  512..1500), and Piper (`calibre_extensions.piper`, `pt_BR-faber-medium` /
+  `en_US-lessac-medium` at 22 kHz, models in `~/.local/share/piper/`) synthesizes
+  a sentence in **~120 ms**. `piper.initialize("")` + `set_voice(cfg, model)`
+  must be called once; `piper.next(bool)` streams chunks and reports `is_last`.
+  The daemon records **every** non-monitor PipeWire source at once (`pw-record
+  --raw --target <name> -`, discovered via `pactl list sources short`) and locks
+  onto whichever mic triggers speech, since the default source is often an idle
+  headset dongle. **`--raw` is mandatory**: without it `pw-record` writes an
+  `.au` header and `pw-cat -p` waits for a container header, so nothing plays.
+  VAD is adaptive (tracked noise floor, 1.4 s pause to end a turn, ~96 ms to
+  trigger/ barge-in, trailing silence trimmed before STT), and the reply is
+  spoken sentence-by-sentence: `Opencode.qml` splits `session.text.delta` on
+  sentence boundaries in `feedVoiceStream`, strips markdown/code in
+  `cleanForSpeech`, and pipes chunks to the daemon, which synthesizes and plays
+  back-to-back through one `pw-cat -p` process. Speaking over the assistant
+  kills playback (<50 ms), drops queued synthesis and interrupts the turn.
+- **Mixed PT/EN speech** is the hard case for Whisper here (a Brazilian accent
+  turns "commit" into "permite", "branch" into "tranche", "deploy" into "etoy"),
+  and there are measured numbers for what actually helps. Benchmarked on an
+  8-sentence mixed PT/EN set (WER / mean latency):
+
+  | STT config | WER | latency |
+  |---|---|---|
+  | small, greedy | 24.2% | 0.98 s |
+  | small, beam 5 | 20.2% | 0.97 s |
+  | medium-q5, greedy | 15.2% | 3.18 s |
+  | **medium-q5, beam 5** | **11.3%** | 3.69 s |
+  | large-v3-turbo-q5, beam 5 | 22.8% | 3.92 s |
+
+  So `-bs 5` is free accuracy (the encoder dominates a short clip — it was
+  *faster* than greedy in the run above) and **medium-q5 + beam 5 halves the
+  errors**, which is why Voice Mode has two quality levels (`fast` = small,
+  `accurate` = medium-q5, default) picked by the `ACCURATE`/`FAST` chips in the
+  voice stage and stored as `voiceStt` in `opencode-voice-prefs.json`.
+  `WhisperSTT.set_quality()` swaps by tearing down and rebuilding the server on
+  a worker thread (fast reloads in ~0.6 s, medium-q5 in ~1.5 s) and reports
+  `stt_ready`. large-v3-turbo is worse *and* slower here — and with beam 5 it
+  once fell into a repetition loop — so it is not used.
+  Three more traps, all of which were live bugs: (a) **`prompt` is not a
+  whisper-server form field** (its multipart table ends at
+  `no_language_probabilities`), so sending the vocabulary primer per request did
+  nothing — it only works as a **startup** `--prompt`, which is why `PROMPT_BASE`
+  (`TECH_TERMS` + a one-line context sentence) is passed in `_start_server()`.
+  `no_speech_thold=0.9` and `temperature_inc=0.2` *are* per-request fields and
+  are sent on every call (the 0.6 default silently drops segments from a soft
+  mic, and `-nf` was disabling the fallback that retries a degenerate decode).
+  (b) **`auto` language is a coin flip on a short accented clip** — the detector
+  reports `welsh`/`nn` with a ~0.15 probability and the whole utterance is then
+  decoded in that language, which is what "frases erradas" looked like; when the
+  detected language is neither pt nor en, `transcribe()` redoes the call pinned
+  to the sticky last language. (c) In `auto`, the assistant's **reply voice is
+  chosen once per reply** and then held (`reply_lang`), instead of re-deciding
+  per sentence and switching voices mid-answer.
+- `fix_tech_terms()` repairs the near-miss tokens Whisper still produces
+  ("teaturi" → "feature"), but only for tokens within a small edit distance of a
+  term AND that `hunspell -l -d pt_BR,en_US` rejects (so "pasta", "teste",
+  "permite", "quebrou" are never touched); a 2+ edit match must also share the
+  onset consonant, else "daon" becomes "main". Verdicts are cached in memory
+  *and* in `~/.cache/opencode-voice-words.json`, and hunspell is only spawned for
+  near-miss tokens, so a normal utterance costs ~0 ms. `EXACT_MISHEAR` holds the
+  high-confidence forms that are too far for the fuzzy pass. Keep `audio_ctx` at
+  ≥512 (encoder over-compression is its own accuracy loss) and keep the adaptive
+  window: clamping to the full 1500 cost 2.3x the time and scored *worse*.
+  `OPENCODE_VOICE_WHISPER_MODEL` / `_MODEL_ACCURATE` override the two models.
+- Spoken volume is applied in the daemon (scaled PCM) and persisted with the
+  language in `OpencodeShared` (`opencode-voice-prefs.json`). A **Voice Mode
+  model** is stored in the same file (`voiceModel: {id, providerID}`): the chip
+  in the voice stage / compact dock opens `VoiceStage`'s own picker overlay
+  (mouse-only on purpose — the docked popup is keyboard-less, so a search field
+  there could never be typed into) and `applyVoiceModel()` re-points the open
+  session plus `lastModel`, so every voice turn and any chat born from a voice
+  turn uses it; picking `session model` clears the override. Toggled from the
+  centered pill under the input on a blank chat (the input row keeps only
+  image/mic/send — the voice trigger deliberately does not live there), from
+  `Alt+V` / `Ctrl+Shift+V`, and via `qs ipc call opencode voice` —
+  which is also what **SUPER+SHIFT+A** runs (`opencode voiceFull` /
+  `opencodeFull voice` open the *standalone* window instead). It opens the
+  focused bar's **docked** dropdown (`toggleVoiceChat()` → `panelOpen` +
+  `startVoiceMode()`, never `pendingExpanded`, so it is the small panel, not
+  the big window); `Space` is interrupt/send-now/unmute, `M` mutes.
 - Validate changes with `qmllint <file>.qml` (run from
   `quickshell/.config/quickshell/`) before finishing. Live reload with
   `qs` only if the user asks for it.
@@ -247,6 +357,11 @@ lands at `~/.config/quickshell/shell.qml`.
 
 - `hyprland.lua` uses the Lua config API (`hl.env`, `hl.exec`, …) — keep new
   settings in Lua, don't create a parallel `hyprland.conf`.
+- Panel-managed compositor settings (monitors, look & feel, input, per-leaf
+  animations, autostart) live in `hyprpanel.lua`, loaded by `hyprland.lua` via
+  `package.loaded["hyprpanel"] = nil; require("hyprpanel")`. `HyprPanel.js`
+  parses and renders `hyprpanel.lua` deterministically (tested in
+  `hyprconf/tests/hyprpanel.mjs`), and saving runs `hyprctl reload`.
 - The quickshell `hyprconf/` panel writes `wallpaper.conf`,
   `hyprlock.conf`, and `hypridle.conf` in place; keep its parse/serialize
   round-trip (`Conf.js`) lossless when touching that code.

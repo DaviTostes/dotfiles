@@ -290,6 +290,7 @@ Item {
   property int snakeFoodY: -1
   property int snakeScore: 0
   property bool snakeOver: false
+  property var snakeQueue: []     // buffered turns (applied one per step)
 
   function newSnake() {
     const cy = Math.floor(root.snakeN / 2);
@@ -298,6 +299,7 @@ Item {
     root.snakeDY = 0;
     root.snakeScore = 0;
     root.snakeOver = false;
+    root.snakeQueue = [];
     root.placeSnakeFood();
   }
 
@@ -320,14 +322,31 @@ Item {
   }
 
   function snakeTurn(dx, dy) {
-    if (dx === root.snakeDX && dy === root.snakeDY) return;
-    if (dx === -root.snakeDX && dy === -root.snakeDY) return;   // no reverse
-    root.snakeDX = dx;
-    root.snakeDY = dy;
+    // Buffer the turn instead of applying it now: applying two turns within
+    // one tick lets the head reverse into its own body (two fast converging
+    // presses = instant game over). One buffered turn is consumed per step.
+    const q = root.snakeQueue;
+    const lx = q.length > 0 ? q[q.length - 1].x : root.snakeDX;
+    const ly = q.length > 0 ? q[q.length - 1].y : root.snakeDY;
+    if (dx === lx && dy === ly) return;        // same direction
+    if (dx === -lx && dy === -ly) return;      // reverse of the pending one
+    if (q.length >= 2) return;                 // keep at most two buffered
+    const nq = q.slice();
+    nq.push({ x: dx, y: dy });
+    root.snakeQueue = nq;
   }
 
   function snakeStep() {
     if (root.snakeOver) return;
+
+    // consume the next buffered turn, if any
+    if (root.snakeQueue.length > 0) {
+      const d = root.snakeQueue[0];
+      root.snakeDX = d.x;
+      root.snakeDY = d.y;
+      root.snakeQueue = root.snakeQueue.slice(1);
+    }
+
     const n = root.snakeN;
     const s = root.snake.slice();
     const head = s[0];

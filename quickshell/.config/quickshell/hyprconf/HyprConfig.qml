@@ -18,12 +18,16 @@ PopupWindow {
     // Tab names, in the same order as the StackLayout below. The bar's
     // `settingsTab` lets the IPC (SUPER+SHIFT+B / SUPER+SHIFT+W /
     // SUPER+SHIFT+V) open the dropdown directly on a tab.
-    readonly property var tabs: ["Wallpaper", "Lock Screen", "Idle", "Bluetooth", "Wi-Fi", "VPN"]
+    readonly property var tabs: ["Hyprland", "Bluetooth", "Wi-Fi", "VPN"]
 
-    // Accepts "wifi", "wi-fi", "Wi-Fi", "lock screen", "lockscreen", …
+    // Accepts "hyprland", "hypr", "wallpaper", "lock", "lockscreen", "idle",
+    // "wifi", "wi-fi", "Wi-Fi", …
     function tabIndex(name) {
         const norm = s => (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
         const n = norm(name);
+        if (n === "hypr" || n === "hyprland" || n === "wallpaper"
+                || n === "lock" || n === "lockscreen" || n === "idle")
+            return 0;
         for (let i = 0; i < root.tabs.length; i++) {
             if (norm(root.tabs[i]) === n) return i;
         }
@@ -62,11 +66,11 @@ PopupWindow {
     // instead of on every dropdown open regardless of the tab the user is
     // looking at.
     function loadWifiIfVisible() {
-        if (root.tab === 4) wifiTab.reload();
+        if (root.tab === 2) wifiTab.reload();
     }
 
     function loadVpnIfVisible() {
-        if (root.tab === 5) vpnTab.reload();
+        if (root.tab === 3) vpnTab.reload();
     }
 
     function loadLazyTabsIfVisible() {
@@ -77,9 +81,7 @@ PopupWindow {
     onVisibleChanged: {
         if (!visible) return;
         anchor.updateAnchor();
-        paperTab.reload();
-        lockTab.reload();
-        idleTab.reload();
+        hyprlandTab.reload();
         bluetoothTab.reload();
         // the bar stores which tab was requested (0 unless the IPC opened
         // the panel on a specific one)
@@ -200,9 +202,7 @@ PopupWindow {
                 Layout.fillHeight: true
                 currentIndex: root.tab
 
-                PaperTab { id: paperTab; panel: root }
-                LockTab { id: lockTab; panel: root }
-                IdleTab { id: idleTab }
+                HyprlandTab { id: hyprlandTab; panel: root }
                 BluetoothTab { id: bluetoothTab }
                 WifiTab { id: wifiTab }
                 VpnTab { id: vpnTab }
@@ -217,10 +217,7 @@ PopupWindow {
         Shortcut {
             sequence: "Ctrl+S"
             onActivated: {
-                // only the conf-file tabs have something to save
-                if (root.tab === 0) paperTab.save();
-                else if (root.tab === 1) lockTab.save();
-                else if (root.tab === 2) idleTab.save();
+                if (root.tab === 0) hyprlandTab.saveAll();
             }
         }
     }
@@ -246,8 +243,7 @@ PopupWindow {
             if (open) {
                 gHideTimer.stop();
                 anchor.updateAnchor();
-                paperTab.syncGalleryPicked();
-                lockTab.syncGalleryPicked();
+                hyprlandTab.syncGalleryPicked();
             } else {
                 gHideTimer.restart();
             }
@@ -287,10 +283,7 @@ PopupWindow {
                 anchors.margins: 10
                 animate: galleryWin.open
                 picked: HyprSettings.galleryPicked
-                onChosen: p => {
-                    if (HyprSettings.galleryTab === 0) paperTab.applyGalleryPick(p);
-                    else lockTab.applyGalleryPick(p);
-                }
+                onChosen: p => hyprlandTab.applyGalleryPick(p)
             }
 
             Shortcut {
