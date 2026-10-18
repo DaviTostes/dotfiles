@@ -7,6 +7,9 @@ Pill {
 
   implicitWidth: clockText.implicitWidth + 12
 
+  // border while the calendar/notifications panel is open
+  pillOpen: root.calOpen
+
   SystemClock {
     id: clock
     precision: SystemClock.Minutes

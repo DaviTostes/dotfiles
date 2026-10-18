@@ -1,9 +1,9 @@
-vim.opt.rtp:prepend("/home/toast/opencode-nvim")
+vim.pack.add({"https://github.com/davitostes/opencode-nvim"})
 
 require("opencode-nvim").setup({
   server = { command = "opencode", autostart = true },
   agent = "build", -- agente padrão
-  model = { providerID = "opencode-go", id = "deepseek-v4.1-flash" },
+  model = { providerID = "opencode-go", id = "deepseek-v1-flash" },
   approval = false,
   -- approval = {
   --   review = "popup",        -- "popup" | "notify"
@@ -109,9 +109,6 @@ When the task involves interface changes, describe screens, components, states, 
 
 When no UI is involved, replace this section with specifications appropriate to the task.
 
-### Business Rules
-Document the rules that must be preserved, mandatory validations, permissions, states, restrictions, and expected behavior.
-
 ### Technical Specifications
 Describe the proposed changes by system layer, as applicable:
 
@@ -123,23 +120,8 @@ Describe the proposed changes by system layer, as applicable:
 
 Use actual paths and identifiers discovered during the investigation. Explicitly distinguish the current implementation from the proposed solution.
 
-### Edge Cases
-List relevant failure scenarios, missing or invalid data, unexpected states, concurrency issues, backward compatibility, permissions, and potential regressions.
-
-Include only cases relevant to the task.
-
-### Acceptance Criteria
-Create an objective, verifiable checklist of conditions that must be satisfied before the task can be considered complete.
-
-Whenever possible, associate each criterion with a test, command, or observable behavior.
-
 ### Verification Commands
 List actual, relevant commands for validating the implementation, based on the technologies and tools used in the repository. Do not assume a command exists without checking the project structure.
-
-### Decisions Made
-Record architectural or functional decisions explicitly established by the original task, confirmed during clarification, or verified during investigation.
-
-If decisions remain unresolved, document assumptions and outstanding questions explicitly.
 
 ## 5. Document Quality
 

@@ -22,48 +22,17 @@ for k, v in pairs(envs) do
   hl.env(k, v)
 end
 
--------------------
----- AUTOSTART ----
--------------------
-
-local autostart = {
-  "dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP",
-  "systemctl --user import-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP",
-  "quickshell",
-  "hypridle",
-  "awww-daemon",
-  "$HOME/.config/hypr/scripts/wallpaper-apply",
-  "swayosd-server",
-  "wl-paste --watch cliphist store",
-  "ollama serve",
-  "goytn",
-  "maily",
-  -- org.freedesktop.secrets (Secret Service) for apps that store secrets,
-  -- e.g. ZapFast's archive key. KWallet's ksecretd normally only gets
-  -- started by a Plasma session, so Hyprland has to launch it itself.
-  "ksecretd",
-  -- XEmbed tray host: Wine/Proton (Battle.net) shows a stray 160x20
-  -- "Shell_TrayWnd" window when nothing owns _NET_SYSTEM_TRAY_S0, and
-  -- quickshell's tray speaks StatusNotifier, not XEmbed.
-  "setsid -f $HOME/.local/bin/xembed-tray",
-}
-
-hl.on("hyprland.start", function()
-  for _, cmd in ipairs(autostart) do
-    hl.exec_cmd(cmd)
-  end
-end)
+-- Managed by the quickshell Hypr Config panel (monitors, look & feel, input,
+-- animations, autostart).
+package.loaded["hyprpanel"] = nil
+require("hyprpanel")
 
 --------------------
----- MONITORS ----
+---- WORKSPACES ----
 --------------------
 
 local primaryMonitor   = "DP-2"
 local secondaryMonitor = "HDMI-A-1"
-local resolution       = "1920x1080"
-
-hl.monitor({ output = primaryMonitor, mode = resolution .. "@144", position = "0x0", scale = 1 })
-hl.monitor({ output = secondaryMonitor, mode = resolution .. "@75", position = "-1920x0", scale = 1 })
 
 hl.workspace_rule({ workspace = "2", monitor = primaryMonitor, default = false })
 hl.workspace_rule({ workspace = "1", monitor = secondaryMonitor, default = true })
@@ -89,48 +58,6 @@ local function termRun(cmd) return terminal .. " --title \"" .. cmd .. "\" " .. 
 -----------------------
 
 hl.config({
-  general = {
-    gaps_in          = 2,
-    gaps_out         = 2,
-
-    border_size      = 2,
-
-    col              = {
-      active_border   = "rgba(60,60,60,1)",
-      inactive_border = "rgba(32,32,32,1)",
-    },
-
-    resize_on_border = false,
-    allow_tearing    = false,
-    layout           = "dwindle",
-  },
-
-  decoration = {
-    rounding         = 8,
-    rounding_power   = 2,
-
-    active_opacity   = 1.0,
-    inactive_opacity = 1.0,
-
-    shadow           = {
-      enabled      = true,
-      range        = 4,
-      render_power = 3,
-      color        = 0xee1a1a1a,
-    },
-
-    blur             = {
-      enabled  = true,
-      size     = 3,
-      passes   = 1,
-      vibrancy = 0.1696,
-    },
-  },
-
-  animations = {
-    enabled = true,
-  },
-
   dwindle = {
     preserve_split = true,
   },
@@ -154,21 +81,6 @@ hl.config({
     vrr = 0,
   },
 
-  input = {
-    kb_layout    = "us",
-    kb_variant   = "",
-    kb_model     = "",
-    kb_options   = "",
-    kb_rules     = "",
-
-    follow_mouse = 1,
-    sensitivity  = 0,
-
-    touchpad     = {
-      natural_scroll = false,
-    },
-  },
-
   cursor = {
     -- cursor por software (original desta maquina). Hardware cursor ocupa um
     -- plano no CRTC e atrapalha o direct scanout, o que custa frames num jogo
@@ -186,47 +98,6 @@ hl.device({
   name        = "epic-mouse-v1",
   sensitivity = -0.5,
 })
-
---------------------
----- ANIMATIONS ----
---------------------
-
-local curves = {
-  easeOutQuint   = { { 0.23, 1 }, { 0.32, 1 } },
-  easeInOutCubic = { { 0.65, 0.05 }, { 0.36, 1 } },
-  linear         = { { 0, 0 }, { 1, 1 } },
-  almostLinear   = { { 0.5, 0.5 }, { 0.75, 1 } },
-  quick          = { { 0.15, 0 }, { 0.1, 1 } },
-}
-
-for name, points in pairs(curves) do
-  hl.curve(name, { type = "bezier", points = points })
-end
-
-local animations = {
-  { leaf = "global",        enabled = true, speed = 10,   bezier = "default" },
-  { leaf = "border",        enabled = true, speed = 5.39, bezier = "easeOutQuint" },
-  { leaf = "windows",       enabled = true, speed = 4.79, bezier = "easeOutQuint" },
-  { leaf = "windowsIn",     enabled = true, speed = 4.1,  bezier = "easeOutQuint", style = "popin 87%" },
-  { leaf = "windowsOut",    enabled = true, speed = 1.49, bezier = "linear",       style = "popin 87%" },
-  { leaf = "fadeIn",        enabled = true, speed = 1.73, bezier = "almostLinear" },
-  { leaf = "fadeOut",       enabled = true, speed = 1.46, bezier = "almostLinear" },
-  { leaf = "fade",          enabled = true, speed = 3.03, bezier = "quick" },
-  { leaf = "layers",        enabled = true, speed = 3.81, bezier = "easeOutQuint" },
-  { leaf = "layersIn",      enabled = true, speed = 4,    bezier = "easeOutQuint", style = "fade" },
-  { leaf = "layersOut",     enabled = true, speed = 1.5,  bezier = "linear",       style = "fade" },
-  { leaf = "fadeLayersIn",  enabled = true, speed = 1.79, bezier = "almostLinear" },
-  { leaf = "fadeLayersOut", enabled = true, speed = 1.39, bezier = "almostLinear" },
-  { leaf = "workspaces",    enabled = true, speed = 1.94, bezier = "almostLinear", style = "fade" },
-  { leaf = "workspacesIn",  enabled = true, speed = 1.21, bezier = "almostLinear", style = "fade" },
-  { leaf = "workspacesOut", enabled = true, speed = 1.94, bezier = "almostLinear", style = "fade" },
-  -- special workspace (opencode dropdown): quick vertical slide instead of
-  -- the inherited fade, which made the dropdown flash in and out
-  { leaf = "specialWorkspace", enabled = true, speed = 3, bezier = "default", style = "slidevert" },
-  { leaf = "zoomFactor",    enabled = true, speed = 7,    bezier = "quick" },
-}
-
-for _, a in ipairs(animations) do hl.animation(a) end
 
 ----------------------
 ---- WINDOW RULES ----
@@ -340,8 +211,8 @@ hl.bind(mod("U"), exec("pavucontrol"))
 hl.bind(mod("N"), exec("qs ipc call notifs toggle"))    -- calendar + notifications panel
 hl.bind(shift("N"), exec("qs ipc call notifs clear"))
 
-hl.bind(mod("A"), exec("qs ipc call opencode toggle"))  -- opencode: docked intelligence central
-hl.bind(shift("A"), exec("qs ipc call opencode toggleExpanded"))  -- opencode: standalone full chat / close
+hl.bind(mod("A"), exec("qs ipc call opencode toggleExpanded"))
+hl.bind(shift("A"), exec("qs ipc call opencode voice"))      -- docked (small) panel, straight into Voice Mode
 
 hl.bind("PRINT", exec("hyprshot -m window"))
 hl.bind("SHIFT + PRINT", exec("hyprshot -m region"))

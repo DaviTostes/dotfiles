@@ -47,6 +47,8 @@ Pill {
   property bool panelExpanded: false
   // one-shot: open straight into panelExpanded (set by openExpanded())
   property bool pendingExpanded: false
+  // one-shot: open straight into live Voice Mode (SUPER+SHIFT+A, openStandalone(true))
+  property bool pendingVoice: false
   // standalone: this instance is a full-mode-only chat hosted outside a bar
   // (its own FloatingWindow) so it can be open at the same time as the bar's
   // docked intelligence central. The pill/docked dropdown are unused.
@@ -57,6 +59,8 @@ Pill {
   // instead makes the compositor reallocate the buffer each frame and drops
   // the whole panel to ~15fps.
   property real panelFade: 0
+  property real panelSlideX: 0
+  property real panelSlideY: 0
   property string mode: "chat"    // central tab: chat | translate | calc
   // tab swipe: on tab change the incoming body starts offset to the side
   // (direction follows the tab order) and glides back to 0
@@ -68,6 +72,7 @@ Pill {
   }
   property string menu: ""        // "" | "sessions" | "models" | "agents" | "commands" | "files"
   property int menuSel: 0         // keyboard selection in the searchable menus
+  property int cmdSel: 0          // keyboard selection in the slash-command menu
   property string sideQuery: ""       // full-mode history rail filter box
   property bool sidebarOpen: true     // full-mode history rail shown/collapsed
   // models / agents / sessions take the keyboard over as a search box
@@ -88,7 +93,7 @@ Pill {
   // The chat HISTORY (which sessions are panel-owned) is shared via
   // OpencodeShared, but the CURRENT chat is per-instance: the docked panel and
   // the standalone window can show different conversations at once.
-  property bool newChatPending: false  // "+" pressed, session not created yet
+  property bool newChatPending: standalone  // "+" pressed (or expanded mode default), session not created yet
   property var agents: []
   property var models: []
   property var commands: []
@@ -100,6 +105,14 @@ Pill {
   property var pendingImages: []  // clipboard images awaiting send: {name, b64}
   property int imageSeq: 0        // monotonic, so chip names never collide
   property bool pasteFallbackText: true  // Ctrl+V falls back to text paste
+  // Big pastes (a pasted log, a whole file) are collapsed in the draft to a
+  // "[Pasted +N lines]" marker, like the opencode TUI, so a paste can never
+  // fill the composer (and push the send row off the panel). `pastes` maps
+  // each marker to the real text, which `send()` puts back. A paste collapses
+  // once it reaches `pasteCollapseLines` lines or `pasteCollapseChars` chars.
+  property var pastes: ({})       // marker -> pasted text
+  readonly property int pasteCollapseLines: 6
+  readonly property int pasteCollapseChars: 1200
   property var pendingForms: []   // pending select-questions (Form.Info)
   property var formAnswers: ({})  // formID -> { fieldKey: answer }
   property var formTextTarget: null  // { formID, key, title, form } while typing an answer
@@ -479,6 +492,8 @@ Pill {
                          name: "", state: "", toolIn: "", toolOut: "",
                          diff: "", live: false });
     }
+    if (kind === "assistant" && root.voiceMode)
+      root.feedVoiceStream(key, root.textByKey[k] || d.text, true);
     if (chatView.pinned) Qt.callLater(chatView.stick);
   }
 
@@ -502,6 +517,8 @@ Pill {
                            name: "", state: "", toolIn: "", toolOut: "",
                            diff: "", live: true });
       }
+      if (kind === "assistant" && root.voiceMode)
+        root.feedVoiceStream(key, root.textByKey[mapKey] || "", false);
       stuck = true;
     }
     // callLater: stick after the layout pass, against fresh contentHeight
@@ -579,7 +596,10 @@ Pill {
     if (root.textByKey[oldKey] !== undefined && root.textByKey[newKey] === undefined)
       root.textByKey[newKey] = root.textByKey[oldKey];
     delete root.textByKey[oldKey];
-    chatModel.setProperty(i, "key", newKey.slice(0, newKey.lastIndexOf("|")));
+    const bareOld = oldKey.slice(0, oldKey.lastIndexOf("|"));
+    const bareNew = newKey.slice(0, newKey.lastIndexOf("|"));
+    if (root.voiceStreamKey === bareOld) root.voiceStreamKey = bareNew;
+    chatModel.setProperty(i, "key", bareNew);
   }
 
   function modelClear() {
@@ -1365,6 +1385,74 @@ Pill {
     pasteImageProc.running = true;
   }
 
+  // ---------- big-paste collapsing (opencode-TUI style) ----------
+  // The composer grows with its draft up to a cap, so pasting a log of dozens
+  // of lines buries the whole panel under it. Instead the paste is swapped for
+  // a "[Pasted +N lines]" marker right as it lands, and `pastes` keeps the
+  // real text until the message is sent. Markers are unique (a second paste of
+  // the same size gets "(2)"), so deleting one can never re-route another.
+  function pasteMarker(lines) {
+    const noun = lines === 1 ? " line" : " lines";
+    let marker = "[Pasted +" + lines + noun + "]";
+    for (let n = 2; root.pastes[marker] !== undefined; n++)
+      marker = "[Pasted +" + lines + noun + " (" + n + ")]";
+    return marker;
+  }
+
+  // Called from the editors' onTextChanged with the OTHER editor's text — the
+  // two mirror each other, so that is the draft as it was before this change.
+  // Returns { text, caret } when the change was a big paste, else null.
+  function pasteCollapse(prevText, newText) {
+    if (newText.length <= prevText.length) return null;
+    // what was inserted: drop the common prefix and suffix
+    let p = 0;
+    while (p < prevText.length && prevText.charAt(p) === newText.charAt(p)) p++;
+    let s = 0;
+    while (s < prevText.length - p && s < newText.length - p
+           && prevText.charAt(prevText.length - 1 - s)
+              === newText.charAt(newText.length - 1 - s)) s++;
+    const ins = newText.slice(p, newText.length - s);
+    if (ins === "") return null;
+    const lines = ins.split("\n").length;
+    if (lines < root.pasteCollapseLines && ins.length < root.pasteCollapseChars)
+      return null;
+    const marker = root.pasteMarker(lines);
+    const m = {};
+    for (const k in root.pastes) m[k] = root.pastes[k];
+    m[marker] = ins;
+    root.pastes = m;
+    return {
+      text: newText.slice(0, p) + marker + newText.slice(newText.length - s),
+      caret: p + marker.length
+    };
+  }
+
+  // Put the real text back for every marker still present in the draft. A
+  // marker the user edited by hand no longer matches and is simply sent as the
+  // literal text it looks like.
+  function expandPastes(text) {
+    let out = text;
+    for (const marker in root.pastes) {
+      if (out.indexOf(marker) === -1) continue;
+      out = out.split(marker).join(root.pastes[marker]);
+    }
+    return out;
+  }
+
+  // Drop the markers that are no longer part of the draft (a send that
+  // succeeded, a fresh chat). Keyed off the draft, so a paste that landed while
+  // the previous send was in flight keeps its text instead of being wiped.
+  function clearPastes() {
+    const draft = inputField.text;
+    const m = {};
+    let dropped = false;
+    for (const k in root.pastes) {
+      if (draft.indexOf(k) === -1) dropped = true;
+      else m[k] = root.pastes[k];
+    }
+    if (dropped) root.pastes = m;
+  }
+
   // desktop notification for a turn that ends while the panel is closed —
   // the only way to learn the job finished without reopening it. `evId` is
   // the SSE event id: every monitor's panel receives the same event, so the
@@ -1998,6 +2086,9 @@ Pill {
   // first send. Creating it here would leave an empty untitled chat behind
   // every time the button is tapped (or the panel is poked by accident).
   function newChat() {
+    if (root.voiceMode && root.session)
+      root.syncVoiceInstruction(root.session.id, false);
+    root.voiceResetStream();
     root.session = null;
     root.newChatPending = true;   // survive a close/reopen without a reload
     root.modelClear();
@@ -2011,15 +2102,22 @@ Pill {
     root.closeMenu();
     inputField.text = "";
     hiddenInput.text = "";
+    root.clearPastes();          // the markers went with the draft
     root.focusChatEditor();
   }
 
   // user picked a chat (picker / rail): show it in THIS panel and remember it
   // in the shared history
   function switchSession(s) {
+    if (root.voiceMode && root.session && (!s || s.id !== root.session.id))
+      root.syncVoiceInstruction(root.session.id, false);
+    root.voiceResetStream();
     root.session = s;
     root.newChatPending = false;
-    if (s && s.id) OpencodeShared.remember(s.id);   // opened here → panel owns it
+    if (s && s.id) {
+      OpencodeShared.remember(s.id);   // opened here → panel owns it
+      if (root.voiceMode) root.syncVoiceInstruction(s.id, true);
+    }
     root.modelClear();
     // show a loading state instead of the empty "ask opencode" splash while
     // the history arrives, and open the new chat pinned to the bottom
@@ -2128,7 +2226,10 @@ Pill {
   function createSession(title, cb) {
     const body = { title: title };
     if (root.lastAgent !== "") body.agent = root.lastAgent;
-    if (root.lastModel) body.model = root.lastModel;
+    // a chat born from a voice turn starts on the Voice Mode model
+    const vm = root.voiceMode ? root.voiceModelRef : null;
+    if (vm) body.model = vm;
+    else if (root.lastModel) body.model = root.lastModel;
     api("POST", "/api/session", body, (ok, data) => {
       if (!ok || !data || !data.data) {
         root.sending = false;
@@ -2139,7 +2240,10 @@ Pill {
       root.newChatPending = false;
       OpencodeShared.remember(data.data.id);   // the panel owns this chat
       root.loadSession();         // the new chat must appear in the picker
-      cb(data.data.id);
+      if (root.voiceMode)
+        root.syncVoiceInstruction(data.data.id, true, () => cb(data.data.id));
+      else
+        cb(data.data.id);
     });
   }
 
@@ -2149,7 +2253,10 @@ Pill {
     // search query as a message
     if (root.menuSearchable()) { root.menuPickSelected(); return; }
     if (root.sending || root.busy) return;
-    const text = inputField.text.trim();
+    // the draft on screen may hold collapsed pastes ("[Pasted +N lines]") —
+    // the message that goes out carries their real text
+    const draft = inputField.text;
+    const text = root.expandPastes(draft).trim();
     if (text === "" && root.pendingImages.length === 0) return;
     inputField.text = "";
     root.error = "";
@@ -2165,7 +2272,7 @@ Pill {
       if (!cmd) {
         root.sending = false;
         root.error = "unknown command: /" + name;
-        inputField.text = text;      // keep the draft so it can be fixed
+        inputField.text = draft;     // keep the draft so it can be fixed
         return;
       }
       const run = sid => api("POST", "/api/session/" + sid + "/command",
@@ -2173,8 +2280,12 @@ Pill {
             root.sending = false;
             if (!ok) {
               root.error = "command failed (" + status + ")";
-              inputField.text = text;
-            } else { root.busy = true; root.turnStartMs = Date.now(); root.loadMessages(); }
+              inputField.text = draft;
+            } else {
+              root.busy = true; root.turnStartMs = Date.now();
+              root.clearPastes();       // the draft was consumed
+              root.loadMessages();
+            }
           });
       // a command also needs a session: materialise the pending new chat
       if (root.session) run(root.session.id);
@@ -2199,10 +2310,11 @@ Pill {
                 : "send failed (" + status + ")";
               // keep the draft (and the images, cleared only on success)
               // so a failed send is not lost
-              inputField.text = text;
+              inputField.text = draft;
               return;
             }
             root.pendingImages = [];
+            root.clearPastes();
             // the turn is in flight from here until the execution events
             // or the message reconciliation end it — no sending between
             // tool/reasoning steps
@@ -2238,6 +2350,7 @@ Pill {
       root.fileHits = [];
       root.finderBusy = false;
       root.menu = "commands";
+      root.cmdSel = 0;
       return;
     }
     // trailing @token → file finder (works before a session exists too).
@@ -2306,6 +2419,33 @@ Pill {
       return true;
     }
     return false;
+  }
+
+  function filteredCommands() {
+    if (root.menu !== "commands") return [];
+    const q = inputField.text.slice(1).toLowerCase();
+    return root.commands.filter(c =>
+      q === "" || c.name.toLowerCase().indexOf(q) !== -1);
+  }
+
+  function cmdMove(dir) {
+    const l = root.filteredCommands();
+    if (l.length === 0) { root.cmdSel = 0; return; }
+    root.cmdSel = ((root.cmdSel + dir) % l.length + l.length) % l.length;
+  }
+
+  function cmdPickSelected() {
+    if (root.menu !== "commands") return false;
+    const l = root.filteredCommands();
+    if (l.length === 0) return false;
+    const c = l[Math.max(0, Math.min(root.cmdSel, l.length - 1))];
+    // if the user already typed the exact command name, let Enter run it
+    if (inputField.text === "/" + c.name) return false;
+    inputField.text = "/" + c.name + " ";
+    inputField.cursorPosition = inputField.text.length;
+    root.menu = "";
+    root.focusPanelField();
+    return true;
   }
 
   function pickFile(entry) {
@@ -2462,6 +2602,30 @@ Pill {
   // open a search menu. The chat draft stays visible (and disabled) in the
   // bottom input; the menu's own field is the editor. The bar's editor is
   // cleared and kept in sync so closing restores the draft cleanly.
+  function activeMenuIndex(name) {
+    if (name === "models") {
+      const ref = root.modelRef();
+      if (!ref) return 0;
+      const l = root.filteredModels();
+      const idx = l.findIndex(m => m.id === ref.id && m.providerID === ref.providerID);
+      return idx >= 0 ? idx : 0;
+    }
+    if (name === "agents") {
+      const id = (root.session && root.session.agent) ? root.session.agent : root.lastAgent;
+      if (!id) return 0;
+      const l = root.filteredAgents();
+      const idx = l.findIndex(a => a.id === id);
+      return idx >= 0 ? idx : 0;
+    }
+    if (name === "sessions") {
+      if (!root.session) return 0;
+      const l = root.filteredSessions();
+      const idx = l.findIndex(s => s.id === root.session.id);
+      return idx >= 0 ? idx : 0;
+    }
+    return 0;
+  }
+
   function openMenu(name) {
     if (root.menu !== name) {
       root.inputSyncing = true;
@@ -2470,9 +2634,9 @@ Pill {
       root.inputSyncing = false;
     }
     root.menu = name;
-    root.menuSel = 0;
-    // always open at the top (the list is not scrolled to the active item)
+    root.menuSel = root.activeMenuIndex(name);
     menuFlick.contentY = 0;
+    Qt.callLater(root.ensureMenuSelVisible);
     if (root.panelOpen) root.focusChatEditor();
   }
 
@@ -2492,15 +2656,15 @@ Pill {
     if (root.panelOpen) root.focusChatEditor();
   }
 
-  // keep the keyboard-selected row in view (the search row is first)
   // Keep the keyboard-selected row in view. Row heights differ per menu
-  // (sessions 24, agents 36, models 34 + a provider header), so the offset is
+  // (sessions 26, agents 36, models 34 + a provider header), so the offset is
   // computed per menu rather than assuming one row height.
   function ensureMenuSelVisible() {
     if (!root.menuSearchable()) return;
-    let top = 26;               // the search row (24) + spacing
-    let rowH = 26;
+    let top = 28;               // the search row (26) + spacing
+    let rowH = 28;
     if (root.menu === "models") {
+      if (root.currentVariants().length > 0) top += 28; // effort row (26) + spacing
       rowH = 36;                // 34 row + 2 spacing
       // walk the groups so every section header is counted (including Recent)
       outer: for (const g of root.modelGroups()) {
@@ -2519,11 +2683,15 @@ Pill {
     const bottom = top + rowH;
     if (top < menuFlick.contentY) menuFlick.contentY = top;
     else if (bottom > menuFlick.contentY + menuFlick.height)
-      menuFlick.contentY = bottom - menuFlick.height;
+      menuFlick.contentY = Math.max(0, bottom - menuFlick.height);
   }
 
   function closeMenuOrPanel() {
     if (root.menu !== "") { root.closeMenu(); return; }
+    // the Voice Mode model picker is the innermost layer while it is open
+    if (root.voiceMode && voiceStage.modelOpen) { voiceStage.closeModelMenu(); return; }
+    // Escape exits live Voice Mode back to text chat before closing the panel
+    if (root.voiceMode) { root.stopVoiceMode(); return; }
     // Escape closes the panel (the standalone full window included) — there is
     // no docked<->full step any more
     root.panelOpen = false;
@@ -2552,18 +2720,87 @@ Pill {
     }
   }
 
-  // ---------- voice (whisper.cpp STT) ----------
-  // mic pill in the input row: records via pw-record (16k mono s16), then
-  // transcribes with whisper-cli into the real editor (hiddenInput) at the
-  // caret, so the user can edit before sending.
+  // ---------- voice (whisper.cpp STT + ChatGPT-style live Voice Mode) ----------
+  // 1. Single-shot mic pill in the input row: records via pw-record (16k mono
+  //    s16), then transcribes with whisper-cli (with scaled -ac for fast
+  //    inference) into the editor and auto-sends.
+  // 2. Full-duplex Voice Mode (voiceBtn / Ctrl+Shift+V): runs voice-daemon.py,
+  //    keeping whisper-server + neural Piper TTS warm in RAM with continuous
+  //    adaptive VAD, automatic turn-taking, sentence-by-sentence streaming
+  //    speech synthesis, and live barge-in interruption.
   property string sttState: "idle"    // idle | rec | stt
   property int recSecs: 0
   property bool sttCancel: false      // panel closed mid-recording: discard
   readonly property string micWav: "/tmp/opencode-chat-mic.wav"
   readonly property string sttModel: Quickshell.env("HOME")
       + "/.local/share/whisper/ggml-small.bin"
+  readonly property string voiceDaemonScript:
+      Quickshell.shellPath("bar/voice-daemon.py")
+
+  // live voice conversation state
+  property bool voiceMode: false
+  property bool voiceShowChat: false
+  property string voiceState: "listening"  // starting | listening | speech | transcribing | thinking | speaking | muted
+  property bool voiceMuted: false
+  // language + spoken volume live in OpencodeShared so both panels agree and
+  // the choice survives a restart
+  readonly property string voiceLang: OpencodeShared.voiceLang   // pt | en | auto
+  readonly property real voiceVolume: OpencodeShared.voiceVolume // 0..1.5
+  readonly property string voiceStt: OpencodeShared.voiceStt     // fast | accurate
+  // the model Voice Mode always uses (null → follow the session's own model)
+  readonly property var voiceModelRef: OpencodeShared.voiceModel
+
+  function voiceModelObj() {
+    const ref = root.voiceModelRef;
+    if (!ref) return null;
+    return root.models.find(m => m.id === ref.id && m.providerID === ref.providerID)
+        || root.models.find(m => m.id === ref.id) || null;
+  }
+
+  function voiceModelLabel() {
+    const ref = root.voiceModelRef;
+    if (!ref) return "session model";
+    const m = root.voiceModelObj();
+    return m ? m.name : ref.id;
+  }
+
+  readonly property string voiceModelKey: root.voiceModelRef
+      ? (root.voiceModelRef.providerID + "/" + root.voiceModelRef.id) : ""
+
+  // speech-to-text quality: false while the daemon reloads whisper-server
+  property bool voiceSttSwapping: false
+
+  function setVoiceModel(m) {
+    OpencodeShared.setVoiceModel(m);
+    root.applyVoiceModel();
+  }
+
+  // Push the chosen Voice Mode model onto the open session (and remember it as
+  // `lastModel`, so a chat created from a voice turn also starts with it).
+  function applyVoiceModel() {
+    const ref = root.voiceModelRef;
+    if (!ref) return;
+    root.lastModel = ref;
+    OpencodeShared.touchModel(ref);
+    if (!root.session) return;
+    api("POST", "/api/session/" + root.session.id + "/model",
+        { model: ref }, ok => {
+          if (ok && root.session)
+            root.session = Object.assign({}, root.session, { model: ref });
+        });
+  }
+  property real voiceLevel: 0
+  property string voiceUserText: ""
+  property string voiceAssistantText: ""
+  property bool voiceTtsPlaying: false
+  property int voiceLastSttMs: 0
+  property string voiceStreamKey: ""
+  property int voiceSpokenLen: 0
+  property string voiceSpokenPrefix: ""
+  property string voiceRawBuf: ""
 
   function startRec() {
+    if (root.voiceMode) { root.stopVoiceMode(); return; }
     if (root.sttState !== "idle" || recProc.running || sttProc.running) return;
     root.sttCancel = false;
     recProc.running = true;
@@ -2576,6 +2813,13 @@ Pill {
 
   function transcribe() {
     sttProc.out = "";
+    // scale encoder audio_ctx to recording length so short clips take ~0.5s
+    const ctx = Math.max(128, Math.min(1500, (root.recSecs + 3) * 64));
+    sttProc.command = [
+      "whisper-cli", "-t", "8", "-bo", "1", "-bs", "1", "-nf", "-sns",
+      "-ac", String(ctx), "-m", root.sttModel, "-l", "pt", "-np", "-nt",
+      "-f", root.micWav
+    ];
     sttProc.running = true;
   }
 
@@ -2584,6 +2828,7 @@ Pill {
   // only clear `recProc`, so whisper kept running and finishStt() auto-sent
   // the transcript while the panel was closed.
   function cancelStt() {
+    if (root.voiceMode) root.stopVoiceMode();
     if (root.sttState === "idle") return;
     root.sttCancel = true;
     if (recProc.running) recProc.running = false;
@@ -2594,7 +2839,7 @@ Pill {
     root.sttState = "idle";
     // cancelled (panel closed / mic toggled off mid-transcribe): discard
     if (root.sttCancel) { root.sttCancel = false; return; }
-    const t = (sttProc.out || "").replace(/\s+/g, " ").trim();
+    const t = (sttProc.out || "").replace(/\[[^\]]*\]/g, "").replace(/\s+/g, " ").trim();
     if (t === "") {
       root.showToast(code !== 0 ? "stt failed (exit " + code + ")" : "nothing captured");
       return;
@@ -2607,6 +2852,357 @@ Pill {
     hiddenInput.cursorPosition = at + (pad + t).length;
     // auto-send: the transcription is the message
     if (!root.busy && !root.sending) root.send();
+  }
+
+  // ----- live Voice Mode controls -----
+  function syncVoiceInstruction(sid, active, cb) {
+    if (!sid || root.svcUrl === "") { if (cb) cb(); return; }
+    const path = "/api/experimental/session/" + sid + "/instructions/entries/voice-mode";
+    if (active) {
+      api("PUT", path, {
+        value: "The user is talking to you in live Voice Mode (real-time spoken conversation). "
+             + "Reply naturally, concisely, and conversationally in plain spoken sentences (1-3 short sentences unless asked for more), "
+             + "matching the language the user speaks. Avoid markdown formatting, bullet lists, tables, or code blocks unless explicitly requested."
+      }, () => { if (cb) cb(); });
+    } else {
+      api("DELETE", path, null, () => { if (cb) cb(); });
+    }
+  }
+
+  function voiceSendCmd(obj) {
+    if (!voiceDaemonProc.running) return;
+    voiceDaemonProc.write(JSON.stringify(obj) + "\n");
+  }
+
+  function voiceResetStream() {
+    root.voiceStreamKey = "";
+    root.voiceSpokenLen = 0;
+    root.voiceSpokenPrefix = "";
+    root.voiceTtsPlaying = false;
+    root.voiceAssistantText = "";
+    root.voiceSendCmd({ cmd: "stop_tts" });
+  }
+
+  function startVoiceMode() {
+    if (root.voiceMode) return;
+    if (root.sttState !== "idle") root.cancelStt();
+    if (root.mode !== "chat") root.mode = "chat";
+    root.closeMenu();
+    root.voiceMode = true;
+    root.voiceShowChat = false;
+    root.voiceMuted = false;
+    root.voiceState = "starting";
+    root.voiceLevel = 0;
+    root.voiceUserText = "";
+    root.voiceAssistantText = "";
+    root.voiceTtsPlaying = false;
+    root.voiceStreamKey = "";
+    root.voiceSpokenLen = 0;
+    root.voiceSpokenPrefix = "";
+    root.voiceRawBuf = "";
+    if (root.session && root.session.id)
+      root.syncVoiceInstruction(root.session.id, true);
+    voiceDaemonProc.running = true;
+    // Voice Mode always speaks through its own model, regardless of what the
+    // session was last using (no-op when no voice model was chosen)
+    root.applyVoiceModel();
+    root.focusChatEditor();
+  }
+
+  function stopVoiceMode() {
+    if (!root.voiceMode) return;
+    root.voiceMode = false;
+    root.voiceShowChat = false;
+    root.voiceTtsPlaying = false;
+    root.voiceLevel = 0;
+    root.voiceState = "listening";
+    if (voiceDaemonProc.running) {
+      root.voiceSendCmd({ cmd: "quit" });
+      voiceDaemonProc.running = false;
+    }
+    if (root.session && root.session.id)
+      root.syncVoiceInstruction(root.session.id, false);
+    root.focusChatEditor();
+  }
+
+  function toggleVoiceMode() {
+    if (root.voiceMode) root.stopVoiceMode();
+    else root.startVoiceMode();
+  }
+
+  function toggleVoiceMute() {
+    if (!root.voiceMode) return;
+    root.voiceMuted = !root.voiceMuted;
+    root.voiceSendCmd({ cmd: "mute", muted: root.voiceMuted });
+    if (root.voiceMuted) {
+      root.voiceLevel = 0;
+      if (!root.voiceTtsPlaying && !root.busy) root.voiceState = "muted";
+    } else if (!root.voiceTtsPlaying && !root.busy) {
+      root.voiceState = "listening";
+    }
+  }
+
+  function setVoiceLang(l) {
+    OpencodeShared.setVoiceLang(l);
+    root.voiceSendCmd({ cmd: "lang", lang: l });
+  }
+
+  function setVoiceVolume(v) {
+    OpencodeShared.setVoiceVolume(v);
+    root.voiceSendCmd({ cmd: "volume", volume: OpencodeShared.voiceVolume });
+  }
+
+  // switching restarts the whisper server inside the daemon (background
+  // thread): the new model loads once and then stays warm for the session
+  function setVoiceStt(q) {
+    if (q !== "fast" && q !== "accurate") return;
+    OpencodeShared.setVoiceStt(q);
+    root.voiceSendCmd({ cmd: "stt", quality: q });
+    if (!voiceDaemonProc.running) return;
+    root.voiceSttSwapping = true;
+    voiceSttSwapTimer.restart();   // safety net: never stick in "switching"
+  }
+
+  Timer {
+    id: voiceSttSwapTimer
+    // a cold medium-q5 load takes a few seconds
+    interval: 20000
+    onTriggered: root.voiceSttSwapping = false
+  }
+
+  // Orb click / Space key in Voice Mode:
+  //   - speaking or busy → interrupt immediately and listen
+  //   - user currently speaking → commit utterance immediately without waiting for silence
+  //   - idle / muted → toggle mute
+  function voicePrimaryAction() {
+    if (!root.voiceMode) return;
+    if (root.voiceTtsPlaying || root.voiceState === "speaking" || root.busy || root.sending) {
+      root.voiceResetStream();
+      if (root.busy || root.sending) root.interrupt();
+      root.voiceState = root.voiceMuted ? "muted" : "listening";
+      return;
+    }
+    if (root.voiceState === "speech") {
+      root.voiceSendCmd({ cmd: "commit" });
+      return;
+    }
+    root.toggleVoiceMute();
+  }
+
+  // Strip markdown / code blocks so TTS speaks natural prose only
+  function cleanForSpeech(s) {
+    if (!s) return "";
+    return s
+      .replace(/```[\s\S]*?```/g, " ")
+      .replace(/~~~[\s\S]*?~~~/g, " ")
+      .replace(/`([^`]*)`?/g, "$1")
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+      .replace(/https?:\/\/\S+/g, "")
+      .replace(/(^|\n)\s*#{1,6}\s+/g, " ")
+      .replace(/(^|\n)\s*(?:[-*+]|\d+\.)\s+/g, " ")
+      .replace(/[*_~]+/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function voiceSpeak(text) {
+    if (!root.voiceMode || !text) return;
+    root.voiceSendCmd({ cmd: "speak", text: text });
+  }
+
+  // Incremental sentence splitter: called as SSE deltas flush and on text.ended
+  // so Piper synthesizes and speaks the first sentence while the LLM is still
+  // generating the rest of the reply.
+  function feedVoiceStream(key, fullText, ended) {
+    if (!root.voiceMode || !fullText) return;
+    if (key !== root.voiceStreamKey) {
+      // If the server just assigned a real message ID to the id-less delta row
+      // (or vice-versa), preserve voiceSpokenLen when the prefix matches.
+      if (root.voiceSpokenLen > 0 && root.voiceSpokenPrefix !== ""
+          && fullText.indexOf(root.voiceSpokenPrefix) === 0) {
+        root.voiceStreamKey = key;
+      } else {
+        root.voiceStreamKey = key;
+        root.voiceSpokenLen = 0;
+        root.voiceSpokenPrefix = "";
+      }
+    }
+    while (root.voiceSpokenLen < fullText.length) {
+      const rem = fullText.slice(root.voiceSpokenLen);
+      // If inside an unclosed code fence, wait until it closes (nobody wants
+      // raw code read aloud line by line)
+      const fences = (rem.match(/```/g) || []).length;
+      if (fences % 2 === 1 && !ended) break;
+
+      // While streaming (!ended), NEVER match `.` at `$` (end of partial buffer)
+      // because a token chunk ending in `config.` or `3.` or `1.` is not the end
+      // of a sentence until whitespace follows it. Also avoid splitting right
+      // after a numbered-list prefix (`1. `).
+      let m = ended
+        ? rem.match(/^([\s\S]{12,}?(?<!\b\d)[.!?…]+)(?=\s|\n|$)/)
+        : rem.match(/^([\s\S]{18,}?(?<!\b\d)[.!?…]+[\s\n]+)/);
+      if (!m) m = rem.match(/^([\s\S]{8,}?\n\n+)/);
+      if (!m && rem.length >= 160)
+        m = rem.match(/^([\s\S]{70,}?[;:—–])\s+/);
+
+      if (m) {
+        const chunk = m[1];
+        root.voiceSpokenLen += chunk.length;
+        if (root.voiceSpokenPrefix === "" && fullText.length >= 14)
+          root.voiceSpokenPrefix = fullText.slice(0, 24);
+        const spoken = root.cleanForSpeech(chunk);
+        if (spoken !== "") root.voiceSpeak(spoken);
+      } else if (ended) {
+        root.voiceSpokenLen = fullText.length;
+        const spoken = root.cleanForSpeech(rem);
+        if (spoken !== "") root.voiceSpeak(spoken);
+        break;
+      } else {
+        break;
+      }
+    }
+  }
+
+  // SplitParser already splits on \n and strips the trailing newline from
+  // each delivered segment, so parse each delivered line directly (keeping
+  // only an unclosed partial JSON line in voiceRawBuf if a write ever split).
+  function handleVoiceDaemonLine(chunk) {
+    const parts = (root.voiceRawBuf + chunk).split("\n");
+    root.voiceRawBuf = "";
+    for (let i = 0; i < parts.length; i++) {
+      const line = parts[i].trim();
+      if (line === "") continue;
+      if (!line.endsWith("}")) {
+        root.voiceRawBuf = line;
+        continue;
+      }
+      let ev = null;
+      try { ev = JSON.parse(line); } catch (e) { continue; }
+      if (!ev || !ev.type) continue;
+      switch (ev.type) {
+        case "ready":
+          root.voiceSendCmd({ cmd: "lang", lang: root.voiceLang });
+          root.voiceSendCmd({ cmd: "stt", quality: root.voiceStt });
+          root.voiceSendCmd({ cmd: "volume", volume: root.voiceVolume });
+          root.voiceSendCmd({ cmd: "mute", muted: root.voiceMuted });
+          root.voiceSendCmd({ cmd: "assistant_busy", busy: root.busy });
+          root.voiceState = root.voiceMuted ? "muted" : (root.busy ? "thinking" : "listening");
+          break;
+        case "stt_quality":
+          // the whisper server is being reloaded with the new model
+          root.voiceSttSwapping = true;
+          voiceSttSwapTimer.restart();
+          break;
+        case "stt_ready":
+          root.voiceSttSwapping = false;
+          voiceSttSwapTimer.stop();
+          if (root.voiceMode && root.voiceState === "starting")
+            root.voiceState = root.voiceMuted ? "muted"
+                            : (root.busy ? "thinking" : "listening");
+          break;
+        case "mic_level":
+          if (!root.voiceTtsPlaying) {
+            root.voiceLevel = ev.rms || 0;
+            if (ev.speaking && root.voiceState !== "speech")
+              root.voiceState = "speech";
+          }
+          break;
+        case "vad_start":
+          root.voiceAssistantText = "";
+          root.voiceState = "speech";
+          break;
+        case "barge_in":
+          root.voiceTtsPlaying = false;
+          root.voiceAssistantText = "";
+          root.voiceStreamKey = "";
+          root.voiceSpokenLen = 0;
+          root.voiceSpokenPrefix = "";
+          if (root.busy || root.sending) root.interrupt();
+          root.voiceState = "speech";
+          break;
+        case "stt_start":
+          root.voiceLevel = 0;
+          root.voiceState = "transcribing";
+          break;
+        case "stt_empty":
+          root.voiceLevel = 0;
+          root.voiceState = root.voiceMuted ? "muted"
+                          : (root.busy ? "thinking" : "listening");
+          break;
+        case "transcript": {
+          const t = (ev.text || "").trim();
+          root.voiceLastSttMs = ev.ms || 0;
+          root.voiceLevel = 0;
+          if (t === "") {
+            root.voiceState = root.voiceMuted ? "muted" : "listening";
+            break;
+          }
+          root.voiceUserText = t;
+          root.voiceAssistantText = "";
+          root.voiceStreamKey = "";
+          root.voiceSpokenLen = 0;
+          root.voiceSpokenPrefix = "";
+          root.voiceState = "thinking";
+          root.inputSyncing = true;
+          inputField.text = t;
+          hiddenInput.text = t;
+          root.inputSyncing = false;
+          root.send();
+          break;
+        }
+        case "tts_start":
+          root.voiceTtsPlaying = true;
+          root.voiceAssistantText = ev.text || "";
+          root.voiceState = "speaking";
+          break;
+        case "tts_level":
+          root.voiceLevel = ev.rms || 0;
+          if (root.voiceState !== "speaking") root.voiceState = "speaking";
+          break;
+        case "tts_done":
+          root.voiceTtsPlaying = false;
+          root.voiceLevel = 0;
+          root.voiceState = root.voiceMuted ? "muted"
+                          : (root.busy ? "thinking" : "listening");
+          break;
+        case "error":
+          if (ev.message) root.showToast(ev.message);
+          break;
+      }
+    }
+  }
+
+  onBusyChanged: {
+    if (!root.voiceMode) return;
+    root.voiceSendCmd({ cmd: "assistant_busy", busy: root.busy });
+    if (root.busy && !root.voiceTtsPlaying && root.voiceState !== "speech")
+      root.voiceState = "thinking";
+    else if (!root.busy && !root.voiceTtsPlaying && root.voiceState === "thinking")
+      root.voiceState = root.voiceMuted ? "muted" : "listening";
+  }
+
+  Process {
+    id: voiceDaemonProc
+    stdinEnabled: true
+    command: ["python3", "-u", root.voiceDaemonScript]
+    stdout: SplitParser {
+      onRead: chunk => root.handleVoiceDaemonLine(chunk)
+    }
+    onExited: {
+      root.voiceTtsPlaying = false;
+      root.voiceLevel = 0;
+      if (root.voiceMode && root.panelOpen) {
+        // unexpected exit while Voice Mode is still open: restart after a beat
+        voiceRestartTimer.restart();
+      }
+    }
+  }
+
+  Timer {
+    id: voiceRestartTimer
+    interval: 1000
+    onTriggered: if (root.voiceMode && root.panelOpen && !voiceDaemonProc.running)
+      voiceDaemonProc.running = true
   }
 
   Process {
@@ -2624,8 +3220,8 @@ Pill {
   Process {
     id: sttProc
     property string out: ""
-    command: ["whisper-cli", "-m", root.sttModel, "-l", "pt", "-np", "-nt",
-              "-f", root.micWav]
+    command: ["whisper-cli", "-t", "8", "-bo", "1", "-bs", "1", "-nf", "-sns",
+              "-m", root.sttModel, "-l", "pt", "-np", "-nt", "-f", root.micWav]
     stdout: SplitParser {
       onRead: data => sttProc.out += data + "\n"
     }
@@ -2641,6 +3237,20 @@ Pill {
   }
 
   // ---------- pill ----------
+  readonly property bool needsAttention:
+      root.pendingPerm !== null || root.pendingForms.length > 0
+
+  Rectangle {
+    anchors.fill: parent
+    anchors.margins: 2
+    radius: 6
+    color: root.panelOpen ? Theme.surface
+         : (mouse.containsMouse ? Theme.hover : "transparent")
+    border.width: root.panelOpen ? 1 : 0
+    border.color: Theme.border
+    Behavior on color { ColorAnimation { duration: 180 } }
+  }
+
   Text {
     id: label
     anchors.centerIn: parent
@@ -2648,17 +3258,39 @@ Pill {
     font.family: Theme.font
     font.bold: true
     font.pixelSize: 14
-    color: root.busy ? Theme.live
+    color: root.needsAttention ? Theme.err
+         : root.busy ? Theme.live
          : root.panelOpen ? Theme.accent
          : (mouse.containsMouse ? Theme.accent : Theme.text)
     Behavior on color { ColorAnimation { duration: 200 } }
-    // soft blink while a turn is running
+    scale: mouse.pressed ? 0.88 : (mouse.containsMouse ? 1.07 : 1)
+    Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+    // soft blink while a turn is running or waiting on user input
     SequentialAnimation on opacity {
-      running: root.busy
+      running: root.busy || root.needsAttention
       loops: Animation.Infinite
       NumberAnimation { to: 0.45; duration: 480; easing.type: Easing.InOutSine }
       NumberAnimation { to: 1; duration: 480; easing.type: Easing.InOutSine }
+      onRunningChanged: if (!running) label.opacity = 1
     }
+  }
+
+  // tiny status dot in the top-right corner of the pill while busy or asking
+  Rectangle {
+    id: pillDot
+    anchors.top: parent.top
+    anchors.right: parent.right
+    anchors.topMargin: 4
+    anchors.rightMargin: 4
+    width: 5
+    height: 5
+    radius: 2.5
+    readonly property bool shown: root.busy || root.needsAttention
+    visible: scale > 0
+    scale: shown ? 1 : 0
+    Behavior on scale { NumberAnimation { duration: 220; easing.type: Easing.OutBack } }
+    color: root.needsAttention ? Theme.err : Theme.live
+    Behavior on color { ColorAnimation { duration: 180 } }
   }
 
   MouseArea {
@@ -2674,8 +3306,10 @@ Pill {
 
   Tip {
     target: root
-    shown: mouse.containsMouse
-    text: "intelligence central"
+    shown: !root.standalone && mouse.containsMouse && !root.panelOpen
+    text: root.needsAttention ? "opencode — waiting for answer"
+        : root.busy ? "opencode — working…"
+        : "intelligence central"
   }
 
   // keyboard: the chat input field lives in the popup window, but the
@@ -2717,7 +3351,7 @@ Pill {
     if (root.menuPickSelected()) return;
     if (root.mode === "translate") translateBox.translate();
     else if (root.mode === "calc") root.calcSubmit();
-    else if (root.mode === "chat" && !root.finderPickSelected()) root.send();
+    else if (root.mode === "chat" && !root.finderPickSelected() && !root.cmdPickSelected()) root.send();
   }
 
   // calc tab: evaluate the echoed line, then clear the bar's real editor
@@ -2752,14 +3386,27 @@ Pill {
 
     onTextChanged: if (!root.inputSyncing) {
       root.inputSyncing = true;
-      if (root.mode === "translate") translateBox.sourceText = text;
-      else if (root.mode === "calc") calcBox.draft = text;
+      // A big paste is swapped for a "[Pasted +N lines]" marker here (see
+      // pasteCollapse). The visible field still holds the pre-paste draft —
+      // the two editors mirror each other — so that is what to diff against.
+      // The search menus own this editor as their query box, so leave them be.
+      const big = root.mode === "chat" && !root.menuSearchOpen
+                  && root.formTextTarget === null
+                  ? root.pasteCollapse(inputField.text, text) : null;
+      const t = big === null ? text : big.text;
+      if (root.mode === "translate") translateBox.sourceText = t;
+      else if (root.mode === "calc") calcBox.draft = t;
       // while a search menu is open the query belongs to the menu's field,
       // NOT the chat input (no duplicate typing in both)
       else if (root.menuSearchOpen) {
-        menuSearchField.text = text;
-        menuSearchField.cursorPosition = text.length;
-      } else inputField.text = text;
+        menuSearchField.text = t;
+        menuSearchField.cursorPosition = t.length;
+      } else inputField.text = t;
+      if (big !== null) {          // rewrite the paste away, caret after it
+        hiddenInput.text = t;
+        hiddenInput.cursorPosition = big.caret;
+        inputField.cursorPosition = Math.min(big.caret, t.length);
+      }
       root.inputSyncing = false;
       if (root.mode === "chat") {
         if (root.menuSearchOpen) root.menuSel = 0;
@@ -2807,6 +3454,30 @@ Pill {
         event.accepted = true;
         return;
       }
+      // Ctrl+Shift+V or Alt+V: toggle live ChatGPT-style Voice Mode
+      if (root.mode === "chat" && root.formTextTarget === null
+          && event.key === Qt.Key_V
+          && (((event.modifiers & Qt.ControlModifier) && (event.modifiers & Qt.ShiftModifier))
+              || (event.modifiers & Qt.AltModifier))) {
+        root.toggleVoiceMode();
+        event.accepted = true;
+        return;
+      }
+      // Voice Mode hands-free controls: Space interrupts/commits/unmutes, M mutes
+      if (root.voiceMode && root.mode === "chat" && root.menu === ""
+          && root.formTextTarget === null
+          && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier))) {
+        if (event.key === Qt.Key_Space) {
+          root.voicePrimaryAction();
+          event.accepted = true;
+          return;
+        }
+        if (event.key === Qt.Key_M) {
+          root.toggleVoiceMute();
+          event.accepted = true;
+          return;
+        }
+      }
       // Ctrl+V: attach a clipboard image when there is one, else paste text
       if (root.mode === "chat" && root.formTextTarget === null
           && event.key === Qt.Key_V && (event.modifiers & Qt.ControlModifier)) {
@@ -2832,10 +3503,17 @@ Pill {
         if (event.key === Qt.Key_Down) { root.menuMove(1); event.accepted = true; return; }
         if (event.key === Qt.Key_Up) { root.menuMove(-1); event.accepted = true; return; }
       }
-      // @-mention finder: arrows move the selection, Enter picks it
+      // @-mention finder: arrows move the selection, Enter/Tab picks it
       if (root.menu === "files" && root.fileHits.length > 0) {
         if (event.key === Qt.Key_Down) { root.finderMove(1); event.accepted = true; return; }
         if (event.key === Qt.Key_Up) { root.finderMove(-1); event.accepted = true; return; }
+        if (event.key === Qt.Key_Tab) { root.finderPickSelected(); event.accepted = true; return; }
+      }
+      // slash-command menu: arrows move the selection, Tab completes it
+      if (root.menu === "commands" && root.filteredCommands().length > 0) {
+        if (event.key === Qt.Key_Down) { root.cmdMove(1); event.accepted = true; return; }
+        if (event.key === Qt.Key_Up) { root.cmdMove(-1); event.accepted = true; return; }
+        if (event.key === Qt.Key_Tab) { root.cmdPickSelected(); event.accepted = true; return; }
       }
     }
     // Enter sends / Shift+Enter inserts a newline (see handleReturnKey).
@@ -2867,9 +3545,9 @@ Pill {
   }
 
   // ---- panel motion --------------------------------------------------------
-  // Open/close drives `panelFade` (and a little scale) instead of the window
-  // geometry. Only opacity/transform change per frame, so the compositor keeps
-  // the surface buffer as-is and the animation stays smooth.
+  // Open/close drives `panelFade`, `panelSlideX/Y` and `scale` instead of the
+  // window geometry. Only opacity/transform change per frame, so the compositor
+  // keeps the surface buffer as-is and the animation stays smooth.
   ParallelAnimation {
     id: showAnim
     NumberAnimation {
@@ -2877,8 +3555,16 @@ Pill {
       from: 0; to: 1; duration: 190; easing.type: Easing.OutCubic
     }
     NumberAnimation {
+      target: root; property: "panelSlideX"
+      from: root.panelExpanded ? 0 : 10; to: 0; duration: 220; easing.type: Easing.OutCubic
+    }
+    NumberAnimation {
+      target: root; property: "panelSlideY"
+      from: -10; to: 0; duration: 220; easing.type: Easing.OutCubic
+    }
+    NumberAnimation {
       target: panelContent; property: "scale"
-      from: 0.97; to: 1; duration: 230; easing.type: Easing.OutCubic
+      from: 0.96; to: 1; duration: 240; easing.type: Easing.OutBack; easing.overshoot: 0.8
     }
   }
   ParallelAnimation {
@@ -2888,8 +3574,16 @@ Pill {
       to: 0; duration: 160; easing.type: Easing.OutCubic
     }
     NumberAnimation {
+      target: root; property: "panelSlideX"
+      to: root.panelExpanded ? 0 : 8; duration: 180; easing.type: Easing.OutCubic
+    }
+    NumberAnimation {
+      target: root; property: "panelSlideY"
+      to: -8; duration: 180; easing.type: Easing.OutCubic
+    }
+    NumberAnimation {
       target: panelContent; property: "scale"
-      to: 0.97; duration: 200; easing.type: Easing.OutCubic
+      to: 0.97; duration: 190; easing.type: Easing.OutCubic
     }
   }
   // Full mode is a real toplevel, not a layer-shell popup: Hyprland manages it
@@ -3028,27 +3722,32 @@ Pill {
           ? (fullWin.height > 0 ? fullWin.height : panel.expandedH)
           : panel.collapsedH
       color: Theme.bg
-      radius: root.panelExpanded ? 12 : 6
+      // Full mode is a real Hyprland toplevel, so it must match the
+      // compositor's own window rounding (rounding - border_size) or the
+      // rounded surface pulls away from the inside of Hyprland's border and
+      // the wallpaper shows through the corner gap. Docked mode is a
+      // layer-shell popup with no compositor chrome, so it keeps its own 8px.
+      radius: root.panelExpanded ? HyprSettings.hyprWindowRadius : 8
       Behavior on radius { NumberAnimation { duration: 260; easing.type: Easing.OutCubic } }
       border.color: Theme.border
-      border.width: 1
-      // open/close and the docked<->expanded swap both drive `panelFade`
-      // (animated in root); the panel slides down slightly and scales a hair
-      // so it drops out of the bar instead of blinking. The window stays
-      // mapped for hideAnim while closing.
+      // Hyprland draws the border around the full window itself; only the
+      // docked popup (a layer surface) needs the shell's own hairline.
+      border.width: root.panelExpanded ? 0 : 1
+      // open/close drives `panelFade` and `panelSlideX/Y` (animated in root);
+      // the panel slides out from the right bar when docked, or scales from the
+      // center when expanded. The window stays mapped for hideAnim while closing.
       opacity: root.panelFade
       scale: 1
-      // grow from the bar edge when docked, from the middle when expanded
-      transformOrigin: root.panelExpanded ? Item.Center : Item.Top
+      transformOrigin: root.panelExpanded ? Item.Center : Item.TopRight
       transform: Translate {
-        y: root.panelOpen ? 0 : -12
-        Behavior on y { NumberAnimation { duration: 230; easing.type: Easing.OutCubic } }
+        x: root.panelSlideX
+        y: root.panelSlideY
       }
 
       // chat is empty (and no menu open) → TUI-style centered prompt
       property bool empty: root.mode === "chat" && chatModel.count === 0
                            && root.menu === "" && root.pendingImages.length === 0
-                           && !root.chatLoading
+                           && !root.chatLoading && !root.voiceMode
 
       // full-mode chat-history rail (see the sidebar below). It is available
       // ONLY in the large window's chat tab — the docked dropdown never gets
@@ -3079,9 +3778,10 @@ Pill {
         id: sidebar
         // stays "visible" while the rail is available so the width/opacity
         // animation is actually seen; opacity handles the open/close
-        visible: panelContent.sidebarAvailable
+        visible: panelContent.sidebarAvailable && width > 0
         opacity: panelContent.sidebarVisible ? 1 : 0
         Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+        clip: true
         x: 0
         y: 0
         width: panelContent.sidebarW
@@ -3112,14 +3812,17 @@ Pill {
           height: 32
           radius: 6
           color: newSideMa.containsMouse || root.newChatPending
-                 ? Theme.hover : "transparent"
+                 ? Theme.hover : Theme.surface
+          border.width: 1
+          border.color: root.newChatPending ? Theme.muted : Theme.border
           Behavior on color { ColorAnimation { duration: 150 } }
+          Behavior on border.color { ColorAnimation { duration: 150 } }
           scale: newSideMa.pressed ? 0.97 : (newSideMa.containsMouse ? 1.02 : 1)
           Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
 
           Row {
             anchors.left: parent.left
-            anchors.leftMargin: 8
+            anchors.leftMargin: 10
             anchors.verticalCenter: parent.verticalCenter
             spacing: 8
 
@@ -3135,9 +3838,20 @@ Pill {
               anchors.verticalCenter: parent.verticalCenter
               text: "New chat"
               font.family: Theme.font
+              font.bold: root.newChatPending
               font.pixelSize: 11
               color: root.newChatPending ? Theme.accent : Theme.text
             }
+          }
+
+          Text {
+            anchors.right: parent.right
+            anchors.rightMargin: 10
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Ctrl+N"
+            font.family: Theme.font
+            font.pixelSize: 9
+            color: Theme.muted
           }
 
           MouseArea {
@@ -3286,18 +4000,21 @@ Pill {
               Column {
                 id: sideGroup
                 required property var modelData
+                required property int index
                 width: sideList.width
                 spacing: 1
 
                 Text {
                   width: parent.width
-                  height: 24
+                  height: sideGroup.index > 0 ? 30 : 22
+                  topPadding: sideGroup.index > 0 ? 8 : 0
                   leftPadding: 8
                   verticalAlignment: Text.AlignVCenter
-                  text: sideGroup.modelData.label
+                  text: sideGroup.modelData.label.toUpperCase()
                   font.family: Theme.font
                   font.pixelSize: 9
                   font.bold: true
+                  font.letterSpacing: 0.5
                   color: Theme.muted
                   elide: Text.ElideRight
                 }
@@ -3335,18 +4052,18 @@ Pill {
                       anchors.leftMargin: 2
                       anchors.verticalCenter: parent.verticalCenter
                       width: 3; height: 16; radius: 1.5
-                      color: Theme.accent
+                      color: sideRow.running ? Theme.live : Theme.accent
                     }
 
                     Text {
                       anchors.left: parent.left
-                      anchors.leftMargin: 8
+                      anchors.leftMargin: sideRow.cur ? 11 : 9
                       anchors.right: parent.right
                       anchors.rightMargin: sideDel.visible ? 30 : 8
                       anchors.verticalCenter: parent.verticalCenter
-                      // running agents get a live dot, the open one a filled
-                      // dot; untitled chats never show the raw ses_ id
-                      text: (sideRow.cur ? "● " : sideRow.running ? "◌ " : "")
+                      // running agents get a live dot; untitled chats never
+                      // show the raw ses_ id
+                      text: (sideRow.running ? "● " : "")
                             + root.sessionLabel(sideRow.modelData)
                       font.family: Theme.font
                       font.pixelSize: 10
@@ -3371,8 +4088,10 @@ Pill {
                       anchors.verticalCenter: parent.verticalCenter
                       width: 20; height: 20; radius: 4
                       visible: sideHover.hovered
-                      color: sideDelMa.containsMouse ? Theme.hover : "transparent"
+                      color: sideDelMa.containsMouse ? Theme.surface : "transparent"
                       Behavior on color { ColorAnimation { duration: 150 } }
+                      scale: sideDelMa.pressed ? 0.88 : (sideDelMa.containsMouse ? 1.08 : 1)
+                      Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
 
                       Text {
                         anchors.centerIn: parent
@@ -3419,258 +4138,408 @@ Pill {
         spacing: 8
 
         // ----- header -----
-        Row {
+        Item {
           id: headerRow
           width: parent.width
           height: 26
-          spacing: 8
 
-          // history-rail toggle: only exists in the big window's chat tab, so
-          // it is the open/close control for `root.sidebarOpen` (hidden while
-          // docked, where the rail is never available)
-          Rectangle {
-            id: sidebarBtn
+          Row {
+            id: headerLeft
+            anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            visible: root.panelExpanded && root.mode === "chat"
-            width: 24; height: 20; radius: 5
-            color: sidebarMa.containsMouse ? Theme.hover : "transparent"
-            Behavior on color { ColorAnimation { duration: 200 } }
-            scale: sidebarMa.pressed ? 0.86 : (sidebarMa.containsMouse ? 1.04 : 1)
-            Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+            spacing: 6
 
-            Text {
-              anchors.centerIn: parent
-              text: "\uf0c9"          // bars — open/close the history rail
-              font.family: Theme.font
-              font.pixelSize: 12
-              color: root.sidebarOpen ? Theme.accent : Theme.muted
-            }
-
-            MouseArea {
-              id: sidebarMa
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.sidebarOpen = !root.sidebarOpen
-            }
-          }
-
-          // central tabs: chat / translate / calculator.
-          // Hidden in full mode — that window is chat-only.
-          Item {
-            id: tabWrap
-            anchors.verticalCenter: parent.verticalCenter
-            visible: !root.panelExpanded
-            width: tabRow.width
-            height: 20
-
-            // sliding highlight behind the active tab (segmented-control feel)
+            // history-rail toggle: only exists in the big window's chat tab, so
+            // it is the open/close control for `root.sidebarOpen` (hidden while
+            // docked, where the rail is never available)
             Rectangle {
-              id: tabIndicator
-              width: 24; height: 20; radius: 5
-              color: Theme.hover
-              x: (root.mode === "chat" ? 0
-                  : root.mode === "translate" ? 1 : 2) * (width + tabRow.spacing)
-              Behavior on x { NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }
+              id: sidebarBtn
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.panelExpanded && root.mode === "chat"
+              width: 24; height: 22; radius: 5
+              color: sidebarMa.containsMouse ? Theme.hover
+                   : (root.sidebarOpen ? Theme.surface : "transparent")
+              border.width: root.sidebarOpen ? 1 : 0
+              border.color: Theme.border
+              Behavior on color { ColorAnimation { duration: 180 } }
+              scale: sidebarMa.pressed ? 0.88 : (sidebarMa.containsMouse ? 1.05 : 1)
+              Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+
+              Text {
+                anchors.centerIn: parent
+                text: "\uf0c9"          // bars — open/close the history rail
+                font.family: Theme.font
+                font.pixelSize: 11
+                color: root.sidebarOpen ? Theme.accent : Theme.muted
+                Behavior on color { ColorAnimation { duration: 180 } }
+              }
+
+              MouseArea {
+                id: sidebarMa
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.sidebarOpen = !root.sidebarOpen
+              }
             }
 
-            Row {
-              id: tabRow
-              spacing: 4
+            // central tabs: chat / translate / calculator.
+            // Hidden in full mode — that window is chat-only.
+            Rectangle {
+              id: tabWrap
+              anchors.verticalCenter: parent.verticalCenter
+              visible: !root.panelExpanded
+              width: tabRow.width + 4
+              height: 24
+              radius: 6
+              color: Theme.surface
+              border.color: Theme.border
+              border.width: 1
 
-              Repeater {
-                model: [
-                  { id: "chat", icon: "󰆍" },
-                  { id: "translate", icon: "\uf1ab" },
-                  { id: "calc", icon: "\uf1ec" },
-                ]
+              // sliding highlight behind the active tab (segmented-control feel)
+              Rectangle {
+                id: tabIndicator
+                y: 2
+                width: 24; height: 20; radius: 4
+                color: Theme.hover
+                x: 2 + (root.mode === "chat" ? 0
+                    : root.mode === "translate" ? 1 : 2) * (width + tabRow.spacing)
+                Behavior on x { NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }
+              }
 
-                delegate: Rectangle {
-                  required property var modelData
+              Row {
+                id: tabRow
+                x: 2; y: 2
+                spacing: 2
 
-                  readonly property bool cur: root.mode === modelData.id
-                  width: 24; height: 20; radius: 5
-                  // the sliding indicator draws the active background; the
-                  // delegate only tints on hover
-                  color: tabMa.containsMouse ? Theme.hover : "transparent"
-                  Behavior on color { ColorAnimation { duration: 200 } }
-                  scale: tabMa.pressed ? 0.88 : (cur ? 1 : (tabMa.containsMouse ? 1.06 : 1))
-                  Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+                Repeater {
+                  model: [
+                    { id: "chat", icon: "󰆍" },
+                    { id: "translate", icon: "\uf1ab" },
+                    { id: "calc", icon: "\uf1ec" },
+                  ]
 
-                  Text {
-                    anchors.centerIn: parent
-                    text: parent.modelData.icon
-                    font.family: Theme.font
-                    font.pixelSize: 12
-                    color: parent.cur ? Theme.accent : Theme.muted
-                    Behavior on color { ColorAnimation { duration: 200 } }
-                  }
+                  delegate: Rectangle {
+                    required property var modelData
 
-                  MouseArea {
-                    id: tabMa
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: root.mode = parent.modelData.id
+                    readonly property bool cur: root.mode === modelData.id
+                    width: 24; height: 20; radius: 4
+                    // the sliding indicator draws the active background; the
+                    // delegate only tints on hover
+                    color: tabMa.containsMouse && !cur ? Theme.hover : "transparent"
+                    Behavior on color { ColorAnimation { duration: 180 } }
+                    scale: tabMa.pressed ? 0.88 : (cur ? 1 : (tabMa.containsMouse ? 1.06 : 1))
+                    Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+
+                    Text {
+                      anchors.centerIn: parent
+                      text: parent.modelData.icon
+                      font.family: Theme.font
+                      font.pixelSize: 12
+                      color: parent.cur ? Theme.accent : Theme.muted
+                      Behavior on color { ColorAnimation { duration: 180 } }
+                    }
+
+                    MouseArea {
+                      id: tabMa
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: root.mode = parent.modelData.id
+                    }
                   }
                 }
               }
             }
-          }
 
-          // new chat — the docked panel has no history rail, so this is its
-          // "New chat" action (the big window uses the rail's row instead)
-          Rectangle {
-            id: newChatBtn
-
-            anchors.verticalCenter: parent.verticalCenter
-            visible: !root.panelExpanded && root.mode === "chat"
-            width: 24; height: 20; radius: 5
-            color: newChatMa.containsMouse || root.newChatPending
-                   ? Theme.hover : "transparent"
-            Behavior on color { ColorAnimation { duration: 200 } }
-            scale: newChatMa.pressed ? 0.86 : (newChatMa.containsMouse ? 1.04 : 1)
-            Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-
+            // mode title shown when in translate or calculator tab
             Text {
-              anchors.centerIn: parent
-              text: "\uf067"        // plus
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.mode !== "chat"
+              text: root.mode === "translate" ? "translate  ·  auto-detect"
+                  : "calculator  ·  arbitrary-precision REPL"
               font.family: Theme.font
-              font.pixelSize: 12
-              color: root.newChatPending ? Theme.accent : Theme.muted
-              Behavior on color { ColorAnimation { duration: 200 } }
-            }
-
-            MouseArea {
-              id: newChatMa
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.newChat()
-            }
-          }
-
-          // session title — click for the session list. Width accounts for
-          // every sibling (incl. the stop button, which appears mid-turn)
-          // so the header never overflows the panel edge
-          Text {
-            id: titleText
-            anchors.verticalCenter: parent.verticalCenter
-            visible: root.mode === "chat"
-            width: parent.width - (tabRow.visible ? tabRow.width : 0)
-                   - costText.width
-                   - modelBtn.width - agentBtn.width
-                   - 56
-                   - (sidebarBtn.visible ? sidebarBtn.width + 8 : 0)
-                   - (newChatBtn.visible ? newChatBtn.width + 8 : 0)
-                   - (stopBtn.visible ? stopBtn.width + 8 : 0)
-            text: root.session ? (root.session.title || "opencode") : "opencode — new chat"
-            font.family: Theme.font
-            font.bold: true
-            font.pixelSize: 12
-            color: Theme.accent
-            elide: Text.ElideRight
-
-            MouseArea {
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.menu === "sessions" ? root.closeMenu() : root.openMenu("sessions")
-            }
-          }
-
-          Text {
-            id: costText
-            anchors.verticalCenter: parent.verticalCenter
-            visible: root.mode === "chat"
-            text: root.session && root.session.cost > 0
-                  ? "$" + root.session.cost.toFixed(2) : ""
-            font.family: Theme.font
-            font.pixelSize: 10
-            color: Theme.muted
-          }
-
-          // model chip — click for the model list
-          Rectangle {
-            id: modelBtn
-            anchors.verticalCenter: parent.verticalCenter
-            visible: root.mode === "chat"
-            width: modelText.implicitWidth + 14
-            height: 22
-            radius: 5
-            color: modelMa.containsMouse ? Theme.hover : Theme.surface
-            Behavior on color { ColorAnimation { duration: 200 } }
-            scale: modelMa.pressed ? 0.95 : (modelMa.containsMouse ? 1.05 : 1)
-            Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
-            Text {
-              id: modelText
-              anchors.centerIn: parent
-              // friendly model name (with the reasoning variant), never the raw
-              // id when the picker knows it
-              text: root.modelChipLabel()
-              font.family: Theme.font
-              font.pixelSize: 10
-              color: Theme.text
-            }
-            MouseArea {
-              id: modelMa
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.menu === "models" ? root.closeMenu() : root.openMenu("models")
-            }
-          }
-
-          // agent chip — click for the agent list
-          Rectangle {
-            id: agentBtn
-            anchors.verticalCenter: parent.verticalCenter
-            visible: root.mode === "chat"
-            width: agentText.implicitWidth + 14
-            height: 22
-            radius: 5
-            color: agentMa.containsMouse ? Theme.hover : Theme.surface
-            Behavior on color { ColorAnimation { duration: 200 } }
-            scale: agentMa.pressed ? 0.95 : (agentMa.containsMouse ? 1.05 : 1)
-            Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
-            Text {
-              id: agentText
-              anchors.centerIn: parent
-              // friendly agent name, not the raw id
-              text: root.agentChipLabel()
-              font.family: Theme.font
-              font.pixelSize: 10
-              color: Theme.text
-            }
-            MouseArea {
-              id: agentMa
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.menu === "agents" ? root.closeMenu() : root.openMenu("agents")
-            }
-          }
-
-          Rectangle {
-            id: stopBtn
-            anchors.verticalCenter: parent.verticalCenter
-            width: 22; height: 22; radius: 5
-            visible: (root.busy || root.sending) && root.mode === "chat"
-            color: stopMa.containsMouse ? Theme.hover : Theme.surface
-            Behavior on color { ColorAnimation { duration: 200 } }
-            Text {
-              anchors.centerIn: parent
-              text: "\uf04d"
-              font.family: Theme.font
+              font.bold: true
               font.pixelSize: 11
-              color: Theme.err
+              color: Theme.accent
             }
-            MouseArea {
-              id: stopMa
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.interrupt()
+
+            // new chat — the docked panel has no history rail, so this is its
+            // "New chat" action (the big window uses the rail's row instead)
+            Rectangle {
+              id: newChatBtn
+
+              anchors.verticalCenter: parent.verticalCenter
+              visible: !root.panelExpanded && root.mode === "chat"
+              width: 24; height: 22; radius: 5
+              color: newChatMa.containsMouse || root.newChatPending
+                     ? Theme.hover : Theme.surface
+              border.width: 1
+              border.color: root.newChatPending ? Theme.muted : Theme.border
+              Behavior on color { ColorAnimation { duration: 180 } }
+              scale: newChatMa.pressed ? 0.86 : (newChatMa.containsMouse ? 1.05 : 1)
+              Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+
+              Text {
+                anchors.centerIn: parent
+                text: "\uf067"        // plus
+                font.family: Theme.font
+                font.pixelSize: 11
+                color: root.newChatPending || newChatMa.containsMouse ? Theme.accent : Theme.text
+                Behavior on color { ColorAnimation { duration: 180 } }
+              }
+
+              MouseArea {
+                id: newChatMa
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.newChat()
+              }
+            }
+
+            // session title pill — hugs the title text so the dropdown chevron
+            // sits right next to the title rather than floating at the far right
+            // of a wide window, while clamping cleanly before headerRight.
+            Rectangle {
+              id: titleBtn
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.mode === "chat"
+              readonly property bool active: root.menu === "sessions"
+              readonly property int maxW: Math.max(80, headerRow.width
+                     - (tabWrap.visible ? tabWrap.width + headerLeft.spacing : 0)
+                     - (sidebarBtn.visible ? sidebarBtn.width + headerLeft.spacing : 0)
+                     - (newChatBtn.visible ? newChatBtn.width + headerLeft.spacing : 0)
+                     - headerRight.width - 12)
+              readonly property int naturalW:
+                     (titleLiveDot.visible ? 17 : 8) + titleMeasure.implicitWidth + 24
+              width: Math.min(maxW, Math.max(72, naturalW))
+              height: 22
+              radius: 5
+              color: titleMa.containsMouse || active ? Theme.hover : "transparent"
+              border.width: active ? 1 : 0
+              border.color: Theme.border
+              Behavior on color { ColorAnimation { duration: 180 } }
+
+              Text {
+                id: titleMeasure
+                visible: false
+                text: root.session ? (root.session.title || "opencode") : "new chat"
+                font.family: Theme.font
+                font.bold: true
+                font.pixelSize: 12
+              }
+
+              // live turn dot next to the session title
+              Rectangle {
+                id: titleLiveDot
+                anchors.left: parent.left
+                anchors.leftMargin: 6
+                anchors.verticalCenter: parent.verticalCenter
+                visible: root.busy || root.sending
+                width: 6; height: 6; radius: 3
+                color: Theme.live
+                SequentialAnimation on opacity {
+                  running: titleLiveDot.visible
+                  loops: Animation.Infinite
+                  NumberAnimation { to: 0.35; duration: 500; easing.type: Easing.InOutSine }
+                  NumberAnimation { to: 1.0; duration: 500; easing.type: Easing.InOutSine }
+                }
+              }
+
+              Text {
+                id: titleText
+                anchors.left: parent.left
+                anchors.leftMargin: titleLiveDot.visible ? 17 : 8
+                anchors.right: titleChev.left
+                anchors.rightMargin: 5
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.session ? (root.session.title || "opencode") : "new chat"
+                font.family: Theme.font
+                font.bold: true
+                font.pixelSize: 12
+                color: Theme.accent
+                elide: Text.ElideRight
+              }
+
+              Text {
+                id: titleChev
+                anchors.right: parent.right
+                anchors.rightMargin: 7
+                anchors.verticalCenter: parent.verticalCenter
+                text: "\uf0d7"
+                font.family: Theme.font
+                font.pixelSize: 10
+                color: titleBtn.active || titleMa.containsMouse ? Theme.accent : Theme.muted
+                rotation: titleBtn.active ? 180 : 0
+                Behavior on rotation { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                Behavior on color { ColorAnimation { duration: 150 } }
+              }
+
+              MouseArea {
+                id: titleMa
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.menu === "sessions" ? root.closeMenu() : root.openMenu("sessions")
+              }
+            }
+          }
+
+          Row {
+            id: headerRight
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            visible: root.mode === "chat"
+            spacing: 6
+
+            Rectangle {
+              id: costBadge
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.mode === "chat" && root.session !== null && root.session.cost > 0
+              width: costText.implicitWidth + 10
+              height: 20
+              radius: 4
+              color: Theme.surface
+              Text {
+                id: costText
+                anchors.centerIn: parent
+                text: root.session && root.session.cost > 0
+                      ? "$" + root.session.cost.toFixed(2) : ""
+                font.family: Theme.font
+                font.pixelSize: 9
+                color: Theme.muted
+              }
+            }
+
+            // model chip — click for the model list
+            Rectangle {
+              id: modelBtn
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.mode === "chat"
+              readonly property bool active: root.menu === "models"
+              width: Math.min(185, modelText.implicitWidth + 24)
+              height: 22
+              radius: 5
+              color: modelMa.containsMouse || active ? Theme.hover : Theme.surface
+              border.width: 1
+              border.color: active ? Theme.muted : Theme.border
+              Behavior on color { ColorAnimation { duration: 180 } }
+              Behavior on border.color { ColorAnimation { duration: 180 } }
+              scale: modelMa.pressed ? 0.96 : (modelMa.containsMouse ? 1.04 : 1)
+              Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+              Text {
+                id: modelText
+                anchors.left: parent.left
+                anchors.leftMargin: 7
+                anchors.right: modelChev.left
+                anchors.rightMargin: 4
+                anchors.verticalCenter: parent.verticalCenter
+                // friendly model name (with the reasoning variant), never the raw
+                // id when the picker knows it
+                text: root.modelChipLabel()
+                font.family: Theme.font
+                font.pixelSize: 10
+                color: modelBtn.active ? Theme.accent : Theme.text
+                elide: Text.ElideRight
+              }
+              Text {
+                id: modelChev
+                anchors.right: parent.right
+                anchors.rightMargin: 6
+                anchors.verticalCenter: parent.verticalCenter
+                text: "\uf0d7"
+                font.family: Theme.font
+                font.pixelSize: 9
+                color: modelBtn.active ? Theme.accent : Theme.muted
+                rotation: modelBtn.active ? 180 : 0
+                Behavior on rotation { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+              }
+              MouseArea {
+                id: modelMa
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.menu === "models" ? root.closeMenu() : root.openMenu("models")
+              }
+            }
+
+            // agent chip — click for the agent list
+            Rectangle {
+              id: agentBtn
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.mode === "chat"
+              readonly property bool active: root.menu === "agents"
+              width: Math.min(115, agentText.implicitWidth + 24)
+              height: 22
+              radius: 5
+              color: agentMa.containsMouse || active ? Theme.hover : Theme.surface
+              border.width: 1
+              border.color: active ? Theme.muted : Theme.border
+              Behavior on color { ColorAnimation { duration: 180 } }
+              Behavior on border.color { ColorAnimation { duration: 180 } }
+              scale: agentMa.pressed ? 0.96 : (agentMa.containsMouse ? 1.04 : 1)
+              Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+              Text {
+                id: agentText
+                anchors.left: parent.left
+                anchors.leftMargin: 7
+                anchors.right: agentChev.left
+                anchors.rightMargin: 4
+                anchors.verticalCenter: parent.verticalCenter
+                // friendly agent name, not the raw id
+                text: root.agentChipLabel()
+                font.family: Theme.font
+                font.pixelSize: 10
+                color: agentBtn.active ? Theme.accent : Theme.text
+                elide: Text.ElideRight
+              }
+              Text {
+                id: agentChev
+                anchors.right: parent.right
+                anchors.rightMargin: 6
+                anchors.verticalCenter: parent.verticalCenter
+                text: "\uf0d7"
+                font.family: Theme.font
+                font.pixelSize: 9
+                color: agentBtn.active ? Theme.accent : Theme.muted
+                rotation: agentBtn.active ? 180 : 0
+                Behavior on rotation { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+              }
+              MouseArea {
+                id: agentMa
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.menu === "agents" ? root.closeMenu() : root.openMenu("agents")
+              }
+            }
+
+            Rectangle {
+              id: stopBtn
+              anchors.verticalCenter: parent.verticalCenter
+              width: 22; height: 22; radius: 5
+              visible: (root.busy || root.sending) && root.mode === "chat"
+              color: stopMa.containsMouse ? Theme.hover : Theme.surface
+              border.width: 1
+              border.color: Theme.border
+              Behavior on color { ColorAnimation { duration: 200 } }
+              scale: stopMa.pressed ? 0.9 : (stopMa.containsMouse ? 1.06 : 1)
+              Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+              Text {
+                anchors.centerIn: parent
+                text: "\uf04d"
+                font.family: Theme.font
+                font.pixelSize: 10
+                color: Theme.err
+              }
+              MouseArea {
+                id: stopMa
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.interrupt()
+              }
             }
           }
         }
@@ -3702,10 +4571,12 @@ Pill {
           id: chatArea
           transform: Translate { x: root.swipeOfs }
           width: parent.width
+          readonly property int bottomDockH:
+              root.voiceMode ? (root.voiceShowChat ? 46 : 0) : inputRow.height
           height: root.mode === "chat"
               ? parent.height - headerRow.height - menuBox.height
                 - errorLine.height - permBanner.height - formBanner.height
-                - inputRow.height - 10
+                - bottomDockH - 10
                 // Column spacing only applies between VISIBLE children; the
                 // old hardcoded 8*5 reserved four gaps that are hidden in the
                 // normal case, leaving ~32px of dead space above the input
@@ -3728,6 +4599,7 @@ Pill {
             clip: true
             spacing: 8
             model: chatModel
+            visible: !root.voiceMode || root.voiceShowChat
 
             // hidden while history loads, so the chunked rebuild is not seen
             // as content assembling itself; it fades in once complete
@@ -3783,54 +4655,82 @@ Pill {
               required property string diff
               required property bool live
               readonly property bool open: root.expanded[key] === true
+              readonly property bool isFold: kind === "tool" || kind === "reasoning"
+              readonly property bool toolErr: state.indexOf("error") !== -1
+              readonly property bool toolLive: /running|streaming/.test(state)
               width: chatView.width
               height: msgRect.implicitHeight + 4
+
+              // smooth entrance when new rows arrive live (skipped during bulk rebuilds)
+              property real enterFade: (root.rebuilding || root.chatLoading) ? 1 : 0
+              property real enterY: (root.rebuilding || root.chatLoading) ? 0 : 6
+              opacity: enterFade
+              transform: Translate { y: msgDel.enterY }
+              Component.onCompleted: {
+                enterFade = 1;
+                enterY = 0;
+              }
+              Behavior on enterFade { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+              Behavior on enterY { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
 
               Rectangle {
                 id: msgRect
                 anchors.right: msgDel.kind === "user" ? parent.right : undefined
                 anchors.left: msgDel.kind === "user" ? undefined : parent.left
-                anchors.leftMargin: msgDel.kind === "tool" || msgDel.kind === "reasoning" ? 14 : 0
+                anchors.leftMargin: msgDel.isFold ? 8 : 0
                 width: {
-                  if (msgDel.kind === "assistant") return parent.width - 16;
-                  if (msgDel.kind === "user")
-                    return Math.min(parent.width - 20, userMeasure.implicitWidth + 20);
-                  return parent.width - 30;
+                  if (msgDel.kind === "assistant") return parent.width - 8;
+                  if (msgDel.kind === "user") return userText.width + 24;
+                  return parent.width - 16;
                 }
                 implicitHeight: {
-                  if (msgDel.kind === "user") return userText.contentHeight + 14;
-                  if (msgDel.kind === "assistant") return asstText.contentHeight + 8;
+                  if (msgDel.kind === "user") return userText.contentHeight + 16;
+                  if (msgDel.kind === "assistant") return asstText.contentHeight + 10;
                   if (msgDel.open)
-                    return foldHead.implicitHeight + 6 + foldCol.implicitHeight + 14;
-                  return foldHead.implicitHeight + 8;
+                    return foldHeadBox.height + 6 + foldCol.implicitHeight + 14;
+                  return foldHeadBox.height;
                 }
                 radius: 8
-                color: msgDel.kind === "user" ? Theme.surface : "transparent"
-                border.width: msgDel.kind === "user" ? 1 : 0
+                color: msgDel.kind === "user" ? Theme.surface
+                     : (msgDel.isFold && msgDel.open ? Theme.surface : "transparent")
+                border.width: (msgDel.kind === "user" || (msgDel.isFold && msgDel.open)) ? 1 : 0
                 border.color: Theme.border
+                Behavior on color { ColorAnimation { duration: 160 } }
 
                 // soft pulse behind the assistant message that is streaming,
-                // so the "live" one is obvious at a glance
+                // plus a live left accent bar so the streaming block is clear
                 Rectangle {
                   visible: msgDel.kind === "assistant" && msgDel.live
                   anchors.fill: parent
                   radius: 8
                   color: Theme.surface
-                  opacity: 0.08
+                  opacity: 0.1
                   SequentialAnimation on opacity {
                     running: visible
                     loops: Animation.Infinite
-                    NumberAnimation { to: 0.32; duration: 750; easing.type: Easing.InOutSine }
+                    NumberAnimation { to: 0.3; duration: 750; easing.type: Easing.InOutSine }
                     NumberAnimation { to: 0.08; duration: 750; easing.type: Easing.InOutSine }
                   }
                 }
 
+                Rectangle {
+                  visible: msgDel.kind === "assistant" && msgDel.live
+                  anchors.left: parent.left
+                  anchors.top: parent.top
+                  anchors.bottom: parent.bottom
+                  anchors.topMargin: 6
+                  anchors.bottomMargin: 6
+                  width: 2
+                  radius: 1
+                  color: Theme.live
+                }
+
                 // invisible measure: TextEdit has no content-hugging width,
-                // this sizes the user bubble
+                // this sizes the user bubble cleanly
                 Text {
                   id: userMeasure
                   visible: false
-                  width: Math.min(chatView.width - 60, implicitWidth)
+                  width: Math.min(Math.round(chatView.width * 0.78), implicitWidth)
                   text: msgDel.text
                   textFormat: Text.PlainText
                   font.family: Theme.font
@@ -3855,7 +4755,8 @@ Pill {
                   id: asstText
                   visible: msgDel.kind === "assistant"
                   anchors.verticalCenter: parent.verticalCenter
-                  width: parent.width
+                  x: 8
+                  width: parent.width - 16
                   height: contentHeight
                   // rendered to a controlled RichText subset (spacing,
                   // code blocks, tables) — see renderMarkdown
@@ -3868,39 +4769,102 @@ Pill {
                   onCopied: root.showCopyToast()
                 }
 
-                // foldout header (tool / reasoning)
-                Text {
-                  id: foldHead
-                  visible: msgDel.kind === "tool" || msgDel.kind === "reasoning"
+                // foldout header pill (tool / reasoning)
+                Rectangle {
+                  id: foldHeadBox
+                  visible: msgDel.isFold
                   anchors.top: parent.top
-                  anchors.topMargin: 4
-                  text: (msgDel.open ? "▾ " : "▸ ")
-                      + (msgDel.kind === "tool" ? "⚒ " + msgDel.name
-                           + (msgDel.state !== "" ? " · " + msgDel.state : "")
-                         : "✦ reasoning")
-                  font.family: Theme.font
-                  font.pixelSize: 10
-                  color: msgDel.kind === "reasoning" ? Theme.muted
-                       : (msgDel.state.indexOf("error") !== -1 ? Theme.err : Theme.muted)
-                  opacity: 0.9
+                  anchors.left: parent.left
+                  width: msgDel.open ? parent.width
+                       : Math.min(parent.width, foldRow.implicitWidth + 18)
+                  height: 24
+                  radius: 6
+                  color: foldMa.containsMouse ? Theme.hover
+                       : (msgDel.open ? "transparent" : Theme.surface)
+                  border.width: msgDel.open ? 0 : 1
+                  border.color: msgDel.toolErr ? Theme.err
+                              : (msgDel.toolLive ? Theme.live : Theme.border)
+                  Behavior on color { ColorAnimation { duration: 150 } }
+                  Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                  Row {
+                    id: foldRow
+                    anchors.left: parent.left
+                    anchors.leftMargin: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 6
+
+                    Text {
+                      id: foldChev
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: "▸"
+                      font.family: Theme.font
+                      font.pixelSize: 10
+                      color: Theme.muted
+                      rotation: msgDel.open ? 90 : 0
+                      Behavior on rotation { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+                    }
+
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: msgDel.kind === "tool" ? "⚒" : "✦"
+                      font.family: Theme.font
+                      font.pixelSize: 10
+                      color: msgDel.toolErr ? Theme.err
+                           : msgDel.toolLive ? Theme.live
+                           : (msgDel.kind === "reasoning" ? Theme.accent2 : Theme.muted)
+                    }
+
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      width: Math.min(implicitWidth, msgRect.width - 48)
+                      text: msgDel.kind === "tool"
+                          ? msgDel.name + (msgDel.state !== "" ? "  ·  " + msgDel.state : "")
+                          : (msgDel.live ? "reasoning…" : "reasoning")
+                      font.family: Theme.font
+                      font.pixelSize: 10
+                      font.bold: msgDel.open
+                      color: msgDel.toolErr ? Theme.err
+                           : msgDel.toolLive ? Theme.live
+                           : (msgDel.open ? Theme.accent : Theme.muted)
+                      elide: Text.ElideRight
+                      Behavior on color { ColorAnimation { duration: 150 } }
+                    }
+                  }
 
                   MouseArea {
+                    id: foldMa
                     anchors.fill: parent
+                    hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: root.toggleFold(msgDel.key)
                   }
                 }
 
+                // left guide stripe inside an expanded foldout
+                Rectangle {
+                  visible: msgDel.isFold && msgDel.open
+                  anchors.top: foldHeadBox.bottom
+                  anchors.topMargin: 4
+                  anchors.bottom: parent.bottom
+                  anchors.bottomMargin: 8
+                  anchors.left: parent.left
+                  anchors.leftMargin: 8
+                  width: 2
+                  radius: 1
+                  color: msgDel.kind === "reasoning" ? Theme.accent2 : Theme.border
+                }
+
                 // foldout body
                 Column {
                   id: foldCol
-                  visible: (msgDel.kind === "tool" || msgDel.kind === "reasoning")
-                           && msgDel.open
-                  anchors.top: foldHead.bottom
-                  anchors.topMargin: 6
+                  visible: msgDel.isFold && msgDel.open
+                  anchors.top: foldHeadBox.bottom
+                  anchors.topMargin: 4
                   anchors.left: parent.left
-                  anchors.leftMargin: 10
+                  anchors.leftMargin: 16
                   anchors.right: parent.right
+                  anchors.rightMargin: 10
                   spacing: 4
 
                   SelText {
@@ -3928,7 +4892,7 @@ Pill {
                     height: contentHeight
                     text: msgDel.open ? msgDel.text : ""
                     textFormat: TextEdit.PlainText
-                    font.pixelSize: 9
+                    font.pixelSize: 10
                     color: Theme.muted
                     onSelectedTextChanged: if (selectedText !== "") root.selEdit = reasoningEdit
                     Component.onDestruction: if (root.selEdit === reasoningEdit) root.selEdit = null
@@ -3980,13 +4944,13 @@ Pill {
               // the dead robot is actually seen
               visible: root.busy || root.error !== ""
               width: chatView.width
-              height: 20
+              height: 24
               readonly property bool errored: root.error !== ""
 
               // spinning cog
               Text {
                 id: cog
-                x: 34; y: 5
+                x: 34; y: 6
                 text: "󰒓"
                 font.family: Theme.font
                 font.pixelSize: 12
@@ -4004,7 +4968,7 @@ Pill {
               // the little robot, bobbing (dead + still on error)
               Text {
                 id: robot
-                x: 8; y: 4
+                x: 8; y: 5
                 text: workerScene.errored ? "󱚡" : "󰚩"
                 font.family: Theme.font
                 font.pixelSize: 14
@@ -4024,7 +4988,7 @@ Pill {
               // the tool: a hammer for text, a wrench while a tool runs
               Text {
                 id: hammer
-                x: 18; y: 1
+                x: 18; y: 2
                 text: root.toolRunning ? "󰖷" : "󰣪"
                 font.family: Theme.font
                 font.pixelSize: 12
@@ -4043,7 +5007,7 @@ Pill {
               // sparks fly on each hit
               Text {
                 id: spark
-                x: 26; y: 9
+                x: 26; y: 10
                 text: "󰶳"
                 font.family: Theme.font
                 font.pixelSize: 9
@@ -4058,6 +5022,17 @@ Pill {
                   NumberAnimation { to: 0; duration: 150 }
                   PauseAnimation { duration: 320 }
                 }
+              }
+
+              Text {
+                x: 52
+                anchors.verticalCenter: parent.verticalCenter
+                text: workerScene.errored ? "turn failed"
+                    : root.toolRunning ? "running tool…"
+                    : "working…"
+                font.family: Theme.font
+                font.pixelSize: 9
+                color: workerScene.errored ? Theme.err : Theme.muted
               }
             }
           }
@@ -4085,11 +5060,6 @@ Pill {
             contentHeight: menuCol.implicitHeight + 12
             interactive: contentHeight > height
             clip: true
-
-            Connections {
-              target: root
-              function onMenuChanged() { menuFlick.contentY = 0; root.menuSel = 0; }
-            }
 
             // keep the keyboard-selected list row in view
             Connections {
@@ -4510,20 +5480,32 @@ Pill {
                     required property var modelData   // { m: model, i: flat index }
                     readonly property var entry: modRow.modelData.m
                     readonly property int flatIndex: modRow.modelData.i
-                    readonly property bool cur: root.session && root.session.model
-                        && root.session.model.id === modRow.entry.id
-                        && root.session.model.providerID === modRow.entry.providerID
+                    readonly property var activeRef: root.modelRef()
+                    readonly property bool cur: modRow.activeRef !== null
+                        && modRow.activeRef.id === modRow.entry.id
+                        && modRow.activeRef.providerID === modRow.entry.providerID
+                    readonly property bool sel: modRow.flatIndex === root.menuSel
                     width: modelGroup.width
                     height: 34
-                    radius: 4
-                    color: (modRow.flatIndex === root.menuSel || modMa.containsMouse)
+                    radius: 5
+                    color: (modRow.sel || modMa.containsMouse)
                            ? Theme.hover : "transparent"
+                    Behavior on color { ColorAnimation { duration: 140 } }
                     scale: modMa.pressed ? 0.98 : 1
                     Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
 
+                    Rectangle {
+                      visible: modRow.cur || modRow.sel
+                      anchors.left: parent.left
+                      anchors.leftMargin: 2
+                      anchors.verticalCenter: parent.verticalCenter
+                      width: 3; height: 18; radius: 1.5
+                      color: modRow.cur ? Theme.accent : Theme.muted
+                    }
+
                     Column {
                       anchors.left: parent.left
-                      anchors.leftMargin: 8
+                      anchors.leftMargin: 10
                       anchors.right: modCheck.left
                       anchors.rightMargin: 6
                       anchors.verticalCenter: parent.verticalCenter
@@ -4584,18 +5566,31 @@ Pill {
                 id: agRow
                 required property var modelData
                 required property int index
-                readonly property bool cur: root.session && root.session.agent === agRow.modelData.id
+                readonly property string activeAgent:
+                    (root.session && root.session.agent) ? root.session.agent : root.lastAgent
+                readonly property bool cur: agRow.activeAgent === agRow.modelData.id
+                readonly property bool sel: index === root.menuSel
                 width: menuCol.width - 4
                 height: 36
-                radius: 4
-                color: (index === root.menuSel || agMa.containsMouse)
+                radius: 5
+                color: (agRow.sel || agMa.containsMouse)
                        ? Theme.hover : "transparent"
+                Behavior on color { ColorAnimation { duration: 140 } }
                 scale: agMa.pressed ? 0.98 : 1
                 Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
 
+                Rectangle {
+                  visible: agRow.cur || agRow.sel
+                  anchors.left: parent.left
+                  anchors.leftMargin: 2
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: 3; height: 18; radius: 1.5
+                  color: agRow.cur ? Theme.accent : Theme.muted
+                }
+
                 Column {
                   anchors.left: parent.left
-                  anchors.leftMargin: 8
+                  anchors.leftMargin: 10
                   anchors.right: agCheck.left
                   anchors.rightMargin: 6
                   anchors.verticalCenter: parent.verticalCenter
@@ -4648,19 +5643,18 @@ Pill {
 
             // commands menu (for "/")
             Repeater {
-              model: {
-                if (root.menu !== "commands") return [];
-                const q = inputField.text.slice(1).toLowerCase();
-                return root.commands.filter(c =>
-                  q === "" || c.name.toLowerCase().indexOf(q) !== -1);
-              }
+              model: root.filteredCommands()
 
               Rectangle {
+                id: cmdRow
                 required property var modelData
+                required property int index
+                readonly property bool sel: index === root.cmdSel
                 width: menuCol.width - 4
-                height: 24
+                height: 26
                 radius: 4
-                color: cmdMa.containsMouse ? Theme.hover : "transparent"
+                color: (cmdRow.sel || cmdMa.containsMouse) ? Theme.hover : "transparent"
+                Behavior on color { ColorAnimation { duration: 140 } }
                 scale: cmdMa.pressed ? 0.97 : 1
                 Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
                 Text {
@@ -4668,12 +5662,13 @@ Pill {
                   anchors.leftMargin: 8
                   anchors.verticalCenter: parent.verticalCenter
                   width: parent.width - 16
-                  text: "/" + parent.modelData.name
-                      + (parent.modelData.description !== ""
-                         ? "  —  " + parent.modelData.description : "")
+                  text: "/" + cmdRow.modelData.name
+                      + (cmdRow.modelData.description !== ""
+                         ? "  —  " + cmdRow.modelData.description : "")
                   font.family: Theme.font
                   font.pixelSize: 10
-                  color: Theme.text
+                  font.bold: cmdRow.sel
+                  color: cmdRow.sel ? Theme.accent : Theme.text
                   elide: Text.ElideRight
                 }
                 MouseArea {
@@ -4681,8 +5676,9 @@ Pill {
                   anchors.fill: parent
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
+                  onEntered: root.cmdSel = cmdRow.index
                   onClicked: {
-                    inputField.text = "/" + parent.modelData.name + " ";
+                    inputField.text = "/" + cmdRow.modelData.name + " ";
                     inputField.cursorPosition = inputField.text.length;
                     root.menu = "";
                     root.focusPanelField();
@@ -5075,18 +6071,24 @@ Pill {
                ? Math.min(parent.width - panelContent.sidebarW - 20, 640)
                : parent.width - panelContent.sidebarW - 20
         x: panelContent.empty
-           ? panelContent.sidebarW
-             + (parent.width - panelContent.sidebarW - width) / 2
+           ? Math.round(panelContent.sidebarW
+             + (parent.width - panelContent.sidebarW - width) / 2)
            : panelContent.sidebarW + 10
         Behavior on x { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
         Behavior on width { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
-        visible: root.mode === "chat"
+        visible: root.mode === "chat" && !root.voiceMode
         anchors.bottom: parent.bottom
         anchors.bottomMargin: 10
         height: Math.max(38, Math.min(158, inputField.height + 18))
-        // where the row should sit: middle when empty, docked otherwise
+        // where the row should sit: when empty, center the whole blank-chat
+        // stack (emptyState + 16px + inputRow + 16px + emptyVoiceBtn) as one
+        // unit inside the area below headerRow; docked at the bottom otherwise
+        readonly property real emptyStackH:
+            emptyState.height + 16 + height + 16 + emptyVoiceBtn.height
+        readonly property real bodyTop: headerRow.height + 10
         readonly property real targetY: panelContent.empty
-            ? 44 + (parent.height - 120 - (height - 38)) / 2
+            ? Math.round(bodyTop + (parent.height - bodyTop - emptyStackH) / 2
+                         + emptyState.height + 16)
             : parent.height - 10 - height
         // extra vertical offset on top of the docked position; 0 when docked
         property real lift: targetY - (parent.height - 10 - height)
@@ -5095,11 +6097,12 @@ Pill {
         Behavior on lift { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
         Behavior on height { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
         transform: Translate { x: root.swipeOfs; y: inputRow.lift }
-        radius: 6
+        radius: 8
         color: Theme.surface
         border.color: inputField.activeFocus || hiddenInput.activeFocus
                      ? Theme.muted : Theme.border
         border.width: 1
+        Behavior on border.color { ColorAnimation { duration: 180 } }
 
         TextEdit {
           id: inputField
@@ -5190,7 +6193,18 @@ Pill {
           }
           onTextChanged: if (!root.inputSyncing) {
             root.inputSyncing = true;
-            hiddenInput.text = text;
+            // same big-paste collapsing as the bar's editor, mirrored the
+            // other way round (this field holds the pre-paste draft there)
+            const big = root.mode === "chat" && !root.menuSearchOpen
+                        && root.formTextTarget === null
+                        ? root.pasteCollapse(hiddenInput.text, text) : null;
+            const t = big === null ? text : big.text;
+            hiddenInput.text = t;
+            if (big !== null) {
+              inputField.text = t;
+              inputField.cursorPosition = Math.min(big.caret, t.length);
+              hiddenInput.cursorPosition = big.caret;
+            }
             root.inputSyncing = false;
             // typing straight into the popup field (the user clicked it, so
             // the compositor moved the keyboard here) must drive the @file /
@@ -5230,6 +6244,22 @@ Pill {
               event.accepted = true;
             } else if (root.mode === "chat" && root.formTextTarget === null
                 && event.key === Qt.Key_V
+                && (((event.modifiers & Qt.ControlModifier) && (event.modifiers & Qt.ShiftModifier))
+                    || (event.modifiers & Qt.AltModifier))) {
+              root.toggleVoiceMode();
+              event.accepted = true;
+            } else if (root.voiceMode && root.mode === "chat" && root.menu === ""
+                && root.formTextTarget === null
+                && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier))) {
+              if (event.key === Qt.Key_Space) {
+                root.voicePrimaryAction();
+                event.accepted = true;
+              } else if (event.key === Qt.Key_M) {
+                root.toggleVoiceMute();
+                event.accepted = true;
+              }
+            } else if (root.mode === "chat" && root.formTextTarget === null
+                && event.key === Qt.Key_V
                 && (event.modifiers & Qt.ControlModifier)) {
               root.pasteFromClipboard(true);
               event.accepted = true;
@@ -5239,6 +6269,14 @@ Pill {
               if (root.menuSearchable()) { root.menuMove(dir); event.accepted = true; }
               else if (root.menu === "files" && root.fileHits.length > 0) {
                 root.finderMove(dir); event.accepted = true;
+              } else if (root.menu === "commands" && root.filteredCommands().length > 0) {
+                root.cmdMove(dir); event.accepted = true;
+              }
+            } else if (event.key === Qt.Key_Tab) {
+              if (root.menu === "files" && root.fileHits.length > 0) {
+                root.finderPickSelected(); event.accepted = true;
+              } else if (root.menu === "commands" && root.filteredCommands().length > 0) {
+                root.cmdPickSelected(); event.accepted = true;
               }
             }
           }
@@ -5258,9 +6296,9 @@ Pill {
           id: pasteBtn
           anchors.right: micBtn.left
           anchors.rightMargin: 4
-          anchors.top: parent.top
-          anchors.topMargin: 6
-          width: 28; height: 26; radius: 5
+          anchors.bottom: parent.bottom
+          anchors.bottomMargin: 6
+          width: 28; height: 26; radius: 6
           color: pasteMa.containsMouse ? Theme.hover : Theme.bg
           Behavior on color { ColorAnimation { duration: 200 } }
           scale: pasteMa.pressed ? 0.86 : (pasteMa.containsMouse ? 1.07 : 1)
@@ -5271,7 +6309,8 @@ Pill {
             text: "\uf03e"
             font.family: Theme.font
             font.pixelSize: 11
-            color: Theme.text
+            color: pasteMa.containsMouse ? Theme.accent : Theme.text
+            Behavior on color { ColorAnimation { duration: 150 } }
           }
 
           MouseArea {
@@ -5287,11 +6326,13 @@ Pill {
           id: micBtn
           anchors.right: sendBtn.left
           anchors.rightMargin: 4
-          anchors.top: parent.top
-          anchors.topMargin: 6
-          width: 28; height: 26; radius: 5
-          color: micMa.containsMouse && root.sttState === "idle"
-                 ? Theme.hover : Theme.bg
+          anchors.bottom: parent.bottom
+          anchors.bottomMargin: 6
+          width: 28; height: 26; radius: 6
+          color: root.sttState === "rec" ? Theme.hover
+               : (micMa.containsMouse && root.sttState === "idle" ? Theme.hover : Theme.bg)
+          border.width: root.sttState === "rec" ? 1 : 0
+          border.color: Theme.err
           Behavior on color { ColorAnimation { duration: 200 } }
           scale: micMa.pressed ? 0.86 : (micMa.containsMouse ? 1.07 : 1)
           Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
@@ -5303,7 +6344,9 @@ Pill {
             font.family: Theme.font
             font.pixelSize: root.sttState === "stt" ? 12 : 11
             color: root.sttState === "rec" ? Theme.err
-                 : root.sttState === "stt" ? Theme.live : Theme.text
+                 : root.sttState === "stt" ? Theme.live
+                 : (micMa.containsMouse ? Theme.accent : Theme.text)
+            Behavior on color { ColorAnimation { duration: 150 } }
             // pulsing dot while recording
             SequentialAnimation on opacity {
               running: root.sttState === "rec"; loops: Animation.Infinite
@@ -5325,17 +6368,21 @@ Pill {
           id: sendBtn
           anchors.right: parent.right
           anchors.rightMargin: 6
-          // pinned to the top-right of the row, not centered: a grown input
-          // row must keep the buttons at the first text line
-          anchors.top: parent.top
-          anchors.topMargin: 6
-          width: 28; height: 26; radius: 5
-          // light up only when there is actually something to send
+          // pinned to the bottom-right of the row so multi-line drafts grow
+          // upward while the action buttons stay anchored at the corner
+          anchors.bottom: parent.bottom
+          anchors.bottomMargin: 6
+          width: 28; height: 26; radius: 6
+          // light up prominently when there is actually something to send
           readonly property bool canSend: !root.busy && !root.sending
               && (inputField.text.trim() !== "" || root.pendingImages.length > 0)
-          color: sendMa.containsMouse ? Theme.hover
-               : (canSend ? Theme.surface : Theme.bg)
-          Behavior on color { ColorAnimation { duration: 200 } }
+          color: root.busy || root.sending
+               ? (sendMa.containsMouse ? Theme.hover : Theme.bg)
+               : (canSend ? (sendMa.containsMouse ? Theme.text : Theme.accent)
+                          : (sendMa.containsMouse ? Theme.hover : Theme.bg))
+          border.width: (root.busy || root.sending) ? 1 : 0
+          border.color: Theme.err
+          Behavior on color { ColorAnimation { duration: 180 } }
           scale: sendMa.pressed ? 0.86 : (sendMa.containsMouse ? 1.07 : (canSend ? 1.03 : 1))
           Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
           Text {
@@ -5344,8 +6391,8 @@ Pill {
             font.family: Theme.font
             font.pixelSize: 12
             color: root.busy || root.sending ? Theme.err
-                 : (sendBtn.canSend ? Theme.live : Theme.muted)
-            Behavior on color { ColorAnimation { duration: 200 } }
+                 : (sendBtn.canSend ? Theme.deep : Theme.muted)
+            Behavior on color { ColorAnimation { duration: 180 } }
           }
           MouseArea {
             id: sendMa
@@ -5356,6 +6403,59 @@ Pill {
           }
         }
       }
+
+      // ----- ChatGPT-style live Voice Mode stage / compact dock -----
+      VoiceStage {
+        id: voiceStage
+        transform: Translate { x: root.swipeOfs }
+        readonly property real topOfs:
+            10 + headerRow.height + 8
+            + (errorLine.visible ? errorLine.height + 8 : 0)
+            + (menuBox.visible ? menuBox.height + 8 : 0)
+        readonly property real botOfs:
+            10 + (permBanner.visible ? permBanner.height + 8 : 0)
+            + (formBanner.visible ? formBanner.height + 8 : 0)
+        x: panelContent.sidebarW + 10
+        width: parent.width - panelContent.sidebarW - 20
+        y: root.voiceShowChat ? (parent.height - 56) : topOfs
+        height: root.voiceShowChat ? 46 : Math.max(220, parent.height - topOfs - botOfs)
+        Behavior on y { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+        Behavior on height { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+        visible: opacity > 0 && root.mode === "chat"
+        opacity: root.voiceMode ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+
+        active: root.voiceMode && root.panelOpen
+        showChat: root.voiceShowChat
+        state: root.voiceState
+        muted: root.voiceMuted
+        busy: root.busy || root.sending
+        toolRunning: root.toolRunning
+        ttsPlaying: root.voiceTtsPlaying
+        lang: root.voiceLang
+        volume: root.voiceVolume
+        models: root.models
+        modelLabel: root.voiceModelLabel()
+        modelKey: root.voiceModelKey
+        sttQuality: root.voiceStt
+        sttSwapping: root.voiceSttSwapping
+        level: root.voiceLevel
+        userText: root.voiceUserText
+        assistantText: root.voiceAssistantText
+        lastSttMs: root.voiceLastSttMs
+
+        onToggleMute: root.toggleVoiceMute()
+        onPrimaryAction: root.voicePrimaryAction()
+        onSelectLang: l => root.setVoiceLang(l)
+        onSetVolume: v => root.setVoiceVolume(v)
+        onSelectModel: (id, providerID) =>
+          root.setVoiceModel({ id: id, providerID: providerID })
+        onSelectStt: q => root.setVoiceStt(q)
+        onClearModel: root.setVoiceModel(null)
+        onToggleShowChat: root.voiceShowChat = !root.voiceShowChat
+        onCloseVoice: root.stopVoiceMode()
+      }
+
       // ----- attached clipboard images (chips above the input row) -----
       // own wrapping Row: with the input row grown by a multi-line draft the
       // chips would otherwise run off the panel's left edge
@@ -5370,9 +6470,11 @@ Pill {
         contentHeight: height
         clip: true
         interactive: contentWidth > width
-        opacity: visible ? 1 : 0
-        visible: root.mode === "chat" && root.pendingImages.length > 0
-                 && root.menu === ""
+        readonly property bool shown: root.mode === "chat"
+                                      && root.pendingImages.length > 0
+                                      && root.menu === ""
+        opacity: shown ? 1 : 0
+        visible: opacity > 0
         Behavior on y { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
         Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
 
@@ -5446,25 +6548,25 @@ Pill {
       Item {
         id: emptyState
         transform: Translate { x: root.swipeOfs }
-        x: panelContent.sidebarW + 10
-        width: parent.width - panelContent.sidebarW - 20
-        // sits just above the input row's VISUAL top (visualY accounts for
-        // the empty-state lift), so a grown draft never overlaps it
-        y: panelContent.empty
-           ? Math.max(headerRow.height + 12, inputRow.visualY - height - 6)
-           : inputRow.visualY
-        height: 120
-        visible: panelContent.empty
+        x: inputRow.x
+        width: inputRow.width
+        // sits 16px above the input row's VISUAL top (symmetrical with the
+        // 16px gap between inputRow and emptyVoiceBtn below)
+        y: Math.max(headerRow.height + 12, inputRow.visualY - height - 16)
+        height: emptyCol.implicitHeight
+        visible: opacity > 0 && root.mode === "chat"
         opacity: panelContent.empty ? 1 : 0
         Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
 
         Column {
-          anchors.horizontalCenter: parent.horizontalCenter
+          id: emptyCol
+          width: parent.width
           spacing: 8
 
           Text {
             id: emptyIcon
             anchors.horizontalCenter: parent.horizontalCenter
+            horizontalAlignment: Text.AlignHCenter
             // gentle float so the empty state feels alive
             property real bob: 0
             transform: Translate { y: emptyIcon.bob }
@@ -5482,6 +6584,7 @@ Pill {
 
           Text {
             anchors.horizontalCenter: parent.horizontalCenter
+            horizontalAlignment: Text.AlignHCenter
             text: "ask opencode"
             font.family: Theme.font
             font.bold: true
@@ -5491,11 +6594,138 @@ Pill {
 
           Text {
             anchors.horizontalCenter: parent.horizontalCenter
+            horizontalAlignment: Text.AlignHCenter
             text: "@file mention  ·  /command  ·  Ctrl+V image  ·  mic for voice"
             font.family: Theme.font
             font.pixelSize: 10
             color: Theme.muted
           }
+
+          Row {
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: 6
+
+            Repeater {
+              model: [
+                { k: "Ctrl+M", l: "model" },
+                { k: "Ctrl+N", l: "new chat" },
+                { k: "Shift+Enter", l: "newline" }
+              ]
+
+              Rectangle {
+                required property var modelData
+                width: hintRow.implicitWidth + 12
+                height: 20
+                radius: 4
+                color: Theme.surface
+                border.color: Theme.border
+                border.width: 1
+
+                Row {
+                  id: hintRow
+                  anchors.centerIn: parent
+                  spacing: 4
+
+                  Text {
+                    text: parent.parent.modelData.k
+                    font.family: Theme.font
+                    font.bold: true
+                    font.pixelSize: 9
+                    color: Theme.text
+                  }
+
+                  Text {
+                    text: parent.parent.modelData.l
+                    font.family: Theme.font
+                    font.pixelSize: 9
+                    color: Theme.muted
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // ----- empty-state Voice Mode pill (centered below the input row) -----
+      Rectangle {
+        id: emptyVoiceBtn
+        transform: Translate { x: root.swipeOfs }
+        width: emptyVoiceRow.implicitWidth + 24
+        height: 30
+        radius: 15
+        x: Math.round(inputRow.x + (inputRow.width - width) / 2)
+        y: inputRow.visualY + inputRow.height + 16
+        visible: opacity > 0 && root.mode === "chat"
+        opacity: panelContent.empty ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+        color: emptyVoiceMa.containsMouse ? Theme.hover : Theme.surface
+        border.width: 1
+        border.color: emptyVoiceMa.containsMouse ? Theme.muted : Theme.border
+        Behavior on color { ColorAnimation { duration: 180 } }
+        Behavior on border.color { ColorAnimation { duration: 180 } }
+        scale: emptyVoiceMa.pressed ? 0.94 : (emptyVoiceMa.containsMouse ? 1.05 : 1)
+        Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+
+        property real wavePhase: 0
+        NumberAnimation on wavePhase {
+          running: panelContent.empty && root.panelOpen
+          loops: Animation.Infinite
+          from: 0; to: 6.2831853; duration: 900
+        }
+
+        Row {
+          id: emptyVoiceRow
+          anchors.centerIn: parent
+          spacing: 8
+
+          // 5-bar animated soundwave graphic
+          Row {
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 2
+
+            Repeater {
+              model: [6, 12, 15, 10, 6]
+              Rectangle {
+                required property int modelData
+                required property int index
+                width: 2.5
+                radius: 1.25
+                anchors.verticalCenter: parent.verticalCenter
+                height: emptyVoiceMa.containsMouse
+                    ? Math.max(4, Math.round(modelData * (0.65 + 0.45 * Math.sin(emptyVoiceBtn.wavePhase + index * 1.15))))
+                    : Math.round(modelData * (0.82 + 0.18 * Math.sin(emptyVoiceBtn.wavePhase + index * 1.15)))
+                color: emptyVoiceMa.containsMouse ? Theme.accent : Theme.text
+                Behavior on color { ColorAnimation { duration: 150 } }
+              }
+            }
+          }
+
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            text: "voice mode"
+            font.family: Theme.font
+            font.bold: true
+            font.pixelSize: 11
+            color: emptyVoiceMa.containsMouse ? Theme.accent : Theme.text
+            Behavior on color { ColorAnimation { duration: 150 } }
+          }
+
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Alt+V"
+            font.family: Theme.font
+            font.pixelSize: 9
+            color: Theme.muted
+          }
+        }
+
+        MouseArea {
+          id: emptyVoiceMa
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.startVoiceMode()
         }
       }
 
@@ -5521,7 +6751,7 @@ Pill {
         y: headerRow.height + 16
         width: parent.width - 20
         height: parent.height - headerRow.height - 26
-        visible: root.mode !== "chat"
+        visible: opacity > 0
         opacity: root.mode !== "chat" ? 1 : 0
         Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
 
@@ -5591,12 +6821,13 @@ Pill {
         property bool shown: !chatView.pinned && root.panelOpen && root.mode === "chat"
         opacity: shown ? 1 : 0
         Behavior on opacity { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
-        scale: shown ? 1 : 0.6
-        Behavior on scale { NumberAnimation { duration: 280; easing.type: Easing.OutBack } }
+        scale: shown ? (jumpMa.pressed ? 0.9 : (jumpMa.containsMouse ? 1.06 : 1)) : 0.6
+        Behavior on scale { NumberAnimation { duration: 240; easing.type: Easing.OutBack } }
         width: 30
         height: 22
-        radius: 5
+        radius: 6
         color: jumpMa.containsMouse ? Theme.hover : Theme.surface
+        Behavior on color { ColorAnimation { duration: 150 } }
         border.color: Theme.border
         border.width: 1
 
@@ -5682,7 +6913,9 @@ Pill {
 
   // A standalone instance opens straight into full mode and never uses the
   // docked dropdown or the pill. Called by shell.qml's toggle/open.
-  function openStandalone() {
+  // `withVoice` additionally drops straight into live Voice Mode (SUPER+SHIFT+A).
+  function openStandalone(withVoice) {
+    root.pendingVoice = withVoice === true;
     root.ensureService();
     root.openExpanded();
   }
@@ -5717,12 +6950,23 @@ Pill {
       root.panelFade = 0;
       showAnim.restart();     // fade + scale in
       panelShown();           // connect + reload (also on a rapid reopen,
+      // one-shot: SUPER+SHIFT+A opens the standalone straight into Voice Mode.
+      // Consumed here (not before the window exists) so startVoiceMode() sees
+      // an open, laid-out panel; the daemon warms up while the fade plays.
+      if (root.pendingVoice) {
+        root.pendingVoice = false;
+        root.startVoiceMode();
+      }
       return;                 // where PopupWindow.visible never changed)
     }
     hideAnim.restart();       // close: keep mapped while fading out
     if (root.panelExpanded) fullHideAnim.restart();   // ...the floating window too
     showAnim.stop();
     hideAnimFx.restart();     // fade + scale out
+    if (root.voiceMode) root.stopVoiceMode();
+    // closing the expanded window resets it to the new-chat blank screen for
+    // the next open (unless a turn is still running on it)
+    if (root.panelExpanded && !root.busy && !root.sending) root.newChat();
     root.closeMenu();
     activePoll.stop();
     // the SSE stream deliberately keeps running while closed: it feeds the
@@ -5734,6 +6978,7 @@ Pill {
   // tab switch: the bar's hiddenInput is the single real editor — point
   // it at the newly active tab's field (both directions stay in sync)
   onModeChanged: {
+    if (mode !== "chat" && root.voiceMode) root.stopVoiceMode();
     root.closeMenu();         // a finder/menu from the old tab must not linger
     // tab swipe: jump the bodies to the side (instant), then glide to 0
     const t = mode === "chat" ? 0 : mode === "translate" ? 1 : 2;

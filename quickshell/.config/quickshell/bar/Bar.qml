@@ -201,6 +201,9 @@ Scope {
         width: parent.width
         color: "transparent"
 
+        // border while the settings dropdown is open
+        pillOpen: root.panelOpen
+
         implicitWidth: settingsText.implicitWidth + 12
 
         Text {
@@ -263,6 +266,18 @@ Scope {
   }
 
   function closeChat() { opencodePill.panelOpen = false; }
+
+  function toggleVoiceChat() {
+    if (!opencodePill.panelOpen) {
+      opencodePill.panelOpen = true;
+      opencodePill.ensureService();
+      opencodePill.startVoiceMode();
+    } else if (opencodePill.voiceMode) {
+      opencodePill.panelOpen = false;   // closing the panel ends Voice Mode too
+    } else {
+      opencodePill.startVoiceMode();    // text chat open → flip it into voice
+    }
+  }
 
   // SUPER+SHIFT+B / SUPER+SHIFT+W / SUPER+SHIFT+V → settings on a tab
   function openSettings(name) {

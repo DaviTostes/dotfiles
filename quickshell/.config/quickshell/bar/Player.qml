@@ -75,6 +75,8 @@ Pill {
 
   // ---------- panel ----------
   property bool panelOpen: false
+  // border while the media panel is open
+  pillOpen: root.panelOpen
   // hovered state of the popup itself (tracked so moving onto the panel keeps
   // it open instead of falling through to the close timer)
   property bool panelHover: false

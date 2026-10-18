@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
@@ -9,18 +8,13 @@ import "Conf.js" as Conf
 ColumnLayout {
     id: root
 
-    // awww transition used when a save is applied (see wallpaper-apply)
     property string transition: "simple"
-    property bool applyAfterSave: true
     property string status: ""
     property var monitors: []
-
-    // unsaved-changes marker; cleared on save; reload is silent
     property bool dirty: false
     property bool silent: false
-
-    // owning HyprConfig panel (for the gallery popup state)
     property var panel: null
+    readonly property bool busy: applyProc.running
 
     spacing: 10
 
@@ -47,7 +41,6 @@ ColumnLayout {
             }
             rows.append({ monitor: monitor, path: path, fit: fit || "crop" });
         }
-        // Sensible default when the file is empty: one row per connected monitor.
         if (rows.count === 0) {
             for (const m of root.monitors) rows.append({ monitor: m, path: "", fit: "crop" });
         }
@@ -57,8 +50,6 @@ ColumnLayout {
         root.syncGalleryPicked();
     }
 
-    // mirror the picked path into the gallery popup (only when this
-    // panel is the one that opened it)
     function syncGalleryPicked() {
         if (root.panel === null || HyprSettings.galleryHost !== root.panel
                 || HyprSettings.galleryTab !== 0)
@@ -67,8 +58,6 @@ ColumnLayout {
             HyprSettings.galleryPicked = rowPath(HyprSettings.galleryRow);
             return;
         }
-        // "all monitors" picker (row -1): highlight the path only if every
-        // row already shares it, otherwise leave nothing highlighted
         let common = rows.count > 0 ? rows.get(0).path : "";
         for (let i = 1; i < rows.count; i++) {
             if (rows.get(i).path !== common) { common = ""; break; }
@@ -76,7 +65,6 @@ ColumnLayout {
         HyprSettings.galleryPicked = common;
     }
 
-    // gallery popup picked an image: row -1 means "every monitor"
     function applyGalleryPick(p) {
         const i = HyprSettings.galleryRow;
         if (i < 0) {
@@ -89,7 +77,7 @@ ColumnLayout {
         HyprSettings.galleryPicked = p;
     }
 
-    function save() {
+    function save(applyAfterSave) {
         const cfg = { items: [], vars: {} };
         cfg.items.push(Conf.item(Conf.KV, "", "transition", root.transition));
         for (let i = 0; i < rows.count; i++) {
@@ -103,8 +91,7 @@ ColumnLayout {
         fileView.setText(Conf.serialize(cfg));
         root.dirty = false;
         root.status = "Saved wallpaper.conf";
-        if (root.applyAfterSave) {
-            // the file write may not have hit disk yet; give it a beat
+        if (applyAfterSave === undefined || applyAfterSave) {
             applyProc.command = ["sh", "-c",
                 "sleep 0.2; exec \"$HOME/.config/hypr/scripts/wallpaper-apply\""];
             applyProc.running = true;
@@ -140,7 +127,6 @@ ColumnLayout {
         required property string path
         required property string fit
 
-        // collapse + fade while being removed, grow + fade on entry
         property bool dying: false
         property bool entered: false
 
@@ -215,91 +201,52 @@ ColumnLayout {
         }
     }
 
-    ScrollView {
-        id: scroll
+    SectionCard {
         Layout.fillWidth: true
-        Layout.fillHeight: true
+        title: "Wallpaper — Transition"
 
-        ColumnLayout {
-            width: scroll.availableWidth
-            spacing: 10
-
-            SectionCard {
-                Layout.fillWidth: true
-                title: "Transition"
-
-                SegRow {
-                    options: ["none", "simple", "wipe", "grow", "random"]
-                    value: root.transition
-                    onPicked: v => { root.transition = v; root.dirty = true; }
-                }
-            }
-
-            SectionCard {
-                Layout.fillWidth: true
-                title: "Monitors"
-
-                Repeater {
-                    model: rows
-                    delegate: WallpaperRow {}
-                }
-
-                Row {
-                    spacing: 10
-
-                    TextButton {
-                        label: "\uf03e set all"
-                        tooltip: "Pick one wallpaper for every monitor"
-                        onClicked: if (root.panel) root.panel.toggleGallery(0, -1)
-                    }
-
-                    TextButton {
-                        label: "\uf067 add monitor"
-                        tooltip: "Add monitor"
-                        onClicked: rows.append({ monitor: root.monitors[0] || "", path: "", fit: "crop" })
-                    }
-
-                    Text {
-                        height: 26
-                        verticalAlignment: Text.AlignVCenter
-                        text: root.monitors.length ? "detected: " + root.monitors.join(", ")
-                                                   : "hyprland monitors unavailable, pick manually"
-                        color: Theme.muted
-                        font.family: Theme.font
-                        font.pixelSize: 11
-                        elide: Text.ElideRight
-                        width: 300
-                    }
-                }
-            }
-
-            // gallery lives in its own popup below the panel
-            // (WallpaperGallery in HyprConfig.qml)
+        SegRow {
+            options: ["none", "simple", "wipe", "grow", "random"]
+            value: root.transition
+            onPicked: v => { root.transition = v; root.dirty = true; }
         }
     }
 
-    Row {
+    SectionCard {
         Layout.fillWidth: true
-        spacing: 12
+        title: "Wallpaper — Monitors"
 
-        CheckRow {
-            label: "Apply after saving"
-            checked: root.applyAfterSave
-            onToggled: c => root.applyAfterSave = c
+        Repeater {
+            model: rows
+            delegate: WallpaperRow {}
         }
 
-        TextButton {
-            label: "\uf0c7 save"
-            accent: true
-            dot: root.dirty
-            tooltip: "Save (Ctrl+S)"
-            onClicked: root.save()
-        }
+        Row {
+            spacing: 10
 
-        StatusLine {
-            text: root.status
-            busy: applyProc.running
-            labelWidth: 220
+            TextButton {
+                label: "\uf03e set all"
+                tooltip: "Pick one wallpaper for every monitor"
+                onClicked: if (root.panel) root.panel.toggleGallery(0, -1)
+            }
+
+            TextButton {
+                label: "\uf067 add monitor"
+                tooltip: "Add monitor"
+                onClicked: rows.append({ monitor: root.monitors[0] || "", path: "", fit: "crop" })
+            }
+
+            Text {
+                height: 26
+                verticalAlignment: Text.AlignVCenter
+                text: root.monitors.length ? "detected: " + root.monitors.join(", ")
+                                           : "hyprland monitors unavailable, pick manually"
+                color: Theme.muted
+                font.family: Theme.font
+                font.pixelSize: 11
+                elide: Text.ElideRight
+                width: 300
+            }
         }
     }
 }

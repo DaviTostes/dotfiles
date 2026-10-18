@@ -25,6 +25,9 @@ Pill {
   property bool panelOpen: false
   property int tab: 0               // 0 = pending, 1 = done
 
+  // border while the tasks dropdown is open
+  pillOpen: root.panelOpen
+
   // editor sub-panel, opened below the list: editingId "" = new task,
   // otherwise the id of the task being edited
   property bool editorOpen: false
