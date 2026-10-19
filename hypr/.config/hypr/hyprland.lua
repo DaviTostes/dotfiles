@@ -28,6 +28,17 @@ package.loaded["hyprpanel"] = nil
 require("hyprpanel")
 
 --------------------
+---- AUTOSTART ----
+--------------------
+
+-- DLNA renderer: auror announces this machine as a UPnP MediaRenderer and
+-- plays casts through mpv; the right bar's Auror pill drives it over its
+-- local HTTP API. Skip the spawn if one is already running.
+hl.on("hyprland.start", function()
+  hl.exec_cmd("pgrep -x auror >/dev/null 2>&1 || setsid -f auror")
+end)
+
+--------------------
 ---- WORKSPACES ----
 --------------------
 

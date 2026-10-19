@@ -189,6 +189,12 @@ Scope {
       anchors.right: parent.right
       spacing: 4
 
+      // DLNA renderer (auror) — sits above the volume pill
+      Auror {
+        width: parent.width
+        color: "transparent"
+      }
+
       Sound {
         width: parent.width
         color: "transparent"

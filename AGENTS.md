@@ -238,6 +238,28 @@ lands at `~/.config/quickshell/shell.qml`.
   `bar/Player.qml`'s soundwave renders `Cava.levels` while `Cava.live`, and
   falls back to its synthetic animation otherwise — so the shell works fine
   when `cava` is not installed.
+- `bar/Auror.qml` is the DLNA renderer pill, stacked directly **above the
+  volume pill** in the right bar's bottom group. It fronts the user's
+  `~/auror` daemon (Go, zero-dep UPnP `MediaRenderer` that plays casts through
+  mpv): it polls auror's `/status` JSON for the cast URL, transport state,
+  position/duration and volume, and its dropdown drives playback through
+  auror's local HTTP control API. auror publishes the port it bound to (it
+  walks 49152..) in `~/.cache/auror/port`, which is how the pill finds it —
+  `curl` reads that file and `/status`, and the control calls are argv `curl`
+  POSTs to `/api/play|pause|toggle|stop|seek|volume|mute|next|previous`
+  (no shell). The pill shows `md-cast-off` (dim) while auror is down, `md-cast`
+  when idle and `md-cast-connected` (green) while playing, plus a thin progress
+  line on the pill itself; left-click opens the panel, right-click toggles
+  play/pause, and the wheel steps auror's volume by 5. The daemon is
+  autostarted from `hyprland.lua`, not the panel-managed `hyprpanel.lua`.
+  Two failure modes shaped this: auror's `/status` must **never block on the
+  mpv IPC** (a fresh mpv socket makes `ensureMpvIPC` dial for up to 2s, which
+  read as "offline" right after every cast), so status/event reads go through a
+  cached, non-dialing `cachedProp` and the pill's `curl -m` is 1.6s — and a
+  single poll miss must not flip the pill, so it keeps the last snapshot for
+  `missTolerance` (3) misses and polls at 1s while recovering. Volume/mute/seek
+  are applied optimistically (`pendingVol`/`pendingMute`/`pendingSeek`) and held
+  until `/status` agrees (or 3s), so a stale poll can't yank a slider back.
 - `bar/TypeTest.qml` is the desktop "desk toys" window: a fullscreen
   **Bottom**-layer `PanelWindow` (namespace `quickshell-desk`) shown only while
   the focused monitor's active workspace has no toplevels
