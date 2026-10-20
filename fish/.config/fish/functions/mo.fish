@@ -20,7 +20,7 @@ function mo --description "Interactive disk cleanup / system maintenance menu"
         # live stats for the menu (kept cheap; docker is probed with a timeout)
         set -l cache_size (du -sh ~/.cache 2>/dev/null | cut -f1)
         test -z "$cache_size"; and set cache_size "?"
-        set -l journal_size (journalctl --disk-usage 2>/dev/null | string match -r 'up ([0-9.]+[A-Za-z]*)' | tail -1)
+        set -l journal_size (__mo_journal_size)
         test -z "$journal_size"; and set journal_size "?"
         set -l orphan_count (pacman -Qtdq 2>/dev/null | count)
         set -l disk (df -h / 2>/dev/null | awk 'NR==2 {print $3" / "$2"  ("$5")"}')
@@ -143,7 +143,31 @@ function mo --description "Interactive disk cleanup / system maintenance menu"
                     journalctl --disk-usage
                     echo
                     if __mo_confirm "Remove logs older than 30 days?"
+                        set -l before (__mo_journal_size)
+                        # vacuum only ever touches archived files, so rotate the
+                        # active one away first -- otherwise a busy journal can
+                        # "free 0B" no matter what the time window is
+                        __mo_root journalctl --rotate
                         __mo_root journalctl --vacuum-time=30d
+                        set -l after (__mo_journal_size)
+
+                        # everything was newer than 30 days -> offer a size cap
+                        if test "$after" = "$before"; and test -n "$after"
+                            echo
+                            echo "  $warn Nothing is older than 30 days — the journal is all recent.$n"
+                            echo
+                            if __mo_confirm "Vacuum down to 500 MiB instead?"
+                                __mo_root journalctl --vacuum-size=500M
+                                set after (__mo_journal_size)
+                            end
+                        end
+
+                        echo
+                        echo "  $ok✓$n Journal: $before -> $after"
+                        if test "$after" = "$before"
+                            echo "  $dim journald will regrow to its cap; set SystemMaxUse in$n"
+                            echo "  $dim /etc/systemd/journald.conf to keep it small for good.$n"
+                        end
                         set acted true
                     else
                         echo "  Skipped."
@@ -241,7 +265,10 @@ function mo --description "Interactive disk cleanup / system maintenance menu"
 
                         echo
                         echo "  $b== Journal logs ==$n"
+                        set -l before_journal (__mo_journal_size)
+                        __mo_root journalctl --rotate
                         __mo_root journalctl --vacuum-time=30d
+                        echo "  Journal: $before_journal -> "(__mo_journal_size)
 
                         if command -q docker; and timeout 1 docker info >/dev/null 2>&1
                             echo
@@ -431,9 +458,11 @@ function __mo_pause --description "mo: wait for Enter"
 end
 
 function __mo_confirm --description "mo: yes/no prompt" --argument-names prompt
-    read -P "  $prompt [y/N] " -l _mo_ans
+    read -P "  $prompt [Y/n] " -l _mo_ans
     or return 1
-    string match -qi y -- $_mo_ans
+    # empty answer = the default (yes)
+    test -z "$_mo_ans"; and return 0
+    string match -qi 'y*' -- $_mo_ans
 end
 
 function __mo_root --description "mo: run a command with root privileges when needed"
@@ -454,6 +483,10 @@ end
 
 function __mo_size --description "mo: human-readable size of a path" --argument-names path
     du -sh "$path" 2>/dev/null | cut -f1
+end
+
+function __mo_journal_size --description "mo: journal disk usage (human size, e.g. 3.6G)"
+    journalctl --disk-usage 2>/dev/null | string match -r 'up ([0-9.]+[A-Za-z]*)' | tail -1
 end
 
 function __mo_count_label --description "mo: 'N cache(s)' label" --argument-names sel
