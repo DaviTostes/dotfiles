@@ -47,6 +47,8 @@ Ask me questions before writing the document only when an ambiguity could change
 
 Aim for roughly 100-150 lines. Adapt the sections to the task and drop any that don't apply.
 
+Hard-wrap the Markdown at 80 characters per line: break long paragraphs, bullet items and prose into shorter lines instead of leaving one huge line, so the document reads well in a narrow editor. Keep code blocks and tables intact.
+
 ### Objective
 The problem and the expected outcome, 2-4 sentences.
 

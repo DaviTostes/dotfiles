@@ -25,19 +25,19 @@
       "src": "https://github.com/rafamadriz/friendly-snippets"
     },
     "mini-git": {
-      "rev": "a23986f9fd4f72f48d80001c7f13fe392cc164a1",
+      "rev": "35d9a918721c533490f1ae9268a4f0b7c840e1f4",
       "src": "https://github.com/nvim-mini/mini-git"
     },
     "mini.diff": {
-      "rev": "ce542d15eacf068f81f5e516da7d486db808c559",
+      "rev": "47ab8cf21c62cfd952008f2b9e79417c98173ec1",
       "src": "https://github.com/nvim-mini/mini.diff"
     },
     "mini.icons": {
-      "rev": "f916635dc5ae2f479fbb9ab8184bb9444b62e86c",
+      "rev": "9e4c1645ce2b78afd6191b6be2c38bc0f998dd48",
       "src": "https://github.com/nvim-mini/mini.icons"
     },
     "mini.pick": {
-      "rev": "7cb8fd34bde460986e5e39e9539a9f992ec9772e",
+      "rev": "9368112b7cafb61d837bed55fc6f40e55df53fa0",
       "src": "https://github.com/nvim-mini/mini.pick"
     },
     "mini.statusline": {
@@ -45,7 +45,7 @@
       "src": "https://github.com/nvim-mini/mini.statusline"
     },
     "mini.visits": {
-      "rev": "fe0de79468f38bd2e05f97954b86282477b1669a",
+      "rev": "aaad04a8ea87985b69d173b255e1d29f6a898735",
       "src": "https://github.com/nvim-mini/mini.visits"
     },
     "nvim-cmp": {
@@ -57,7 +57,7 @@
       "src": "https://github.com/neovim/nvim-lspconfig"
     },
     "nvim-treesitter": {
-      "rev": "d4a9b23a383266bdb0bfb42d565f31e83f27be5e",
+      "rev": "29212d826054bb2948fa9d3a99eca9bf6a050eb2",
       "src": "https://github.com/nvim-treesitter/nvim-treesitter"
     },
     "nvim-treesitter-textobjects": {
@@ -73,7 +73,7 @@
       "src": "https://github.com/stevearc/oil.nvim"
     },
     "opencode-nvim": {
-      "rev": "5c1b6ab707b90e3d73029ce5172075101cba9c5f",
+      "rev": "66720b9c36b6f034b3882ed524736a745975391b",
       "src": "https://github.com/davitostes/opencode-nvim"
     },
     "transparent.nvim": {
