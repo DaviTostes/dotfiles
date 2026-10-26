@@ -18,6 +18,7 @@ Pill {
 
   // click-outside duty for the tray menu
   Catcher {
+    screen: root.QsWindow.window ? root.QsWindow.window.screen : null
     active: trayMenu.open
     onClicked: trayMenu.closeMenu()
   }

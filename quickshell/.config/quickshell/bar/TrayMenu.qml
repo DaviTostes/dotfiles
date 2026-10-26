@@ -18,6 +18,10 @@ PopupWindow {
   color: "transparent"
   implicitWidth: menuList.width + 2
   implicitHeight: Math.max(menuList.height + 2, 12)
+  // entry labels measure themselves after the popup is mapped; re-anchor so a
+  // menu that grew wider is re-clamped instead of running off the screen edge
+  onImplicitWidthChanged: if (visible) anchor.updateAnchor()
+  onImplicitHeightChanged: if (visible) anchor.updateAnchor()
 
   Timer { id: hideTimer; interval: 170 }
 
@@ -42,9 +46,11 @@ PopupWindow {
 
   // Esc closes the menu, like the settings panel. The bar grabs keyboard
   // while this is open (Bar.focusable ← Tray.menuOpen) because the popup
-  // itself cannot take focus.
+  // itself cannot take focus. Application scope: a layer surface is not
+  // Qt's "active window", so a window-scoped Shortcut never activates.
   Shortcut {
     sequence: "Escape"
+    context: Qt.ApplicationShortcut
     enabled: menu.open
     onActivated: menu.closeMenu()
   }
@@ -58,8 +64,20 @@ PopupWindow {
   anchor.onAnchoring: {
     if (!menu.targetItem) return;
     const p = menu.targetItem.mapToItem(null, 0, 0);
-    anchor.rect.x = p.x;
-    anchor.rect.y = p.y + menu.targetItem.height + 6;
+    const win = menu.targetItem.QsWindow.window;
+    const sw = win && win.screen ? win.screen.width : 1920;
+    const sh = win && win.screen ? win.screen.height : 1080;
+    const w = menu.implicitWidth;
+    const h = menu.implicitHeight;
+    // no horizontal edges/gravity → the popup is centered on the anchor rect,
+    // so clamp the resulting left edge and convert it back to that rect
+    const left = Math.max(8, Math.min(p.x + menu.targetItem.width / 2 - w / 2,
+                                     sw - w - 8));
+    // below the icon, flipped above when it would not fit
+    let y = p.y + menu.targetItem.height + 6;
+    if (y + h > sh - 8) y = Math.max(8, p.y - h - 6);
+    anchor.rect.x = left + w / 2 - menu.targetItem.width / 2;
+    anchor.rect.y = y;
     anchor.rect.width = menu.targetItem.width;
     anchor.rect.height = 1;
   }

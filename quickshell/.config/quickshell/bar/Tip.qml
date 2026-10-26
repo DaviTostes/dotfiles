@@ -13,6 +13,10 @@ PopupWindow {
   property bool rich: false
   property bool shown: false
   property Component content: null
+  // place the body to the LEFT of the target, vertically centered (the right
+  // bar's fan pills: a tooltip below one pill would cover the next one and
+  // swallow the clicks meant for it)
+  property bool leftOfTarget: false
 
   // tooltips flip above their target when there is not enough space below it
   // (pills near the bottom of the vertical side bar)
@@ -95,14 +99,32 @@ PopupWindow {
   }
 
   anchor.onAnchoring: {
-    // The anchor rect must match the target's box: without horizontal
+    // the anchor rect must match the target's box: without horizontal
     // edges/gravity the popup is centered on the rect, so a 1px rect would
     // center the popup on the pill's left edge instead of its middle.
     const p = tip.target.mapToItem(null, 0, 0);
     const win = tip.target.QsWindow.window;
-    const sw = win && win.screen ? win.screen.width : 1920;
-    if ((p.x + tip.target.width / 2) > sw / 2) {
-      // right-hand bar: right-align the tip with the pill so it stays on screen
+    const ww = win && win.width > 0 ? win.width : 1920;
+    const sh = win && win.screen ? win.screen.height : 1080;
+    // Pills in the narrow vertical side bar sit on the right edge: place their
+    // tips to the LEFT (vertically centered, clamped to the bar's window
+    // height) so a tip can never cover the bar or run off the screen. The
+    // intelligence fan asks for this explicitly; the other side-bar pills get
+    // it automatically here.
+    const sideBar = win && win.width > 0 && win.width <= 64;
+    if (tip.leftOfTarget || sideBar) {
+      const wh = win && win.height > 0 ? win.height : 1040;
+      anchor.rect.x = p.x - tip.implicitWidth - 14;
+      anchor.rect.y = Math.max(8, Math.min(
+          p.y + tip.target.height / 2 - tip.implicitHeight / 2,
+          wh - tip.implicitHeight - 8));
+      anchor.rect.width = tip.implicitWidth;
+      anchor.rect.height = 1;
+      return;
+    }
+    if ((p.x + tip.target.width / 2) > ww / 2) {
+      // right-hand edge of the top bar: right-align the tip with the pill so
+      // it stays on screen
       anchor.rect.x = p.x + tip.target.width - tip.implicitWidth;
       anchor.rect.width = tip.implicitWidth;
     } else {

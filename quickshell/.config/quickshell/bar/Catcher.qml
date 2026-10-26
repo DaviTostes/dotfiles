@@ -5,6 +5,10 @@ import QtQuick
 // and emits `clicked`. It stays visible for a short moment after
 // deactivating, so the release of the closing click cannot leak through
 // to the surface underneath (classic popup click-through bug).
+//
+// A PanelWindow defaults to the focused monitor, not to the window that owns
+// it, so every call site binds `screen` to its bar (or panel) — otherwise the
+// catcher for a dropdown on monitor A would cover monitor B.
 PanelWindow {
   id: root
 

@@ -2,14 +2,8 @@ singleton HyprSettings 1.0 HyprSettings.qml
 singleton Theme 1.0 Theme.qml
 HyprConfig 1.0 HyprConfig.qml
 HyprlandTab 1.0 HyprlandTab.qml
-LookFeelSection 1.0 LookFeelSection.qml
-InputSection 1.0 InputSection.qml
-AnimationsSection 1.0 AnimationsSection.qml
 WallpaperSection 1.0 WallpaperSection.qml
-LockSection 1.0 LockSection.qml
 IdleSection 1.0 IdleSection.qml
-MonitorsSection 1.0 MonitorsSection.qml
-AutostartSection 1.0 AutostartSection.qml
 BluetoothTab 1.0 BluetoothTab.qml
 WifiTab 1.0 WifiTab.qml
 VpnTab 1.0 VpnTab.qml

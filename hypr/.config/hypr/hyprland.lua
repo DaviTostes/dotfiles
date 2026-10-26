@@ -22,19 +22,35 @@ for k, v in pairs(envs) do
   hl.env(k, v)
 end
 
--- Managed by the quickshell Hypr Config panel (monitors, look & feel, input,
--- animations, autostart).
-package.loaded["hyprpanel"] = nil
-require("hyprpanel")
+--------------------
+---- MONITORS ----
+--------------------
+
+hl.monitor({ output = "DP-2", mode = "1920x1080@144", position = "0x0", scale = 1 })
+hl.monitor({ output = "HDMI-A-1", mode = "1920x1080@75", position = "-1920x0", scale = 1 })
 
 --------------------
 ---- AUTOSTART ----
 --------------------
 
--- DLNA renderer: auror announces this machine as a UPnP MediaRenderer and
--- plays casts through mpv; the right bar's Auror pill drives it over its
--- local HTTP API. Skip the spawn if one is already running.
 hl.on("hyprland.start", function()
+  hl.exec_cmd("dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP")
+  hl.exec_cmd("systemctl --user import-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP")
+
+  hl.exec_cmd("quickshell")
+  hl.exec_cmd("hypridle")
+  hl.exec_cmd("awww-daemon")
+  hl.exec_cmd("$HOME/.config/hypr/scripts/wallpaper-apply")
+  hl.exec_cmd("swayosd-server")
+  hl.exec_cmd("wl-paste --watch cliphist store")
+  hl.exec_cmd("goytn")
+  hl.exec_cmd("maily")
+  hl.exec_cmd("ksecretd")
+  hl.exec_cmd("setsid -f $HOME/.local/bin/xembed-tray")
+
+  -- DLNA renderer: auror announces this machine as a UPnP MediaRenderer and
+  -- plays casts through mpv; the right bar's Auror pill drives it over its
+  -- local HTTP API. Skip the spawn if one is already running.
   hl.exec_cmd("pgrep -x auror >/dev/null 2>&1 || setsid -f auror")
 end)
 
@@ -42,11 +58,11 @@ end)
 ---- WORKSPACES ----
 --------------------
 
-local primaryMonitor   = "DP-2"
-local secondaryMonitor = "HDMI-A-1"
-
-hl.workspace_rule({ workspace = "2", monitor = primaryMonitor, default = false })
-hl.workspace_rule({ workspace = "1", monitor = secondaryMonitor, default = true })
+-- local primaryMonitor   = "DP-2"
+-- local secondaryMonitor = "HDMI-A-1"
+--
+-- hl.workspace_rule({ workspace = "2", monitor = primaryMonitor, default = false })
+-- hl.workspace_rule({ workspace = "1", monitor = secondaryMonitor, default = true })
 
 ---------------------
 ---- MY PROGRAMS ----
@@ -69,6 +85,55 @@ local function termRun(cmd) return terminal .. " --title \"" .. cmd .. "\" " .. 
 -----------------------
 
 hl.config({
+  general = {
+    gaps_in          = 2,
+    gaps_out         = 2,
+    border_size      = 2,
+    col              = {
+      active_border   = "rgba(60,60,60,1)",
+      inactive_border = "rgba(32,32,32,1)",
+    },
+    resize_on_border = false,
+    allow_tearing    = false,
+    layout           = "dwindle",
+  },
+
+  decoration = {
+    rounding         = 8,
+    rounding_power   = 2,
+    active_opacity   = 1,
+    inactive_opacity = 1,
+    shadow           = {
+      enabled      = true,
+      range        = 4,
+      render_power = 3,
+      color        = 0xee1a1a1a,
+    },
+    blur             = {
+      enabled  = true,
+      size     = 3,
+      passes   = 1,
+      vibrancy = 0.1696,
+    },
+  },
+
+  animations = {
+    enabled = true,
+  },
+
+  input = {
+    kb_layout    = "us",
+    kb_variant   = "",
+    kb_model     = "",
+    kb_options   = "",
+    kb_rules     = "",
+    follow_mouse = 1,
+    sensitivity  = 0,
+    touchpad     = {
+      natural_scroll = false,
+    },
+  },
+
   dwindle = {
     preserve_split = true,
   },
@@ -104,6 +169,35 @@ hl.config({
     force_zero_scaling = true,
   },
 })
+
+--------------------
+---- ANIMATIONS ----
+--------------------
+
+hl.curve("easeOutQuint", { type = "bezier", points = { { 0.23, 1 }, { 0.32, 1 } } })
+hl.curve("easeInOutCubic", { type = "bezier", points = { { 0.65, 0.05 }, { 0.36, 1 } } })
+hl.curve("linear", { type = "bezier", points = { { 0, 0 }, { 1, 1 } } })
+hl.curve("almostLinear", { type = "bezier", points = { { 0.5, 0.5 }, { 0.75, 1 } } })
+hl.curve("quick", { type = "bezier", points = { { 0.15, 0 }, { 0.1, 1 } } })
+
+hl.animation({ leaf = "global", enabled = true, speed = 10, bezier = "default" })
+hl.animation({ leaf = "border", enabled = true, speed = 5.39, bezier = "easeOutQuint" })
+hl.animation({ leaf = "windows", enabled = true, speed = 4.79, bezier = "easeOutQuint" })
+hl.animation({ leaf = "windowsIn", enabled = true, speed = 4.1, bezier = "easeOutQuint", style = "popin 87%" })
+hl.animation({ leaf = "windowsOut", enabled = true, speed = 1.49, bezier = "linear", style = "popin 87%" })
+hl.animation({ leaf = "fadeIn", enabled = true, speed = 1.73, bezier = "almostLinear" })
+hl.animation({ leaf = "fadeOut", enabled = true, speed = 1.46, bezier = "almostLinear" })
+hl.animation({ leaf = "fade", enabled = true, speed = 3.03, bezier = "quick" })
+hl.animation({ leaf = "layers", enabled = true, speed = 3.81, bezier = "easeOutQuint" })
+hl.animation({ leaf = "layersIn", enabled = true, speed = 4, bezier = "easeOutQuint", style = "fade" })
+hl.animation({ leaf = "layersOut", enabled = true, speed = 1.5, bezier = "linear", style = "fade" })
+hl.animation({ leaf = "fadeLayersIn", enabled = true, speed = 1.79, bezier = "almostLinear" })
+hl.animation({ leaf = "fadeLayersOut", enabled = true, speed = 1.39, bezier = "almostLinear" })
+hl.animation({ leaf = "workspaces", enabled = true, speed = 1.94, bezier = "almostLinear", style = "fade" })
+hl.animation({ leaf = "workspacesIn", enabled = true, speed = 1.21, bezier = "almostLinear", style = "fade" })
+hl.animation({ leaf = "workspacesOut", enabled = true, speed = 1.94, bezier = "almostLinear", style = "fade" })
+hl.animation({ leaf = "specialWorkspace", enabled = true, speed = 3, bezier = "default", style = "slidevert" })
+hl.animation({ leaf = "zoomFactor", enabled = true, speed = 7, bezier = "quick" })
 
 hl.device({
   name        = "epic-mouse-v1",
@@ -210,7 +304,6 @@ hl.bind(mod("B"), exec(browser))
 hl.bind(mod("D"), exec(discord))
 hl.bind(mod("Z"), exec("zapfast"))
 hl.bind(shift("Z"), exec("Telegram"))
-hl.bind(mod("O"), exec("qs ipc call tasks toggle"))    -- tasks panel (was: omm launcher)
 hl.bind(shift("T"), exec("qs ipc call typetest toggle"))  -- desktop typing test on/off
 hl.bind(shift("B"), exec(btManager))
 hl.bind(shift("W"), exec(wifiManager))
@@ -221,6 +314,7 @@ hl.bind(mod("W"), exec("sh -c 'killall quickshell 2>/dev/null; sleep 0.5; setsid
 hl.bind(mod("U"), exec("pavucontrol"))
 hl.bind(mod("N"), exec("qs ipc call notifs toggle"))    -- calendar + notifications panel
 hl.bind(shift("N"), exec("qs ipc call notifs clear"))
+hl.bind(shift("G"), exec("qs ipc call github toggle"))   -- GitHub PRs / actions panel
 
 hl.bind(mod("A"), exec("qs ipc call opencode toggleExpanded"))
 hl.bind(shift("A"), exec("qs ipc call opencode voice"))      -- docked (small) panel, straight into Voice Mode

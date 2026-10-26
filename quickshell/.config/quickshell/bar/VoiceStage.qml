@@ -777,12 +777,13 @@ Item {
                    && (root.state === "thinking" || root.state === "transcribing" || root.busy)
 
           Text {
+            id: thinkIcon
             text: root.state === "transcribing" ? "◌" : "󰚩"
             font.family: Theme.font
             font.pixelSize: 26
             color: Theme.accent2
             property real bob: 0
-            transform: Translate { y: parent.bob }
+            transform: Translate { y: thinkIcon.bob }
             SequentialAnimation on bob {
               running: visible
               loops: Animation.Infinite

@@ -248,6 +248,8 @@ PanelWindow {
 
     Shortcut {
       sequence: "Escape"
+      context: Qt.ApplicationShortcut
+      enabled: root.open
       onActivated: root.close()
     }
 

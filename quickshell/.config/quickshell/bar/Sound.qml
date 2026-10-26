@@ -1,6 +1,7 @@
 import Quickshell
 import Quickshell.Services.Pipewire
 import QtQuick
+import QtQuick.Controls.Basic
 import "../hyprconf"
 
 Pill {
@@ -131,6 +132,7 @@ Pill {
   // click-outside close (same pattern as the Pomodoro panel)
   Catcher {
     id: catcher
+    screen: root.QsWindow.window ? root.QsWindow.window.screen : null
     active: root.panelOpen
     onClicked: root.panelOpen = false
   }
@@ -252,14 +254,21 @@ Pill {
 
   // ---------- dropdown panel ----------
   PopupWindow {
+    id: panel
+
     // stays mapped briefly while closing so the fade can play
     visible: root.panelOpen || hideAnim.running
     color: "transparent"
 
     Timer { id: hideAnim; interval: 220 }
 
-    implicitWidth: panelBody.implicitWidth + 24
-    implicitHeight: panelBody.implicitHeight + 16
+    // the app list can grow without bound, so cap the popup to the screen and
+    // scroll the body instead of letting it run off the bottom
+    readonly property int maxH:
+        (root.QsWindow.window && root.QsWindow.window.screen
+         ? root.QsWindow.window.screen.height : 1080) - 16
+    implicitWidth: 260 + 24
+    implicitHeight: Math.min(col.implicitHeight + 16, panel.maxH)
     onVisibleChanged: if (visible) anchor.updateAnchor()
     onImplicitWidthChanged: if (visible) anchor.updateAnchor()
     onImplicitHeightChanged: if (visible) anchor.updateAnchor()
@@ -271,14 +280,15 @@ Pill {
     }
 
     anchor.onAnchoring: {
-      // the bar is on the right: open to the LEFT of the pill, clamped so the
-      // volume pill (near the bottom) does not push the panel off-screen
+      // The anchor rect is in the BAR WINDOW's local coordinates: clamp
+      // against the window's own height (not the screen's) and open left of
+      // the pill with a clear gap from the bar.
       const p = root.mapToItem(null, 0, 0);
       const win = root.QsWindow.window;
-      const sh = win && win.screen ? win.screen.height : 1080;
-      const h = root.implicitHeight;
-      anchor.rect.x = p.x - 7;
-      anchor.rect.y = Math.max(0, Math.min(p.y, sh - h));
+      const wh = win && win.height > 0 ? win.height : 1000;
+      const h = panel.implicitHeight;
+      anchor.rect.x = p.x - 15;
+      anchor.rect.y = Math.max(8, Math.min(p.y, wh - h - 8));
       anchor.rect.width = 1;
       anchor.rect.height = h;
     }
@@ -291,11 +301,17 @@ Pill {
       border.width: 1
     }
 
-    Item {
+    Flickable {
       id: panelBody
-      anchors.centerIn: parent
-      implicitWidth: 260
-      implicitHeight: col.implicitHeight
+      anchors.fill: parent
+      anchors.margins: 8
+      anchors.rightMargin: 10
+      clip: true
+      contentWidth: width
+      contentHeight: col.implicitHeight
+      boundsBehavior: Flickable.StopAtBounds
+      flickableDirection: Flickable.VerticalFlick
+
       opacity: root.panelOpen ? 1 : 0
       Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
 
@@ -304,9 +320,12 @@ Pill {
         Behavior on y { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
       }
 
+      ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
       Column {
         id: col
-        anchors.horizontalCenter: parent.horizontalCenter
+        x: Math.max(0, (parent.width - 260) / 2)
+        width: 260
         spacing: 8
 
         // ----- output devices -----

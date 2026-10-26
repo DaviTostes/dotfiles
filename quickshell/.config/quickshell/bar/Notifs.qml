@@ -169,7 +169,8 @@ Item {
     history.clear();
   }
 
-  // ---------- click-to-open ----------  // Capture every field we need BEFORE invoking: invoke() closes the
+  // ---------- click-to-open ----------
+  // Capture every field we need BEFORE invoking: invoke() closes the
   // notification, which destroys the object synchronously.
   function open(nid) {
     const n = root.find(nid);
