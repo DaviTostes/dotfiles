@@ -24,10 +24,9 @@ QtObject {
     readonly property color idleText: "#7d8791" // idle / dimmed pill text
     readonly property color paused: "#4a505a"   // dimmed state accent
 
-    // Per-prefix tag colors (bar/Tasks.qml). A prefix is hashed to an index,
-    // so the same prefix always maps to the same color across restarts.
-    // Deliberately vivid: these are meant to stand out against the muted
-    // chrome and group tasks at a glance.
+    // Vivid swatch palette shared by the desk toys (2048 tile values, snake
+    // body) and any other per-tag coloring. Deliberately loud: these stand
+    // out against the muted chrome.
     readonly property var tagColors: [
         "#ff6b6b", // red
         "#ffa94d", // orange

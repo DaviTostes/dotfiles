@@ -31,6 +31,26 @@ Item {
         (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/qs-gifframes"
     property string frameUrl: ""
 
+    // Re-extract whenever the file changes. frameUrl MUST be cleared here:
+    // a row that switches from one GIF to another used to keep rendering the
+    // previous GIF's frame forever (the old source's cached still).
+    function kickExtract() {
+        kickTimer.stop();
+        root.frameUrl = "";
+        extract.running = false;
+        if (!root.isGif || root.srcPath === "") return;
+        extract.command = ["sh", "-c",
+            'mkdir -p "$1"; out="$1/$(printf %s "$2" | md5sum | cut -d" " -f1).png"; ' +
+            '[ -s "$out" ] || ffmpeg -y -loglevel error -i "$2" -frames:v 1 "$out" 2>/dev/null; ' +
+            '[ -s "$out" ] && printf "%s\\t%s" "$out" "$2"',
+            "sh", root.frameDir, root.srcPath];
+        // short hop so a previous run has actually stopped first
+        kickTimer.restart();
+    }
+
+    onSrcPathChanged: kickExtract()
+    Component.onCompleted: kickExtract()
+
     // mirror Image.status so callers can fade in once the frame is ready
     readonly property int status: root.isGif
         ? frameImg.status
@@ -62,17 +82,22 @@ Item {
     // extract the first frame once per file (cached by path hash)
     Process {
         id: extract
-        running: root.isGif && root.srcPath !== "" && root.frameUrl === ""
-        command: ["sh", "-c",
-            'mkdir -p "$1"; out="$1/$(printf %s "$2" | md5sum | cut -d" " -f1).png"; ' +
-            '[ -s "$out" ] || ffmpeg -y -loglevel error -i "$2" -frames:v 1 "$out" 2>/dev/null; ' +
-            '[ -s "$out" ] && printf %s "$out"',
-            "sh", root.frameDir, root.srcPath]
         stdout: StdioCollector {
             onStreamFinished: {
                 const t = text.trim();
-                if (t !== "") root.frameUrl = "file://" + t;
+                if (t === "") return;
+                const i = t.lastIndexOf("\t");
+                if (i < 0) return;
+                // discard output from a run whose source is already stale
+                if (t.slice(i + 1) !== root.srcPath) return;
+                root.frameUrl = "file://" + t.slice(0, i);
             }
         }
+    }
+
+    Timer {
+        id: kickTimer
+        interval: 16
+        onTriggered: extract.running = true
     }
 }

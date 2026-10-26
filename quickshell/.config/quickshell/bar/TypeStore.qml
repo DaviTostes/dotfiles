@@ -3,10 +3,10 @@ import Quickshell
 import Quickshell.Io
 import QtQuick
 
-// Personal bests + on/off state for the typing test (bar/TypeTest.qml).
+// Personal bests for the typing test (bar/TypeTest.qml).
 // PBs are one entry per mode+value key ("time-15", "words-25", ...). Persisted
 // under Quickshell.stateDir via FileView — the same store trick as the
-// launcher's frecency and TasksStore.
+// launcher's frecency.
 Item {
   id: root
 

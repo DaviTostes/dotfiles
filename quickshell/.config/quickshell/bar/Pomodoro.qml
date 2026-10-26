@@ -120,6 +120,7 @@ Pill {
   // it stays above it and remains clickable)
   Catcher {
     id: catcher
+    screen: root.QsWindow.window ? root.QsWindow.window.screen : null
     active: root.panelOpen
     onClicked: root.panelOpen = false
   }

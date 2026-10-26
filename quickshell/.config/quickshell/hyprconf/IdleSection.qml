@@ -10,9 +10,6 @@ ColumnLayout {
     property var cfg: null
     property real lockTO: 300
     property real dpmsTO: 330
-    property string lockCmd: "pidof hyprlock || hyprlock"
-    property string beforeSleep: "loginctl lock-session"
-    property string afterSleep: "hyprctl dispatch dpms on"
     property string status: ""
     property bool dirty: false
     readonly property bool busy: restartProc.running
@@ -26,9 +23,6 @@ ColumnLayout {
 
         root.lockTO = Conf.toInt(Conf.getVar(cfg, "$lock_timeout", "300"), 300);
         root.dpmsTO = Conf.toInt(Conf.getVar(cfg, "$dpms_timeout", "330"), 330);
-        root.lockCmd = Conf.getRaw(cfg, "general", "lock_cmd", "pidof hyprlock || hyprlock");
-        root.beforeSleep = Conf.getRaw(cfg, "general", "before_sleep_cmd", "$lock");
-        root.afterSleep = Conf.getRaw(cfg, "general", "after_sleep_cmd", "$dpms_on");
         root.dirty = false;
         root.status = "";
     }
@@ -37,9 +31,6 @@ ColumnLayout {
         const cfg = root.cfg;
         Conf.setVar(cfg, "$lock_timeout", Conf.fmtInt(root.lockTO));
         Conf.setVar(cfg, "$dpms_timeout", Conf.fmtInt(root.dpmsTO));
-        Conf.set(cfg, "general", "lock_cmd", root.lockCmd);
-        Conf.set(cfg, "general", "before_sleep_cmd", root.beforeSleep);
-        Conf.set(cfg, "general", "after_sleep_cmd", root.afterSleep);
 
         fileView.setText(Conf.serialize(cfg));
         root.dirty = false;
@@ -110,38 +101,6 @@ ColumnLayout {
             color: Theme.muted
             font.family: Theme.font
             font.pixelSize: 11
-        }
-    }
-
-    SectionCard {
-        Layout.fillWidth: true
-        title: "Idle — Commands (general)"
-
-        Grid {
-            columns: 2
-            columnSpacing: 14
-            rowSpacing: 8
-
-            Text { text: "Lock command"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 12 }
-            TextEntry {
-                width: 320
-                text: root.lockCmd
-                onEditingFinished: { root.lockCmd = text; root.dirty = true }
-            }
-
-            Text { text: "Before sleep"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 12 }
-            TextEntry {
-                width: 320
-                text: root.beforeSleep
-                onEditingFinished: { root.beforeSleep = text; root.dirty = true }
-            }
-
-            Text { text: "After sleep"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 12 }
-            TextEntry {
-                width: 320
-                text: root.afterSleep
-                onEditingFinished: { root.afterSleep = text; root.dirty = true }
-            }
         }
     }
 }

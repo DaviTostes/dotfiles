@@ -22,20 +22,29 @@ lands at `~/.config/quickshell/shell.qml`.
 ## Quickshell (`quickshell/.config/quickshell/`)
 
 - `shell.qml` is the entry point; `bar/` holds the bar and its pill widgets;
-  `hyprconf/` holds the Hypr Config dropdown panel (edits compositor settings in
-  `hyprpanel.lua` via `HyprPanel.js` and `wallpaper.conf` / `hyprlock.conf` /
-  `hypridle.conf` via `Conf.js`).
-  The panel is a `PopupWindow` anchored under the bar's settings pill
-  (Pomodoro-style, one per monitor); click-outside close uses
-  `HyprlandFocusGrab` — do not turn it back into a standalone window.
+  `hyprconf/` holds the Hypr Config dropdown panel (edits `wallpaper.conf` /
+  `hyprlock.conf` / `hypridle.conf` via `Conf.js`; the compositor itself is
+  hand-edited in `hyprland.lua`).
+  The panel is a `PopupWindow` anchored to the left of the bar's settings pill
+  (one per monitor); click-outside close uses the fullscreen
+  `bar/Catcher.qml` shield — do not turn it back into a standalone window.
+  The selected tab is remembered on the bar (`sideBar.setSettingsTab`), and an
+  IPC `open <tab>` overrides it for that open.
+  Popup anchors are in the **bar window's local coordinates**: clamp the
+  vertical position with `barWindow.height` and place the right side with
+  `p.x - gap`; mixing in screen coordinates (or `Math.max(implicitWidth, …)`)
+  pushes the popup off-screen and the compositor clamps it against the bar.
 - The dropdown has four tabs, in `HyprConfig.tabs` order: **Hyprland**
   (`HyprlandTab.qml`), **Bluetooth** (`BluetoothTab.qml`), **Wi-Fi**
   (`WifiTab.qml`), **VPN** (`VpnTab.qml`).
-  `HyprlandTab.qml` stacks all Hyprland-related configuration in one scrollable
-  tab (`LookFeelSection`, `InputSection`, `AnimationsSection`,
-  `WallpaperSection`, `LockSection`, `IdleSection`, `MonitorsSection`,
-  `AutostartSection`) with a single footer Save that writes and applies only
-  dirty sections.
+  `HyprlandTab.qml` stacks the configs the panel owns in one scrollable tab
+  (`WallpaperSection`, `IdleSection`) with a single footer Save that writes and
+  applies only dirty sections. The **wallpaper** card owns both the
+  per-monitor `wallpaper.conf` blocks and the single hyprlock background
+  (`hyprlock.conf` `background.path`) — the lock row has its own gallery target
+  (-2) and **set all** also sets the lock wallpaper. The compositor settings
+  editors (monitors, look & feel, input, animations, autostart) were removed
+  from the panel entirely: they live in `hyprland.lua` and are edited by hand.
   The bar's `openSettings(name)` resolves a tab by name and the IPC
   `qs ipc call settings open hyprland|bluetooth|wifi|vpn` (plus legacy aliases
   `wallpaper|lock|lockscreen|idle` → `Hyprland`) opens straight on one;
@@ -68,24 +77,6 @@ lands at `~/.config/quickshell/shell.qml`.
   Opened via `qs ipc call launcher toggle`. Launcher, clipboard history and the
   two settings tabs cover all four binds wofi used to serve, and wofi/bzmenu/
   iwmenu are gone from the system.
-- `bar/Tasks.qml` is the tasks pill: a Pomodoro-style dropdown (one per bar)
-  with **pending** / **done** tabs and a **+** icon top-right that opens the
-  editor. A task carries a name, an optional description and an optional
-  **prefix**; tasks sharing a prefix get the same color (custom override in
-  `tasks-prefix-colors.json`, else a deterministic hash → vivid
-  `Theme.tagColors`), drawn as a colored left accent bar + badge on the row.
-  Clicking a row opens the same editor sub-panel below the list to update it;
-  the editor also carries the per-prefix color swatches. Rows reorder with
-  up/down chevrons (`moveTask` swaps within the visible tab), and are checked
-  off (or restored) and deleted from the row. The list is **global state**, not
-  per-pill: `bar/TasksStore.qml` is a singleton (registered in `bar/qmldir`,
-  like `Notifs`) holding the tasks + per-prefix colors and every mutator, so
-  all bars stay in sync — `Tasks.qml` is only the view. It persists at
-  `Quickshell.stateDir/tasks.json` via `Quickshell.Io.FileView` (the same store
-  trick as the launcher). Text entry reuses `hyprconf/TextEntry.qml`; the bar
-  holds the keyboard while the panel is open (`Bar.focusable ←
-  tasksPanelOpen`), like the settings dropdown. Opened via
-  `qs ipc call tasks toggle` (SUPER+O, moved off the omm launcher).
 - Launcher ordering is **frecency** (launch count + recency), persisted at
   `Quickshell.stateDir/launcher-usage.json` (i.e.
   `~/.local/state/quickshell/by-shell/<hash>/launcher-usage.json`) through
@@ -122,6 +113,22 @@ lands at `~/.config/quickshell/shell.qml`.
   `historyNext()` are its API, wired in Opencode.qml. Unbalanced `( [ {` or
   quotes are rejected up front — `calc` otherwise waits for the rest of the
   expression and desyncs the sentinel (`__QS_CALC_DONE__`) protocol.
+- `bar/IntelOcr.qml` is the OCR tab: a small centered paste card that reads a
+  clipboard image on **Ctrl+V** (the tab focuses itself while active, so the
+  key works whichever popup/bar surface holds the keyboard) or a click, into a
+  per-tab
+  `$XDG_RUNTIME_DIR/quickshell-ocr-<pid>-<tag>.png`, runs **tesseract** on it
+  and commits the text once both the exit status and the stdout collector have
+  settled (a collector can finish after `onExited`, which otherwise flashed
+  "no text found" on a long page). On success the card grows into a
+  full-height result view with a scrollable `SelText` (selecting copies
+  immediately, same as the chat) and a **copy all** chip; **new image** goes
+  back to the small card. Languages come from `tesseract --list-langs`,
+  preferring `por+eng`, then `por`, then `eng`, then the first installed text
+  language (`osd` excluded) — if no data is installed it says so instead of
+  running. Clipboard probing is argv-only (`sh -c` gets the temp path as
+  `$1`) and tries the common image types; tesseract runs locally, nothing is
+  sent over the network.
 - `bar/Opencode.qml`'s **full chat is now a standalone instance** from the
   docked intelligence central, so both can be open at once. `shell.qml` hosts a
   second `Opencode` (`id: opencodeFull`, `standalone: true`) in a hidden
@@ -137,6 +144,18 @@ lands at `~/.config/quickshell/shell.qml`.
   .opencodeFullOpen` disables the bar's application-scoped Escape shortcut while
   the standalone is open (two would be ambiguous). The in-pill docked↔full swap
   (`setPanelExpanded`/`modeSwap`/`pendingMode`) was removed as dead code.
+- The docked intelligence pill now lives in the right bar's **bottom group**,
+  directly above the Auror pill, and shows a compass dial (Font Awesome
+  `\uf14e`) — deliberately no vendor logo. Hovering the wheel (and only the
+  wheel; the reserved space above stays inert until the fan opens) pops its
+  scale/tint and fans the mode pills out vertically (`bar/IntelFan.qml`):
+  **calc nearest the wheel, then translate, then ocr** — the wheel itself
+  opens chat. Clicking the wheel opens/closes chat; clicking a fan pill calls
+  `Opencode.openMode()`. The in-panel tab row was removed — the fan is the
+  only mode selector. The fan is plain bar items (never a hover-driven
+  PopupWindow); its labels sit to the left so they cannot cover the pill
+  below, and it hides while the docked panel is open (the fullscreen Catcher
+  owns pointer input then). The wheel itself has no tooltip.
 - **Panels share the chat HISTORY, not the current chat.** The
   `OpencodeShared` singleton (registered in `bar/qmldir`) owns the remembered
   chat set (`panelSessions`, persisted once at `opencode-panel-sessions.json`,
@@ -146,7 +165,7 @@ lands at `~/.config/quickshell/shell.qml`.
   the two windows can show **different conversations at once** — switching or
   starting a chat in one does not move the other. Each instance also keeps its
   own message model, SSE stream and turn state.
-- The **full window** is chat-only (`tabRow.visible = !panelExpanded`) and shows
+- The **full window** is chat-only (no docked tab strip) and shows
   a Claude/ChatGPT-style chat history rail down the left: a full-width **New
   chat** row, a filter box, then the panel-owned chats bucketed by recency
   (Today / Yesterday / Previous 7 days / Previous 30 days / Older, from each
@@ -185,22 +204,35 @@ lands at `~/.config/quickshell/shell.qml`.
   goes into `root.pastes` — `send()` runs the draft through `expandPastes()`
   first, so the transcript (and the session title) still get the full text.
   Both editors detect it the same way, in `onTextChanged`: `pasteCollapse()`
-  diffs the new text against the *other* editor's (they mirror each other, so
-  that is the pre-paste draft) and replaces the inserted slice with the marker,
-  returning the caret to put after it. Markers are unique (a second paste of
-  the same size gets `(2)`), so deleting one can never re-route another, and a
-  marker edited by hand simply goes out as the literal text it looks like.
+  takes the pre-paste draft from the *other* editor (they mirror each other)
+  plus this editor's caret, which is the exact insertion point — `[caret -
+  added, caret)` is verified against the draft and only then used, with the
+  prefix/suffix diff (pasted text whose tail mirrors the draft's own tail used
+  to push the marker to the wrong end) as the fallback. Markers are unique
+  against `pastes` **and** the draft text, so deleting one can never re-route
+  another, and a marker edited by hand simply goes out as the literal text it
+  looks like.
+  Ctrl+V's text fallback pastes into `root.activeEditor()` (the visible field
+  in the standalone window, the bar's `hiddenInput` while docked) — pasting
+  into the other editor inserted at ITS stale caret, which Qt resets to 0 on
+  every `.text =` mirror, so the paste landed at the start of the draft. Every
+  mirror assignment (`focusPanelField`, `closeMenu`, both `onTextChanged`
+  branches) therefore carries the caret over explicitly.
   `pastes` is cleared when the draft is actually consumed (successful send,
   `newChat()`), never on a failed send — a retry restores the raw draft.
 - Per-component QML files are registered in `hyprconf/qmldir`; shared state
   lives in singletons (`HyprSettings`, `Theme`) and is referenced directly by
   name from files in the same directory — no import needed.
 - `WallpaperImage.qml` renders wallpaper paths for the gallery grid
-  (`WallpaperGrid.qml`) and the `PreviewBox` used by the Wallpaper and Lock
-  Screen tabs. It swaps `Image` for `AnimatedImage` on `.gif` sources so live
-  wallpapers animate in the panel; `animate` gates playback and callers bind it
-  to the panel/gallery being open (via `panelOpen` / `galleryWin.open`) so
-  nothing animates off-screen. Needs `qt6-imageformats` (libqgif).
+  (`WallpaperGrid.qml`) and the `PreviewBox` used by the wallpaper card. GIFs
+  are **not** animated in the panel: quickshell 0.3.2 + Qt 6.12 crashes in
+  `AnimatedImage`/the gif plugin, so the first frame is extracted once with
+  `ffmpeg` into `$XDG_RUNTIME_DIR/qs-gifframes` and shown as a still (the
+  desktop still animates via awww). The extraction is re-kicked whenever the
+  source changes — `frameUrl` must be cleared first, otherwise a row that
+  switches GIF → GIF keeps rendering the previous GIF's frame. Late stdout
+  from a stale run is discarded by comparing its piggybacked source path, and
+  `animate` is only API compatibility now. Needs `qt6-imageformats` (libqgif).
 - **Style:** everything must follow the Pomodoro dropdown palette, defined
   once in `hyprconf/Theme.qml` (bg `#161719`, border `#282a2e`, surface
   `#1e2126`, hover `#282c33`, text `#a9afb8`, muted `#5c6470`, accent
@@ -220,6 +252,11 @@ lands at `~/.config/quickshell/shell.qml`.
   tip that never appeared never lingers; click-driven tips (the clock's
   calendar) pass `showDelay: 0`. Keep that in mind before adding a
   hover-driven `visible`.
+- **Fullscreen helper windows must bind `screen`.** A `PanelWindow` without an
+  explicit screen follows the *focused* monitor, not the bar that owns it, so
+  `bar/Catcher.qml` (click-outside shield) and `bar/Toasts.qml` (toast stack)
+  each bind the screen of their bar — otherwise the catcher covered the wrong
+  display and every monitor's toast stack piled up on the same corner.
 - The launcher and the clipboard picker *cannot* stay mapped (Exclusive
   keyboard focus would swallow every key while hidden), so each open really
   does build a fullscreen window — keep the open path cheap instead.
@@ -251,7 +288,7 @@ lands at `~/.config/quickshell/shell.qml`.
   when idle and `md-cast-connected` (green) while playing, plus a thin progress
   line on the pill itself; left-click opens the panel, right-click toggles
   play/pause, and the wheel steps auror's volume by 5. The daemon is
-  autostarted from `hyprland.lua`, not the panel-managed `hyprpanel.lua`.
+  autostarted from the AUTOSTART block in `hyprland.lua` (guarded by `pgrep`).
   Two failure modes shaped this: auror's `/status` must **never block on the
   mpv IPC** (a fresh mpv socket makes `ensureMpvIPC` dial for up to 2s, which
   read as "offline" right after every cast), so status/event reads go through a
@@ -260,13 +297,29 @@ lands at `~/.config/quickshell/shell.qml`.
   `missTolerance` (3) misses and polls at 1s while recovering. Volume/mute/seek
   are applied optimistically (`pendingVol`/`pendingMute`/`pendingSeek`) and held
   until `/status` agrees (or 3s), so a stale poll can't yank a slider back.
+- `bar/Github.qml` (singleton) + `bar/GithubPill.qml` are the GitHub pill in the
+  **top bar, immediately left of the tray**. The singleton polls `gh` (argv
+  only) every 60 s and on panel open: `gh api graphql` for the viewer's open
+  PRs + check rollup, `gh api notifications?per_page=50` for unread
+  `PullRequest`/`CheckSuite` threads, and
+  `gh api repos/<repo>/actions/runs?per_page=20` for queued/in-progress runs in
+  the 8 most recently pushed repos plus repos touched by those PRs/notifications
+  (cap 8; repos with Actions disabled are skipped). The panel is a `Tip` +
+  `Catcher` (click-only, no hover window) showing unread notifications and
+  running Actions first, then open PRs; rows open their URL with `xdg-open`.
+  New notifications toast once via `notify-send -a GitHub`, deduped on
+  `<thread id>|<updated_at>` and suppressed while `panelsOpen > 0`; the first
+  successful poll only primes the set. `qs ipc call github toggle`
+  (`SUPER+SHIFT+G`) opens the focused monitor's panel. The pill shows the open
+  PR count, an unread bubble and a green dot while Actions run.
 - `bar/TypeTest.qml` is the desktop "desk toys" window: a fullscreen
   **Bottom**-layer `PanelWindow` (namespace `quickshell-desk`) shown only while
   the focused monitor's active workspace has no toplevels
   (`monitor.activeWorkspace.toplevels`), following the focused monitor like the
   launcher. It hosts the monkeytype-style typing test AND the arcade games
-  (`bar/DeskGames.qml`: 2048 / mines / dice — the old arcade bar pill is gone).
-  `view` picks what shows: -1 nothing, 0 typing, 1..3 games; a row of tabs at
+  (`bar/DeskGames.qml`: 2048 / mines / dice / snake — the old arcade bar pill
+  is gone).
+  `view` picks what shows: -1 nothing, 0 typing, 1..4 games; a row of tabs at
   the bottom center toggles it — idle they sit flush in the bar's colour with
   only their outer top corners rounded (ONE "mound"), and on hover the gaps
   open, they lift and become pills (all one animation; `HoverHandler`, not a
@@ -377,16 +430,21 @@ lands at `~/.config/quickshell/shell.qml`.
 
 ## Hyprland configs
 
-- `hyprland.lua` uses the Lua config API (`hl.env`, `hl.exec`, …) — keep new
-  settings in Lua, don't create a parallel `hyprland.conf`.
-- Panel-managed compositor settings (monitors, look & feel, input, per-leaf
-  animations, autostart) live in `hyprpanel.lua`, loaded by `hyprland.lua` via
-  `package.loaded["hyprpanel"] = nil; require("hyprpanel")`. `HyprPanel.js`
-  parses and renders `hyprpanel.lua` deterministically (tested in
-  `hyprconf/tests/hyprpanel.mjs`), and saving runs `hyprctl reload`.
-- The quickshell `hyprconf/` panel writes `wallpaper.conf`,
-  `hyprlock.conf`, and `hypridle.conf` in place; keep its parse/serialize
-  round-trip (`Conf.js`) lossless when touching that code.
+- `hyprland.lua` is the single source of truth and uses the Lua config API
+  (`hl.env`, `hl.exec_cmd`, `hl.monitor`, `hl.config`, `hl.curve`,
+  `hl.animation`, `hl.bind`, …) — keep new settings there, do not create a
+  parallel `hyprland.conf` or a panel-generated lua file. Monitors, look &
+  feel, input, per-leaf animations and autostart all live in it and are
+  **hand-edited**; the panel no longer writes any lua. `HyprSettings`
+  regex-reads `decoration.rounding` and `general.border_size` from that file
+  so the standalone opencode window can match the compositor's window chrome
+  (see `hyprWindowRadius`).
+- The quickshell `hyprconf/` panel writes `wallpaper.conf`, `hyprlock.conf`, and
+  `hypridle.conf` in place; keep its parse/serialize round-trip (`Conf.js`)
+  lossless when touching that code. The wallpaper card writes both
+  `wallpaper.conf` and the hyprlock `background.path`; its gallery targets are
+  monitor rows (`galleryRow >= 0`), **set all** (`-1` = every monitor + lock)
+  and lock-only (`-2`).
 - Wallpapers run through **awww** (swww's successor), not hyprpaper, so
   animated GIFs work. `wallpaper.conf` is the source of truth
   (`transition = <awww type>` plus one hyprpaper-style `wallpaper { … }`

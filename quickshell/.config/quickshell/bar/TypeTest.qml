@@ -6,10 +6,10 @@ import QtQuick.Shapes
 import "../hyprconf"
 
 // The desktop "desk toys": a monkeytype-style typing test and the arcade games
-// (2048 / mines / dice, in bar/DeskGames.qml), shown in the middle of an empty
-// desktop. A row of tabs at the bottom center picks one; the tabs sit buried
-// in the bottom bar (a relief) and all rise together on hover. The old arcade
-// bar pill is gone.
+// (2048 / mines / dice / snake, in bar/DeskGames.qml), shown in the middle of
+// an empty desktop. A row of tabs at the bottom center picks one; the tabs sit
+// buried in the bottom bar (a relief) and all rise together on hover. The old
+// arcade bar pill is gone.
 //
 // It is a fullscreen Bottom-layer surface with a CONSTANT OnDemand keyboard
 // request (normal compositor focus semantics, so Hyprland keybinds are never
@@ -50,7 +50,7 @@ PanelWindow {
   WlrLayershell.namespace: "quickshell-desk"
   WlrLayershell.keyboardFocus: WlrKeyboardFocus.OnDemand
 
-  // view: -1 = nothing, 0 = typing test, 1..3 = 2048 / mines / dice
+  // view: -1 = nothing, 0 = typing test, 1..4 = 2048 / mines / dice / snake
   property int view: -1
   readonly property bool typeOn: root.view === 0
   readonly property bool gameOn: root.view >= 1

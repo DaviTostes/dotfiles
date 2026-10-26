@@ -139,8 +139,12 @@ Pill {
 
   Timer {
     id: poll
-    // snappy while playing / panel open / recovering from a miss, lazy otherwise
-    interval: (!root.online || root.missCount > 0 || root.panelOpen || root.playing) ? 1000 : 2500
+    // snappy while playing / panel open / recovering from a miss; lazy while
+    // idle and slow while the daemon is not running at all (an absent auror
+    // would otherwise cost one sh+curl process every second, forever)
+    interval: !root.online ? 5000
+            : (root.missCount > 0 || root.panelOpen || root.playing) ? 1000
+            : 2500
     running: true
     repeat: true
     onTriggered: root.refresh()
@@ -228,6 +232,7 @@ Pill {
 
   // click-outside close (same pattern as the volume panel)
   Catcher {
+    screen: root.QsWindow.window ? root.QsWindow.window.screen : null
     active: root.panelOpen
     onClicked: root.panelOpen = false
   }
@@ -353,14 +358,15 @@ Pill {
     }
 
     anchor.onAnchoring: {
-      // the bar is on the right: open to the LEFT of the pill, vertically
-      // centered on it and clamped so the panel never leaves the screen
+      // The anchor rect is in the BAR WINDOW's local coordinates: open left of
+      // the pill with a clear gap from the bar, vertically centered on it and
+      // clamped against the window's own height (not the screen's).
       const p = root.mapToItem(null, 0, 0);
       const win = root.QsWindow.window;
-      const sh = win && win.screen ? win.screen.height : 1080;
+      const wh = win && win.height > 0 ? win.height : 1000;
       const h = panel.implicitHeight;
-      anchor.rect.x = p.x - 7;
-      anchor.rect.y = Math.max(0, Math.min(p.y - h / 2 + root.height / 2, sh - h));
+      anchor.rect.x = p.x - 15;
+      anchor.rect.y = Math.max(8, Math.min(p.y - h / 2 + root.height / 2, wh - h - 8));
       anchor.rect.width = 1;
       anchor.rect.height = h;
     }

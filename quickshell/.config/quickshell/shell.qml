@@ -71,9 +71,9 @@ Scope {
     }
   }
 
-  // global keybind bridge — hyprland.lua: SUPER+A → `qs ipc call opencode toggle`,
-  // SUPER+N → `qs ipc call notifs toggle` (calendar panel w/ notifications),
-  // SUPER+O → `qs ipc call tasks toggle` (tasks dropdown)
+  // global keybind bridge — hyprland.lua: SUPER+A → `qs ipc call opencode
+  // toggle`, SUPER+N → `qs ipc call notifs toggle` (calendar panel with
+  // notifications)
   IpcHandler {
     target: "opencode"
 
@@ -87,6 +87,13 @@ Scope {
       const m = Hyprland.focusedMonitor;
       const bar = m ? root.bars[m.name] : null;
       if (bar) bar.openChat();
+    }
+
+    // open the docked panel straight on a mode: chat | calc | translate | ocr
+    function openMode(mode: string) {
+      const m = Hyprland.focusedMonitor;
+      const bar = m ? root.bars[m.name] : null;
+      if (bar) bar.openIntel(mode);
     }
 
     // SUPER+A — the standalone full chat window (independent of the docked
@@ -107,8 +114,8 @@ Scope {
     }
   }
 
-  // the standalone full chat is its own Opencode instance; this is the shared
-  // toggle used by the keybind and by the pill's expand button
+  // the standalone full chat is its own Opencode instance; shared toggle for
+  // the keybind and the `opencodeFull` IPC handler
   function toggleFullChat() {
     if (opencodeFull.panelOpen) opencodeFull.panelOpen = false;
     else opencodeFull.openStandalone(false);
@@ -144,27 +151,40 @@ Scope {
     function clear() { Notifs.clearAll(); }
   }
 
-  // tasks pill — `qs ipc call tasks toggle` (SUPER+O, moved off the omm
-  // launcher) / `close`
+  // GitHub pill: `qs ipc call github toggle` (SUPER+SHIFT+G)
   IpcHandler {
-    target: "tasks"
+    target: "github"
 
     function toggle() {
       const m = Hyprland.focusedMonitor;
       const bar = m ? root.bars[m.name] : null;
-      if (bar) bar.toggleTasks();
+      if (bar) bar.toggleGithub();
     }
 
     function close() {
-      for (const k in root.bars) root.bars[k].closeTasks();
+      for (const k in root.bars) root.bars[k].closeGithub();
     }
+
+    function status(): string {
+      return "prs=" + Github.prCount + " unread=" + Github.unreadCount
+          + " runs=" + Github.runningCount + " loading=" + Github.loading
+          + " panels=" + Github.panelsOpen
+          + " repos=" + Github.recentRepos.length
+          + " error=" + (Github.error === "" ? "none" : Github.error);
+    }
+
+    function repos(): string { return Github.recentRepos.join(","); }
   }
 
   // SUPER+Space — app launcher (replaces wofi --show drun)
   IpcHandler {
     target: "launcher"
 
-    function toggle() { launcher.toggle(); }
+    function toggle() {
+      // the two overlays are both fullscreen + Exclusive: never stack them
+      if (!launcher.open) clipboard.close();
+      launcher.toggle();
+    }
 
     function close() { launcher.close(); }
 
@@ -176,7 +196,10 @@ Scope {
   IpcHandler {
     target: "clipboard"
 
-    function toggle() { clipboard.toggle(); }
+    function toggle() {
+      if (!clipboard.open) launcher.close();
+      clipboard.toggle();
+    }
 
     function close() { clipboard.close(); }
   }

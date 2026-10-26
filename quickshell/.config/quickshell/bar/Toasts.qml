@@ -8,19 +8,27 @@ import "../hyprconf"
 // window so toasts are never clipped by the bar surface. The whole toast
 // is clickable: invokes the app's default action (or dismisses when the
 // app sent no actions).
+//
+// A PanelWindow defaults to the focused monitor rather than the bar that
+// owns it, so Bar.qml binds `screen` and the two gaps below: without them
+// every monitor's instance piled up on the same corner.
 PanelWindow {
   id: root
 
   anchors { top: true; right: true }
   exclusionMode: ExclusionMode.Ignore
   color: "transparent"
-  margins { top: 34; right: 8 }
+  // clear of the frame's own strips (set by the bar)
+  property int topGap: 34
+  property int rightGap: 8
+  margins { top: root.topGap; right: root.rightGap }
 
   visible: Notifs.pending > 0
   implicitWidth: 344
   // never let a big burst of toasts spill off the bottom of the screen
-  implicitHeight: Math.min(stack.implicitHeight + 16,
-                           (root.screen ? root.screen.height : 1080) - 60)
+  readonly property int maxStackHeight:
+      (root.screen ? root.screen.height : 1080) - root.topGap - 8
+  implicitHeight: Math.min(stack.implicitHeight + 16, root.maxStackHeight)
 
   Item {
     anchors.fill: parent

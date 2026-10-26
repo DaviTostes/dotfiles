@@ -1,6 +1,6 @@
 singleton Cava 1.0 Cava.qml
+singleton Github 1.0 Github.qml
 singleton Notifs 1.0 Notifs.qml
-singleton TasksStore 1.0 TasksStore.qml
 singleton OpencodeShared 1.0 OpencodeShared.qml
 singleton TypeStore 1.0 TypeStore.qml
 Auror 1.0 Auror.qml
@@ -12,7 +12,10 @@ ClipHistory 1.0 ClipHistory.qml
 Clock 1.0 Clock.qml
 DeskGames 1.0 DeskGames.qml
 EdgeCorner 1.0 EdgeCorner.qml
+GithubPill 1.0 GithubPill.qml
+IntelOcr 1.0 IntelOcr.qml
 IntelTranslate 1.0 IntelTranslate.qml
+IntelFan 1.0 IntelFan.qml
 Launcher 1.0 Launcher.qml
 Notifications 1.0 Notifications.qml
 Opencode 1.0 Opencode.qml
@@ -20,7 +23,6 @@ Pill 1.0 Pill.qml
 Player 1.0 Player.qml
 SelText 1.0 SelText.qml
 Sound 1.0 Sound.qml
-Tasks 1.0 Tasks.qml
 Tip 1.0 Tip.qml
 Toasts 1.0 Toasts.qml
 Tray 1.0 Tray.qml

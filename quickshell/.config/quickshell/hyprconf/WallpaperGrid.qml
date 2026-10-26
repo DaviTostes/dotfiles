@@ -13,7 +13,8 @@ Rectangle {
     property string picked: ""
     signal chosen(string p)
 
-    // play gifs only while the gallery is actually open
+    // only scan/render while the gallery is open. It used to run find(1) and
+    // decode every thumbnail at shell start, for a popup nobody had opened.
     property bool animate: true
 
     property string dir: HyprSettings.wallpaperDir
@@ -26,18 +27,24 @@ Rectangle {
     color: Theme.surface
     border.color: Theme.border
 
-    function load() { scanTimer.restart() }
+    function load() {
+        if (!root.animate) return;
+        root.loading = true;
+        scanTimer.restart();
+    }
 
     Timer {
         id: scanTimer
         interval: 200
-        onTriggered: {
-            root.loading = true;
-            listProc.running = true;
-        }
+        onTriggered: listProc.running = true
     }
 
     onDirPathChanged: root.load()
+    onAnimateChanged: {
+        if (root.animate) root.load();
+        else items.clear();
+    }
+    Component.onCompleted: root.load()
 
     Process {
         id: listProc
@@ -48,15 +55,18 @@ Rectangle {
             "sh", root.dirPath]
         stdout: StdioCollector {
             onStreamFinished: {
+                root.loading = false;
+                // the gallery was closed while find(1) was running: drop the
+                // result instead of re-populating the (cleared) model
+                if (!root.animate) return;
                 const lines = text.trim().split("\n").filter(l => l !== "");
                 items.clear();
                 for (const l of lines) items.append({ p: Conf.homeRel(l, root.homeDir) });
-                root.loading = false;
             }
         }
     }
 
-    property bool loading: true
+    property bool loading: false
 
     Column {
         anchors.fill: parent
@@ -129,7 +139,10 @@ Rectangle {
                         WallpaperImage {
                             anchors.fill: parent
                             fillMode: Image.PreserveAspectCrop
-                            source: Conf.fileUrl(cell.p, root.homeDir)
+                            // decode only while the gallery is open; closing
+                            // it frees every thumbnail
+                            source: root.animate
+                                ? Conf.fileUrl(cell.p, root.homeDir) : ""
                             sourceSize.width: 240
                             animate: root.animate
                             scale: cellMa.containsMouse ? 1.06 : 1

@@ -61,7 +61,7 @@ Pill {
   property real panelFade: 0
   property real panelSlideX: 0
   property real panelSlideY: 0
-  property string mode: "chat"    // central tab: chat | translate | calc
+  property string mode: "chat"    // central tab: chat | translate | calc | ocr
   // tab swipe: on tab change the incoming body starts offset to the side
   // (direction follows the tab order) and glides back to 0
   property real swipeOfs: 0
@@ -184,6 +184,14 @@ Pill {
   property var inflight: []
 
   implicitWidth: label.implicitWidth + 14
+  // dock geometry: the wheel plus the fan's reserved rows above it. Kept as
+  // plain constants (not read from the child) so the initial binding can never
+  // see an uninitialised IntelFan.
+  readonly property int wheelH: 28
+  readonly property int fanGap: 4
+  readonly property int fanCount: 3   // keep in sync with IntelFan.modes
+  readonly property int fanH: root.fanCount * root.wheelH + (root.fanCount - 1) * root.fanGap
+  implicitHeight: root.standalone ? root.wheelH : root.wheelH + root.fanGap + root.fanH
 
   // ---------- http helper ----------
   // Qt.btoa(string) is deprecated and floods the log on every request, so the
@@ -701,6 +709,17 @@ Pill {
     activePoll.restart();
   }
 
+  // open the docked panel straight on a mode. Used by the wheel (chat) and by
+  // the hover fan's pills (ocr / translate / calc); the existing open path
+  // handles stream, focus and per-mode editors via onPanelOpenChanged/
+  // panelShown().
+  function openMode(m) {
+    if (m !== "chat" && m !== "calc" && m !== "translate" && m !== "ocr") m = "chat";
+    root.mode = m;
+    if (!root.panelOpen) root.panelOpen = true;
+    root.ensureService();
+  }
+
   // open the panel straight in the large, centered (chatbot) mode. Recorded
   // as a pending wish so onPanelOpenChanged can snap there before the window
   // is ever painted (setting panelExpanded afterwards would flash docked).
@@ -720,9 +739,18 @@ Pill {
   function focusPanelField() {
     if (!root.panelOpen) return;
     root.inputSyncing = true;
+    // `.text =` drops the caret to 0; in the chat tab keep it where the draft
+    // had it (the next paste/Shift+Enter inserts at the caret)
+    const at = root.mode === "chat"
+        ? Math.min(inputField.cursorPosition, inputField.text.length) : 0;
     hiddenInput.text = root.mode === "translate" ? translateBox.sourceText
                      : root.mode === "calc" ? calcBox.draft
+                     : root.mode === "ocr" ? ""
                      : inputField.text;
+    if (root.mode === "chat") {
+      hiddenInput.cursorPosition = at;
+      inputField.cursorPosition = at;
+    }
     root.inputSyncing = false;
     root.focusChatEditor();
   }
@@ -731,6 +759,10 @@ Pill {
   // (real window, normal focus), the bar's hidden editor when docked.
   function focusChatEditor() {
     if (!root.panelOpen) return;
+    // the OCR tab has no text editor; give its own key handler focus in the
+    // popup/expanded window (Ctrl+V), while the bar's hiddenInput below still
+    // owns the keyboard when the bar is the focused surface
+    if (root.mode === "ocr" && ocrBox) ocrBox.forceActiveFocus();
     if (root.panelExpanded) {
       if (root.mode === "calc") { if (calcBox) calcBox.focusEntry(); return; }
       if (inputField) inputField.forceActiveFocus();
@@ -1385,38 +1417,75 @@ Pill {
     pasteImageProc.running = true;
   }
 
+  // The draft editor that owns the caret right now: the bar's hiddenInput
+  // while docked (it holds the keyboard) and the visible field in the
+  // standalone window. Pasting/inserting into the OTHER one inserts at its own
+  // — possibly stale (0) — cursor, which is what dropped a paste at the start
+  // of the draft instead of at the caret.
+  function activeEditor() {
+    // only the chat tab has the visible popup field as a second editor; the
+    // translate / calc tabs are driven through the bar's hiddenInput
+    if (root.panelOpen && root.panelExpanded && root.mode === "chat"
+        && inputField.enabled)
+      return inputField;
+    return hiddenInput;
+  }
+
+  // Clipboard text paste (Ctrl+V when the clipboard holds no image).
+  function pasteText() {
+    const ed = root.activeEditor();
+    ed.paste();
+  }
+
   // ---------- big-paste collapsing (opencode-TUI style) ----------
   // The composer grows with its draft up to a cap, so pasting a log of dozens
   // of lines buries the whole panel under it. Instead the paste is swapped for
   // a "[Pasted +N lines]" marker right as it lands, and `pastes` keeps the
   // real text until the message is sent. Markers are unique (a second paste of
   // the same size gets "(2)"), so deleting one can never re-route another.
-  function pasteMarker(lines) {
+  function pasteMarker(lines, draft) {
     const noun = lines === 1 ? " line" : " lines";
     let marker = "[Pasted +" + lines + noun + "]";
-    for (let n = 2; root.pastes[marker] !== undefined; n++)
+    // unique against the stored pastes AND the draft itself: a marker the user
+    // typed (or pasted in) would otherwise be expanded to this paste's text too
+    for (let n = 2; root.pastes[marker] !== undefined
+                    || (draft !== undefined && draft.indexOf(marker) !== -1); n++)
       marker = "[Pasted +" + lines + noun + " (" + n + ")]";
     return marker;
   }
 
   // Called from the editors' onTextChanged with the OTHER editor's text — the
-  // two mirror each other, so that is the draft as it was before this change.
+  // two mirror each other, so that is the draft as it was before this change —
+  // plus this editor's caret, which sits right after what was just pasted.
   // Returns { text, caret } when the change was a big paste, else null.
-  function pasteCollapse(prevText, newText) {
+  function pasteCollapse(prevText, newText, caret) {
     if (newText.length <= prevText.length) return null;
-    // what was inserted: drop the common prefix and suffix
     let p = 0;
-    while (p < prevText.length && prevText.charAt(p) === newText.charAt(p)) p++;
     let s = 0;
-    while (s < prevText.length - p && s < newText.length - p
-           && prevText.charAt(prevText.length - 1 - s)
-              === newText.charAt(newText.length - 1 - s)) s++;
-    const ins = newText.slice(p, newText.length - s);
+    let ins = "";
+    // Prefer the caret: [caret - added, caret) is exactly the inserted span,
+    // and it is verified against the pre-paste draft. The prefix/suffix diff
+    // below can only approximate the position (a paste whose tail mirrors the
+    // draft's own tail pushed the marker to the wrong end of the draft).
+    const added = newText.length - prevText.length;
+    if (caret !== undefined && added > 0 && caret >= added
+        && newText.slice(0, caret - added) + newText.slice(caret) === prevText) {
+      p = caret - added;
+      s = prevText.length - p;
+      ins = newText.slice(p, caret);
+    } else {
+      // what was inserted: drop the common prefix and suffix
+      while (p < prevText.length && prevText.charAt(p) === newText.charAt(p)) p++;
+      while (s < prevText.length - p && s < newText.length - p
+             && prevText.charAt(prevText.length - 1 - s)
+                === newText.charAt(newText.length - 1 - s)) s++;
+      ins = newText.slice(p, newText.length - s);
+    }
     if (ins === "") return null;
     const lines = ins.split("\n").length;
     if (lines < root.pasteCollapseLines && ins.length < root.pasteCollapseChars)
       return null;
-    const marker = root.pasteMarker(lines);
+    const marker = root.pasteMarker(lines, newText);
     const m = {};
     for (const k in root.pastes) m[k] = root.pastes[k];
     m[marker] = ins;
@@ -2642,6 +2711,11 @@ Pill {
 
   function closeMenu() {
     if (root.menu === "") return;
+    // while a search box owns hiddenInput the draft's own caret lives in the
+    // visible field; otherwise it is the active editor's
+    const caretSrc = root.menuSearchOpen ? inputField
+                                         : root.activeEditor();
+    const at = Math.min(caretSrc.cursorPosition, inputField.text.length);
     root.menu = "";
     root.menuSel = 0;
     root.inputSyncing = true;
@@ -2649,8 +2723,12 @@ Pill {
     // the bar's editor goes back to the draft shown in the field. This
     // mirrors the FIELD (not a parked copy): the finder/menu edits the field
     // in place, and trusting a parked copy here dropped an @file mention that
-    // was picked while a menu was open.
+    // was picked while a menu was open. `.text =` resets the caret to 0, so it
+    // is carried over explicitly — otherwise the next Ctrl+V pasted at the
+    // start of the draft instead of at the caret.
     hiddenInput.text = inputField.text;
+    hiddenInput.cursorPosition = at;
+    inputField.cursorPosition = at;
     root.inputSyncing = false;
     // hand the keyboard back to the chat editor
     if (root.panelOpen) root.focusChatEditor();
@@ -2714,7 +2792,7 @@ Pill {
         const b64 = text.trim();
         pasteImageProc.base64 = b64;
         if (b64 !== "") root.addPendingImage(b64);
-        else if (root.pasteFallbackText) hiddenInput.paste();   // no image → text paste
+        else if (root.pasteFallbackText) root.pasteText();      // no image → text paste
         else root.showToast("no image in clipboard");
       }
     }
@@ -2844,12 +2922,13 @@ Pill {
       root.showToast(code !== 0 ? "stt failed (exit " + code + ")" : "nothing captured");
       return;
     }
-    // insert at the caret of the real editor (mirrors into the popup field)
-    const at = hiddenInput.cursorPosition;
-    const pad = hiddenInput.text !== "" && at > 0
-        && hiddenInput.text.charAt(at - 1) !== " " ? " " : "";
-    hiddenInput.insert(at, pad + t);
-    hiddenInput.cursorPosition = at + (pad + t).length;
+    // insert at the caret of the editor that owns it (mirrors into the other)
+    const ed = root.activeEditor();
+    const at = ed.cursorPosition;
+    const pad = ed.text !== "" && at > 0
+        && ed.text.charAt(at - 1) !== " " ? " " : "";
+    ed.insert(at, pad + t);
+    ed.cursorPosition = at + (pad + t).length;
     // auto-send: the transcription is the message
     if (!root.busy && !root.sending) root.send();
   }
@@ -3240,76 +3319,93 @@ Pill {
   readonly property bool needsAttention:
       root.pendingPerm !== null || root.pendingForms.length > 0
 
-  Rectangle {
-    anchors.fill: parent
-    anchors.margins: 2
-    radius: 6
-    color: root.panelOpen ? Theme.surface
-         : (mouse.containsMouse ? Theme.hover : "transparent")
-    border.width: root.panelOpen ? 1 : 0
-    border.color: Theme.border
-    Behavior on color { ColorAnimation { duration: 180 } }
-  }
+  // The fan's height is reserved above the wheel rather than drawn outside
+  // this item: Qt delivers no hover/click to children outside their parent's
+  // bounds, so the dock must contain the whole fan. The wheel itself stays
+  // bottom-anchored, keeping it right above the auror pill.
+  Item {
+    id: wheelArea
 
-  Text {
-    id: label
-    anchors.centerIn: parent
-    text: "󰆍"
-    font.family: Theme.font
-    font.bold: true
-    font.pixelSize: 14
-    color: root.needsAttention ? Theme.err
-         : root.busy ? Theme.live
-         : root.panelOpen ? Theme.accent
-         : (mouse.containsMouse ? Theme.accent : Theme.text)
-    Behavior on color { ColorAnimation { duration: 200 } }
-    scale: mouse.pressed ? 0.88 : (mouse.containsMouse ? 1.07 : 1)
-    Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
-    // soft blink while a turn is running or waiting on user input
-    SequentialAnimation on opacity {
-      running: root.busy || root.needsAttention
-      loops: Animation.Infinite
-      NumberAnimation { to: 0.45; duration: 480; easing.type: Easing.InOutSine }
-      NumberAnimation { to: 1; duration: 480; easing.type: Easing.InOutSine }
-      onRunningChanged: if (!running) label.opacity = 1
-    }
-  }
-
-  // tiny status dot in the top-right corner of the pill while busy or asking
-  Rectangle {
-    id: pillDot
-    anchors.top: parent.top
+    anchors.left: parent.left
     anchors.right: parent.right
-    anchors.topMargin: 4
-    anchors.rightMargin: 4
-    width: 5
-    height: 5
-    radius: 2.5
-    readonly property bool shown: root.busy || root.needsAttention
-    visible: scale > 0
-    scale: shown ? 1 : 0
-    Behavior on scale { NumberAnimation { duration: 220; easing.type: Easing.OutBack } }
-    color: root.needsAttention ? Theme.err : Theme.live
-    Behavior on color { ColorAnimation { duration: 180 } }
-  }
+    anchors.bottom: parent.bottom
+    height: root.wheelH
 
-  MouseArea {
-    id: mouse
-    anchors.fill: parent
-    hoverEnabled: true
-    cursorShape: Qt.PointingHandCursor
-    onClicked: {
-      root.panelOpen = !root.panelOpen;
-      if (root.panelOpen) root.ensureService();
+    Rectangle {
+      anchors.fill: parent
+      anchors.margins: 2
+      radius: 6
+      color: root.panelOpen ? Theme.surface
+           : (intelFan.hovered ? Theme.hover : "transparent")
+      border.width: root.panelOpen ? 1 : 0
+      border.color: Theme.border
+      Behavior on color { ColorAnimation { duration: 180 } }
+    }
+
+    Text {
+      id: label
+      anchors.centerIn: parent
+      // compass (Font Awesome \uf14e) — a neutral round dial, no vendor logo.
+      // The fan rising is the hover animation; the glyph just pops/tints.
+      text: "\uf14e"
+      font.family: Theme.font
+      font.bold: true
+      font.pixelSize: 14
+      color: root.needsAttention ? Theme.err
+           : root.busy ? Theme.live
+           : root.panelOpen || intelFan.hovered ? Theme.accent : Theme.text
+      Behavior on color { ColorAnimation { duration: 200 } }
+      scale: mouse.pressed ? 0.88 : (intelFan.hovered ? 1.07 : 1)
+      Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+      // soft blink while a turn is running or waiting on user input
+      SequentialAnimation on opacity {
+        running: root.busy || root.needsAttention
+        loops: Animation.Infinite
+        NumberAnimation { to: 0.45; duration: 480; easing.type: Easing.InOutSine }
+        NumberAnimation { to: 1; duration: 480; easing.type: Easing.InOutSine }
+        onRunningChanged: if (!running) label.opacity = 1
+      }
+    }
+
+    // tiny status dot in the top-right corner of the pill while busy or asking
+    Rectangle {
+      id: pillDot
+      anchors.top: parent.top
+      anchors.right: parent.right
+      anchors.topMargin: 4
+      anchors.rightMargin: 4
+      width: 5
+      height: 5
+      radius: 2.5
+      readonly property bool shown: root.busy || root.needsAttention
+      visible: scale > 0
+      scale: shown ? 1 : 0
+      Behavior on scale { NumberAnimation { duration: 220; easing.type: Easing.OutBack } }
+      color: root.needsAttention ? Theme.err : Theme.live
+      Behavior on color { ColorAnimation { duration: 180 } }
+    }
+
+    MouseArea {
+      id: mouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: {
+        // the wheel opens/closes chat; the fan's pills open the other modes
+        if (root.panelOpen) {
+          root.panelOpen = false;
+          return;
+        }
+        root.openMode("chat");
+      }
     }
   }
 
-  Tip {
+  // hover fan: ocr / translate / calc rise above the wheel; the wheel is chat
+  // (see IntelFan.qml)
+  IntelFan {
+    id: intelFan
     target: root
-    shown: !root.standalone && mouse.containsMouse && !root.panelOpen
-    text: root.needsAttention ? "opencode — waiting for answer"
-        : root.busy ? "opencode — working…"
-        : "intelligence central"
   }
 
   // keyboard: the chat input field lives in the popup window, but the
@@ -3373,6 +3469,12 @@ Pill {
     root.inputSyncing = false;
   }
 
+  // ocr tab: read the clipboard image and let tesseract extract the text
+  function ocrPaste() {
+    if (root.mode !== "ocr") return;
+    if (ocrBox) ocrBox.pasteImage();
+  }
+
   TextEdit {
     id: hiddenInput
     width: 0
@@ -3392,16 +3494,25 @@ Pill {
       // The search menus own this editor as their query box, so leave them be.
       const big = root.mode === "chat" && !root.menuSearchOpen
                   && root.formTextTarget === null
-                  ? root.pasteCollapse(inputField.text, text) : null;
+                  ? root.pasteCollapse(inputField.text, text, cursorPosition) : null;
       const t = big === null ? text : big.text;
       if (root.mode === "translate") translateBox.sourceText = t;
       else if (root.mode === "calc") calcBox.draft = t;
+      // the OCR tab has no text editor of its own: typing here goes nowhere
+      // (Ctrl+V is intercepted below and feeds the clipboard image instead)
+      else if (root.mode === "ocr") { /* no editor */ }
       // while a search menu is open the query belongs to the menu's field,
       // NOT the chat input (no duplicate typing in both)
       else if (root.menuSearchOpen) {
         menuSearchField.text = t;
         menuSearchField.cursorPosition = t.length;
-      } else inputField.text = t;
+      } else {
+        inputField.text = t;
+        // assigning `.text` resets the mirror's own cursor to 0; carry this
+        // editor's caret over so a later paste here lands at the caret
+        if (big === null)
+          inputField.cursorPosition = Math.min(cursorPosition, t.length);
+      }
       if (big !== null) {          // rewrite the paste away, caret after it
         hiddenInput.text = t;
         hiddenInput.cursorPosition = big.caret;
@@ -3417,6 +3528,7 @@ Pill {
       root.inputSyncing = true;
       if (root.mode === "translate") translateBox.setCursorPos(cursorPosition);
       else if (root.mode === "calc") calcBox.setCursorPos(cursorPosition);
+      else if (root.mode === "ocr") { /* no editor */ }
       else inputField.cursorPosition = cursorPosition;
       root.inputSyncing = false;
     }
@@ -3440,7 +3552,7 @@ Pill {
         event.accepted = true;
         return;
       }
-      // Ctrl+N: start a new chat (the header "+" button was removed)
+      // Ctrl+N: start a new chat in either window
       if (root.mode === "chat" && root.formTextTarget === null
           && event.key === Qt.Key_N && (event.modifiers & Qt.ControlModifier)) {
         root.newChat();
@@ -3477,6 +3589,13 @@ Pill {
           event.accepted = true;
           return;
         }
+      }
+      // OCR tab: Ctrl+V feeds the clipboard image to tesseract
+      if (root.mode === "ocr" && event.key === Qt.Key_V
+          && (event.modifiers & Qt.ControlModifier)) {
+        root.ocrPaste();
+        event.accepted = true;
+        return;
       }
       // Ctrl+V: attach a clipboard image when there is one, else paste text
       if (root.mode === "chat" && root.formTextTarget === null
@@ -3526,8 +3645,6 @@ Pill {
     }
   }
 
-  // (keyboard diagnostics removed — the overlay reaches the panel directly)
-
   // ---------- panel ----------
   //
   // Pomodoro-style dropdown: a separate full-screen Catcher window takes
@@ -3540,6 +3657,7 @@ Pill {
   Catcher {
     // only the docked dropdown is click-outside-to-close; the full mode is a
     // real window (a fullscreen catcher layer would sit above it)
+    screen: root.QsWindow.window ? root.QsWindow.window.screen : null
     active: root.panelOpen && !root.panelExpanded
     onClicked: root.panelOpen = false
   }
@@ -3622,12 +3740,14 @@ Pill {
     implicitWidth: panelContent.width
     implicitHeight: panelContent.height
 
-    // expanded (chatbot-style) size: as large as the screen comfortably
-    // allows, with a minimum so a tiny/unknown screen still works. Kept as
-    // explicit properties so the anchor can target the FINAL size before the
-    // surface has resized (see onAnchoring).
-    readonly property int collapsedW: 660
-    readonly property int collapsedH: 700
+    // docked size: as large as the screen comfortably allows, with a minimum
+    // so a tiny/unknown screen still works. Kept as explicit properties so the
+    // anchor can target the FINAL size before the surface has resized (see
+    // onAnchoring).
+    readonly property int collapsedW:
+        Math.min(660, Math.max(360, (panel.screen ? panel.screen.width : 1920) - 24))
+    readonly property int collapsedH:
+        Math.min(700, Math.max(360, (panel.screen ? panel.screen.height : 1080) - 16))
     readonly property int expandedW: {
       const sw = panel.screen ? panel.screen.width : 0;
       return Math.max(640, Math.min(1080, (sw > 0 ? sw : 1920) - 120));
@@ -3656,13 +3776,18 @@ Pill {
         return { x: (panel.screen ? panel.screen.width : 1920) / 2,
                  y: (panel.screen ? panel.screen.height : 1080) / 2 };
       // docked: the pill lives in the right side bar, so open the panel to its
-      // LEFT, top-aligned with the pill and clamped to the screen
+      // LEFT with a clear gap from the bar, as low as the screen allows —
+      // matching the audio popup, which also hugs the bottom edge. The anchor
+      // rect is in the BAR WINDOW's local coordinates, so the bottom limit is
+      // the window height (the bar starts below the top bar), not the screen's.
       const p = root.mapToItem(null, 0, 0);
-      const sh = panel.screen ? panel.screen.height : 1080;
+      const barWin = root.QsWindow.window;
+      const wh = barWin && barWin.height > 0 ? barWin.height : 1044;
       const h = panel.collapsedH;
       const w = panel.collapsedW;
-      const top = Math.max(0, Math.min(p.y, sh - h));
-      return { x: (p.x - 6 - w) + w / 2, y: top + h / 2 };
+      const bottom = wh - 8;          // keep clear of the 8 px bottom bar
+      const top = Math.max(8, bottom - h);
+      return { x: (p.x - 14 - w) + w / 2, y: top + h / 2 };
     }
 
     // set the center target (always a snap — the surface geometry is only
@@ -3769,6 +3894,16 @@ Pill {
 
       // catch-all: Escape bubbling up from any focused child of the overlay
       Keys.onEscapePressed: root.closeMenuOrPanel()
+      // OCR has no text editor to forward Ctrl+V to; catch it on the panel
+      // root so a focused child (header, result text, …) can never swallow
+      // it. The bar's hiddenInput handler covers the other surface.
+      Keys.onPressed: event => {
+        if (root.mode === "ocr" && event.key === Qt.Key_V
+            && (event.modifiers & Qt.ControlModifier)) {
+          root.ocrPaste();
+          event.accepted = true;
+        }
+      }
 
       // ----- full-mode chat history rail -----
       // Claude/ChatGPT-style: only in the big window, the panel's own chats
@@ -4183,81 +4318,14 @@ Pill {
               }
             }
 
-            // central tabs: chat / translate / calculator.
-            // Hidden in full mode — that window is chat-only.
-            Rectangle {
-              id: tabWrap
-              anchors.verticalCenter: parent.verticalCenter
-              visible: !root.panelExpanded
-              width: tabRow.width + 4
-              height: 24
-              radius: 6
-              color: Theme.surface
-              border.color: Theme.border
-              border.width: 1
-
-              // sliding highlight behind the active tab (segmented-control feel)
-              Rectangle {
-                id: tabIndicator
-                y: 2
-                width: 24; height: 20; radius: 4
-                color: Theme.hover
-                x: 2 + (root.mode === "chat" ? 0
-                    : root.mode === "translate" ? 1 : 2) * (width + tabRow.spacing)
-                Behavior on x { NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }
-              }
-
-              Row {
-                id: tabRow
-                x: 2; y: 2
-                spacing: 2
-
-                Repeater {
-                  model: [
-                    { id: "chat", icon: "󰆍" },
-                    { id: "translate", icon: "\uf1ab" },
-                    { id: "calc", icon: "\uf1ec" },
-                  ]
-
-                  delegate: Rectangle {
-                    required property var modelData
-
-                    readonly property bool cur: root.mode === modelData.id
-                    width: 24; height: 20; radius: 4
-                    // the sliding indicator draws the active background; the
-                    // delegate only tints on hover
-                    color: tabMa.containsMouse && !cur ? Theme.hover : "transparent"
-                    Behavior on color { ColorAnimation { duration: 180 } }
-                    scale: tabMa.pressed ? 0.88 : (cur ? 1 : (tabMa.containsMouse ? 1.06 : 1))
-                    Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
-
-                    Text {
-                      anchors.centerIn: parent
-                      text: parent.modelData.icon
-                      font.family: Theme.font
-                      font.pixelSize: 12
-                      color: parent.cur ? Theme.accent : Theme.muted
-                      Behavior on color { ColorAnimation { duration: 180 } }
-                    }
-
-                    MouseArea {
-                      id: tabMa
-                      anchors.fill: parent
-                      hoverEnabled: true
-                      cursorShape: Qt.PointingHandCursor
-                      onClicked: root.mode = parent.modelData.id
-                    }
-                  }
-                }
-              }
-            }
-
-            // mode title shown when in translate or calculator tab
+            // mode title shown when in translate, calculator or ocr tab
             Text {
               anchors.verticalCenter: parent.verticalCenter
               visible: root.mode !== "chat"
               text: root.mode === "translate" ? "translate  ·  auto-detect"
-                  : "calculator  ·  arbitrary-precision REPL"
+                  : root.mode === "calc" ? "calculator  ·  arbitrary-precision REPL"
+                  : root.mode === "ocr" ? "ocr  ·  image → text"
+                  : ""
               font.family: Theme.font
               font.bold: true
               font.pixelSize: 11
@@ -4307,7 +4375,6 @@ Pill {
               visible: root.mode === "chat"
               readonly property bool active: root.menu === "sessions"
               readonly property int maxW: Math.max(80, headerRow.width
-                     - (tabWrap.visible ? tabWrap.width + headerLeft.spacing : 0)
                      - (sidebarBtn.visible ? sidebarBtn.width + headerLeft.spacing : 0)
                      - (newChatBtn.visible ? newChatBtn.width + headerLeft.spacing : 0)
                      - headerRight.width - 12)
@@ -6197,13 +6264,17 @@ Pill {
             // other way round (this field holds the pre-paste draft there)
             const big = root.mode === "chat" && !root.menuSearchOpen
                         && root.formTextTarget === null
-                        ? root.pasteCollapse(hiddenInput.text, text) : null;
+                        ? root.pasteCollapse(hiddenInput.text, text, cursorPosition) : null;
             const t = big === null ? text : big.text;
             hiddenInput.text = t;
             if (big !== null) {
               inputField.text = t;
               inputField.cursorPosition = Math.min(big.caret, t.length);
               hiddenInput.cursorPosition = big.caret;
+            } else {
+              // `.text =` zeroes the mirror's cursor; keep the two carets together
+              // so Ctrl+V (which may run on either editor) pastes here
+              hiddenInput.cursorPosition = Math.min(cursorPosition, t.length);
             }
             root.inputSyncing = false;
             // typing straight into the popup field (the user clicked it, so
@@ -6233,7 +6304,11 @@ Pill {
             // handlers that live on hiddenInput are repeated here. Up/Down are
             // handled in this generic handler (not Keys.onUpPressed) so they
             // never race the specific key handlers.
-            if (root.mode === "chat" && root.formTextTarget === null
+            if (root.mode === "ocr" && event.key === Qt.Key_V
+                && (event.modifiers & Qt.ControlModifier)) {
+              root.ocrPaste();
+              event.accepted = true;
+            } else if (root.mode === "chat" && root.formTextTarget === null
                 && event.key === Qt.Key_N
                 && (event.modifiers & Qt.ControlModifier)) {
               root.newChat();
@@ -6743,7 +6818,7 @@ Pill {
         color: Theme.muted
       }
 
-      // ----- translate / calculator tabs -----
+      // ----- translate / calculator / ocr tabs -----
       Item {
         id: modeBody
         transform: Translate { x: root.swipeOfs }
@@ -6799,6 +6874,17 @@ Pill {
               root.inputSyncing = false;
             }
           }
+          onCopyRequested: text => {
+            if (text !== "") Quickshell.execDetached(["wl-copy", text]);
+            root.showToast("copied");
+          }
+        }
+
+        IntelOcr {
+          id: ocrBox
+          anchors.fill: parent
+          visible: root.mode === "ocr"
+          panelActive: root.panelOpen && root.mode === "ocr"
           onCopyRequested: text => {
             if (text !== "") Quickshell.execDetached(["wl-copy", text]);
             root.showToast("copied");
@@ -6911,6 +6997,20 @@ Pill {
     onActivated: root.closeMenuOrPanel()
   }
 
+  // Ctrl+V in the OCR tab. The docked popup is a separate surface, and after
+  // clicking into it the key event can land there instead of on the bar's
+  // hiddenInput (there is no visible OCR editor to forward it), so the tab
+  // needs an application-scoped shortcut as well. Same scope trick as Escape;
+  // disabled while the standalone full chat owns the keyboard so it can never
+  // hijack that window's paste.
+  Shortcut {
+    sequence: "Ctrl+V"
+    context: Qt.ApplicationShortcut
+    enabled: root.panelOpen && !root.standalone && !root.panelExpanded
+        && !Notifs.opencodeFullOpen && root.mode === "ocr"
+    onActivated: root.ocrPaste()
+  }
+
   // A standalone instance opens straight into full mode and never uses the
   // docked dropdown or the pill. Called by shell.qml's toggle/open.
   // `withVoice` additionally drops straight into live Voice Mode (SUPER+SHIFT+A).
@@ -6981,7 +7081,7 @@ Pill {
     if (mode !== "chat" && root.voiceMode) root.stopVoiceMode();
     root.closeMenu();         // a finder/menu from the old tab must not linger
     // tab swipe: jump the bodies to the side (instant), then glide to 0
-    const t = mode === "chat" ? 0 : mode === "translate" ? 1 : 2;
+    const t = mode === "chat" ? 0 : mode === "translate" ? 1 : mode === "calc" ? 2 : 3;
     const dir = t > prevTab ? 1 : -1;
     prevTab = t;
     swipeBehavior.enabled = false;
@@ -6993,6 +7093,7 @@ Pill {
     root.inputSyncing = true;
     hiddenInput.text = mode === "translate" ? translateBox.sourceText
                      : mode === "calc" ? calcBox.draft
+                     : mode === "ocr" ? ""
                      : inputField.text;
     root.inputSyncing = false;
     if (panelOpen) root.focusPanelField();

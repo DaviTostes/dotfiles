@@ -429,6 +429,7 @@ Pill {
   property bool calOpen: false
 
   Catcher {
+    screen: root.QsWindow.window ? root.QsWindow.window.screen : null
     active: root.calOpen
     onClicked: root.calOpen = false
   }

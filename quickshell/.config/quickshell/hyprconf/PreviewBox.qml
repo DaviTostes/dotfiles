@@ -7,7 +7,8 @@ Rectangle {
     id: root
 
     property string path: ""
-    // play gifs only while the owning panel/tab is on screen
+    // load/render only while the owning panel/tab is actually on screen:
+    // decoding every monitor preview at shell start was pure startup cost
     property bool animate: true
 
     implicitWidth: 300
@@ -22,7 +23,8 @@ Rectangle {
         anchors.fill: parent
         anchors.margins: 2
         fillMode: Image.PreserveAspectCrop
-        source: Conf.fileUrl(root.path, Quickshell.env("HOME"))
+        source: root.animate
+            ? Conf.fileUrl(root.path, Quickshell.env("HOME")) : ""
         animate: root.animate
         // fade in once decoded, sink toward the box color while loading
         opacity: root.path === "" ? 0 : (img.status === Image.Ready ? 1 : 0.15)

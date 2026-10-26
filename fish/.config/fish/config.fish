@@ -42,6 +42,7 @@ if status is-interactive
   alias gpl='git pull'
   alias gps='git push'
   alias grs='git restore --staged -p .'
+  alias gl='git log'
 
   alias del='rm -rf'
   alias ll='ls -lah'

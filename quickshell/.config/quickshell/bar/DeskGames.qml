@@ -1,9 +1,10 @@
 import QtQuick
 import "../hyprconf"
 
-// The arcade games (2048 / minesweeper / dice) as a plain content block, hosted
-// by the desktop dock window (bar/TypeTest.qml) — the old arcade bar pill is
-// gone. `tab` selects the game: 0 = 2048, 1 = mines, 2 = dice.
+// The arcade games (2048 / minesweeper / dice / snake) as a plain content
+// block, hosted by the desktop dock window (bar/TypeTest.qml) — the old arcade
+// bar pill is gone. `tab` selects the game: 0 = 2048, 1 = mines, 2 = dice,
+// 3 = snake.
 Item {
   id: root
 

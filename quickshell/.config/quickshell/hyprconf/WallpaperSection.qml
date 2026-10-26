@@ -9,9 +9,13 @@ ColumnLayout {
     id: root
 
     property string transition: "simple"
+    property string lockPath: ""
+    property var lockCfg: null
     property string status: ""
     property var monitors: []
-    property bool dirty: false
+    property bool rowDirty: false
+    property bool lockDirty: false
+    readonly property bool dirty: rowDirty || lockDirty
     property bool silent: false
     property var panel: null
     readonly property bool busy: applyProc.running
@@ -21,6 +25,18 @@ ColumnLayout {
     function rowPath(i) {
         if (i < 0 || i >= rows.count) return "";
         return rows.get(i).path;
+    }
+
+    // Gallery targets: 0..n = one monitor row, -1 = every monitor + the lock
+    // screen, -2 = the lock screen only.
+    function setLockPath(p) {
+        if (p === root.lockPath) {
+            root.syncGalleryPicked();
+            return;
+        }
+        root.lockPath = p;
+        root.lockDirty = true;
+        root.syncGalleryPicked();
     }
 
     function reload() {
@@ -44,31 +60,50 @@ ColumnLayout {
         if (rows.count === 0) {
             for (const m of root.monitors) rows.append({ monitor: m, path: "", fit: "crop" });
         }
+
+        const lcfg = Conf.parse(lockFileView.text());
+        root.lockCfg = lcfg;
+        root.lockPath = Conf.get(lcfg, "background", "path", "");
+
         root.status = "";
-        root.dirty = false;
+        root.rowDirty = false;
+        root.lockDirty = false;
         root.silent = false;
         root.syncGalleryPicked();
     }
 
     function syncGalleryPicked() {
-        if (root.panel === null || HyprSettings.galleryHost !== root.panel
-                || HyprSettings.galleryTab !== 0)
+        if (root.panel === null || HyprSettings.galleryHost !== root.panel)
             return;
-        if (HyprSettings.galleryRow >= 0) {
-            HyprSettings.galleryPicked = rowPath(HyprSettings.galleryRow);
+        const i = HyprSettings.galleryRow;
+        if (i === -2) {
+            HyprSettings.galleryPicked = root.lockPath;
             return;
         }
+        if (i >= 0) {
+            HyprSettings.galleryPicked = rowPath(i);
+            return;
+        }
+        // "set all": only highlight when every monitor and the lock screen
+        // already share the same image
         let common = rows.count > 0 ? rows.get(0).path : "";
-        for (let i = 1; i < rows.count; i++) {
-            if (rows.get(i).path !== common) { common = ""; break; }
+        for (let j = 1; j < rows.count; j++) {
+            if (rows.get(j).path !== common) { common = ""; break; }
         }
+        if (common !== root.lockPath) common = "";
         HyprSettings.galleryPicked = common;
     }
 
     function applyGalleryPick(p) {
         const i = HyprSettings.galleryRow;
+        if (i === -2) {
+            setLockPath(p);
+            HyprSettings.galleryPicked = p;
+            return;
+        }
         if (i < 0) {
             for (let j = 0; j < rows.count; j++) rows.setProperty(j, "path", p);
+            setLockPath(p);
             HyprSettings.galleryPicked = p;
             return;
         }
@@ -77,36 +112,56 @@ ColumnLayout {
         HyprSettings.galleryPicked = p;
     }
 
+    // Writes whichever of wallpaper.conf / hyprlock.conf is dirty and
+    // returns a human-readable list of what was saved.
     function save(applyAfterSave) {
-        const cfg = { items: [], vars: {} };
-        cfg.items.push(Conf.item(Conf.KV, "", "transition", root.transition));
-        for (let i = 0; i < rows.count; i++) {
-            const r = rows.get(i);
-            cfg.items.push(Conf.item(Conf.SECTION_START, "wallpaper"));
-            cfg.items.push(Conf.item(Conf.KV, "", "monitor", r.monitor));
-            cfg.items.push(Conf.item(Conf.KV, "", "path", r.path));
-            cfg.items.push(Conf.item(Conf.KV, "", "fit_mode", r.fit));
-            cfg.items.push(Conf.item(Conf.SECTION_END, "}"));
+        const parts = [];
+
+        if (root.rowDirty) {
+            const cfg = { items: [], vars: {} };
+            cfg.items.push(Conf.item(Conf.KV, "", "transition", root.transition));
+            for (let i = 0; i < rows.count; i++) {
+                const r = rows.get(i);
+                cfg.items.push(Conf.item(Conf.SECTION_START, "wallpaper"));
+                cfg.items.push(Conf.item(Conf.KV, "", "monitor", r.monitor));
+                cfg.items.push(Conf.item(Conf.KV, "", "path", r.path));
+                cfg.items.push(Conf.item(Conf.KV, "", "fit_mode", r.fit));
+                cfg.items.push(Conf.item(Conf.SECTION_END, "}"));
+            }
+            fileView.setText(Conf.serialize(cfg));
+            root.rowDirty = false;
+
+            if (applyAfterSave === undefined || applyAfterSave) {
+                applyProc.command = ["sh", "-c",
+                    "sleep 0.2; exec \"$HOME/.config/hypr/scripts/wallpaper-apply\""];
+                applyProc.running = true;
+                parts.push("wallpaper.conf (applying)");
+            } else {
+                parts.push("wallpaper.conf");
+            }
         }
-        fileView.setText(Conf.serialize(cfg));
-        root.dirty = false;
-        root.status = "Saved wallpaper.conf";
-        if (applyAfterSave === undefined || applyAfterSave) {
-            applyProc.command = ["sh", "-c",
-                "sleep 0.2; exec \"$HOME/.config/hypr/scripts/wallpaper-apply\""];
-            applyProc.running = true;
-            root.status += ", applying…";
+
+        if (root.lockDirty) {
+            const lcfg = root.lockCfg || Conf.parse(lockFileView.text());
+            Conf.set(lcfg, "background", "path", root.lockPath);
+            lockFileView.setText(Conf.serialize(lcfg));
+            root.lockCfg = lcfg;
+            root.lockDirty = false;
+            parts.push("hyprlock.conf");
         }
+
+        root.status = parts.length ? "Saved " + parts.join(", ") : "";
+        return parts.join(", ");
     }
 
     ListModel {
         id: rows
         onDataChanged: {
-            if (!root.silent) root.dirty = true;
+            if (!root.silent) root.rowDirty = true;
             root.syncGalleryPicked();
         }
         onCountChanged: {
-            if (!root.silent) root.dirty = true;
+            if (!root.silent) root.rowDirty = true;
             root.syncGalleryPicked();
         }
     }
@@ -114,6 +169,13 @@ ColumnLayout {
     FileView {
         id: fileView
         path: HyprSettings.confDir + "/wallpaper.conf"
+        blockAllReads: true
+        preload: true
+    }
+
+    FileView {
+        id: lockFileView
+        path: HyprSettings.confDir + "/hyprlock.conf"
         blockAllReads: true
         preload: true
     }
@@ -177,7 +239,7 @@ ColumnLayout {
                     label: "\uf03e"
                     textSize: 13
                     tooltip: "Pick from gallery"
-                    onClicked: if (root.panel) root.panel.toggleGallery(0, wrow.index)
+                    onClicked: if (root.panel) root.panel.toggleGallery(wrow.index)
                 }
 
                 TextButton {
@@ -196,7 +258,7 @@ ColumnLayout {
             PreviewBox {
                 width: parent.width - 4
                 path: wrow.path
-                animate: root.panel === null || (root.panel.panelOpen && root.panel.tab === 0)
+                animate: root.panel === null || (root.panel.visible && root.panel.tab === 0)
             }
         }
     }
@@ -208,17 +270,55 @@ ColumnLayout {
         SegRow {
             options: ["none", "simple", "wipe", "grow", "random"]
             value: root.transition
-            onPicked: v => { root.transition = v; root.dirty = true; }
+            onPicked: v => { root.transition = v; root.rowDirty = true; }
         }
     }
 
     SectionCard {
         Layout.fillWidth: true
-        title: "Wallpaper — Monitors"
+        title: "Wallpaper — Monitors & Lock Screen"
 
         Repeater {
             model: rows
             delegate: WallpaperRow {}
+        }
+
+        Rectangle {
+            width: parent.width - 4
+            height: 1
+            color: Theme.border
+        }
+
+        Row {
+            spacing: 8
+
+            Text {
+                height: 26
+                verticalAlignment: Text.AlignVCenter
+                text: "\uf023 lock screen"
+                color: Theme.accent2
+                font.family: Theme.font
+                font.bold: true
+                font.pixelSize: 11
+            }
+
+            TextButton {
+                label: "\uf03e"
+                textSize: 13
+                tooltip: "Pick the lock screen wallpaper from gallery"
+                onClicked: if (root.panel) root.panel.toggleGallery(-2)
+            }
+        }
+
+        PathRow {
+            path: root.lockPath
+            onPicked: p => root.setLockPath(p)
+        }
+
+        PreviewBox {
+            width: parent.width - 4
+            path: root.lockPath
+            animate: root.panel === null || (root.panel.visible && root.panel.tab === 0)
         }
 
         Row {
@@ -226,8 +326,8 @@ ColumnLayout {
 
             TextButton {
                 label: "\uf03e set all"
-                tooltip: "Pick one wallpaper for every monitor"
-                onClicked: if (root.panel) root.panel.toggleGallery(0, -1)
+                tooltip: "Pick one wallpaper for every monitor and the lock screen"
+                onClicked: if (root.panel) root.panel.toggleGallery(-1)
             }
 
             TextButton {

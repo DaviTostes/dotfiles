@@ -8,8 +8,8 @@ import "../hyprconf"
 // rounded outer corners and concave inner corners so it reads as a single
 // rounded border:
 //
-//   top     workspaces · clock + notifications · tray · Arch logo
-//   right   intelligence central + tasks (top) · media wave · volume + settings
+//   top     workspaces · clock + notifications · github · tray · Arch logo
+//   right   media wave · intelligence dock + auror + volume + settings
 //   left    (empty)
 //   bottom  (empty)
 //
@@ -31,7 +31,6 @@ Scope {
   property bool panelOpen: false
   property int settingsTab: 0
   property bool chatPanelOpen: false
-  property bool tasksPanelOpen: false
 
   // =======================================================================
   //  top edge
@@ -73,6 +72,7 @@ Scope {
       anchors.verticalCenter: parent.verticalCenter
       spacing: 7
 
+      GithubPill { id: githubPill; color: "transparent" }
       Tray { id: trayPill; color: "transparent" }
       Battery { color: "transparent" }
     }
@@ -88,8 +88,13 @@ Scope {
       color: Theme.accent
     }
 
-    // native toast popups for incoming notifications (Notifs server)
-    Toasts {}
+    // native toast popups for incoming notifications (Notifs server) — pinned
+    // to this bar's monitor and clear of the frame's reserved strips
+    Toasts {
+      screen: root.screen
+      topGap: root.topBarH + 8
+      rightGap: root.sideBarW + 8
+    }
   }
 
   // =======================================================================
@@ -125,9 +130,10 @@ Scope {
     implicitWidth: root.sideBarW
     color: "transparent"
     exclusiveZone: root.sideBarW
-    focusable: root.panelOpen || root.chatPanelOpen || root.tasksPanelOpen
+    focusable: root.panelOpen || root.chatPanelOpen
     // exposed for HyprConfig (it reads `barWindow.settingsTab`)
     property int settingsTab: root.settingsTab
+    function setSettingsTab(i) { root.settingsTab = i; }
 
     Rectangle {
       anchors.fill: parent
@@ -137,6 +143,7 @@ Scope {
     // full-screen catcher: closes the settings dropdown on an outside click
     // (suspended while a native file dialog is open — its clicks must pass)
     Catcher {
+      screen: root.screen
       active: root.panelOpen && !HyprSettings.modalDialogOpen
       onClicked: {
         root.panelOpen = false;
@@ -144,16 +151,18 @@ Scope {
       }
     }
 
-    // ----- top group: ic + tasks -----
+    // ----- bottom group: intelligence dock + volume + settings -----
     Column {
-      id: sideTop
-
-      anchors.top: parent.top
-      anchors.topMargin: 10
+      anchors.bottom: parent.bottom
+      anchors.bottomMargin: 10
       anchors.left: parent.left
       anchors.right: parent.right
       spacing: 4
 
+      // intelligence central (opencode) — directly above the auror pill. Its
+      // slot reserves room above the wheel for the hover fan of mode pills
+      // (calc / translate / ocr; the wheel itself is chat), so it must sit in
+      // the bottom group.
       Opencode {
         id: opencodePill
         width: parent.width
@@ -168,28 +177,8 @@ Scope {
         function onPanelExpandedChanged() { root.chatPanelOpen = opencodePill.panelOpen && !opencodePill.panelExpanded; }
       }
 
-      Tasks {
-        id: tasksPill
-        width: parent.width
-        color: "transparent"
-      }
-      Connections {
-        target: tasksPill
-        function onPanelOpenChanged() { root.tasksPanelOpen = tasksPill.panelOpen; }
-      }
-    }
-
-    // ----- bottom group: volume + settings -----
-    Column {
-      id: sideBottom
-
-      anchors.bottom: parent.bottom
-      anchors.bottomMargin: 10
-      anchors.left: parent.left
-      anchors.right: parent.right
-      spacing: 4
-
-      // DLNA renderer (auror) — sits above the volume pill
+      // DLNA renderer (auror) — sits below the intelligence dock and above
+      // the volume pill
       Auror {
         width: parent.width
         color: "transparent"
@@ -225,14 +214,17 @@ Scope {
         MouseArea {
           anchors.fill: parent
           cursorShape: Qt.PointingHandCursor
-          onClicked: root.panelOpen = !root.panelOpen
+          onClicked: {
+            const open = !root.panelOpen;
+            if (open) root.closeDockedPanels();
+            root.panelOpen = open;
+          }
         }
       }
     }
 
     // media soundwave, vertically centered; hover opens the player panel
     Player {
-      id: playerPill
       anchors.verticalCenter: parent.verticalCenter
       anchors.left: parent.left
       anchors.right: parent.right
@@ -259,22 +251,58 @@ Scope {
   // =======================================================================
   //  IPC bridge entry points (shell.qml routes keybind calls here)
   // =======================================================================
+
+  // The docked chat, the calendar and the settings dropdown all unfold over
+  // the same part of the screen. The full-mode chat is a real window and can
+  // stay open. Opening one docked panel from the IPC bridge closes the others
+  // first, so two of them can never be stacked.
+  function closeDockedPanels() {
+    root.panelOpen = false;
+    clockPill.calOpen = false;
+    githubPill.panelOpen = false;
+    if (opencodePill.panelOpen && !opencodePill.panelExpanded)
+      opencodePill.panelOpen = false;
+  }
+
   function toggleChat() {
-    opencodePill.panelOpen = !opencodePill.panelOpen;
-    if (opencodePill.panelOpen) opencodePill.ensureService();
+    if (opencodePill.panelOpen) {
+      opencodePill.panelOpen = false;
+      return;
+    }
+    root.closeDockedPanels();
+    opencodePill.openMode("chat");
   }
 
   function openChat() {
     if (!opencodePill.panelOpen) {
-      opencodePill.panelOpen = true;
-      opencodePill.ensureService();
+      root.closeDockedPanels();
+      opencodePill.openMode("chat");
     }
+  }
+
+  // open the docked panel on a named mode (chat | calc | translate | ocr) —
+  // the keyboard/IPC counterpart of the bar's hover fan
+  function openIntel(mode) {
+    root.closeDockedPanels();
+    opencodePill.openMode(mode || "chat");
   }
 
   function closeChat() { opencodePill.panelOpen = false; }
 
+  function toggleGithub() {
+    if (githubPill.panelOpen) {
+      githubPill.panelOpen = false;
+      return;
+    }
+    root.closeDockedPanels();
+    githubPill.panelOpen = true;
+  }
+
+  function closeGithub() { githubPill.panelOpen = false; }
+
   function toggleVoiceChat() {
     if (!opencodePill.panelOpen) {
+      root.closeDockedPanels();
       opencodePill.panelOpen = true;
       opencodePill.ensureService();
       opencodePill.startVoiceMode();
@@ -289,6 +317,7 @@ Scope {
   function openSettings(name) {
     const i = hyprConfig.tabIndex(name);
     root.settingsTab = i >= 0 ? i : 0;
+    root.closeDockedPanels();
     root.panelOpen = true;
   }
 
@@ -296,11 +325,8 @@ Scope {
 
   // notifications live in the clock pill's calendar panel (per-bar state)
   function toggleNotifPanel() {
-    clockPill.calOpen = !clockPill.calOpen;
+    const open = !clockPill.calOpen;
+    if (open) root.closeDockedPanels();
+    clockPill.calOpen = open;
   }
-
-  // tasks dropdown (per-bar, like the pill) — `qs ipc call tasks toggle`
-  function toggleTasks() { tasksPill.panelOpen = !tasksPill.panelOpen; }
-
-  function closeTasks() { tasksPill.panelOpen = false; }
 }

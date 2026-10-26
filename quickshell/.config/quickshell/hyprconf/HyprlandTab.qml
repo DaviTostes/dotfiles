@@ -1,11 +1,12 @@
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import Quickshell
-import Quickshell.Io
-import Quickshell.Hyprland
-import "HyprPanel.js" as HyprPanel
 
+// Hyprland settings tab. The compositor itself (monitors, look & feel, input,
+// animations, autostart) is hand-edited in ~/.config/hypr/hyprland.lua — the
+// panel only edits the side configs it can round-trip losslessly:
+// wallpaper.conf / hyprlock.conf (via WallpaperSection) and hypridle.conf
+// (via IdleSection).
 ColumnLayout {
     id: root
 
@@ -13,118 +14,39 @@ ColumnLayout {
     property bool applyWallpaperAfterSave: true
     property bool restartIdleAfterSave: true
     property string status: ""
-    property bool compositorParseError: false
-    property bool missingRequireWarn: false
-    property var compositorModel: null
-
-    readonly property bool compositorDirty:
-        lookFeelSection.dirty
-        || inputSection.dirty
-        || animationsSection.dirty
-        || monitorsSection.dirty
-        || autostartSection.dirty
 
     readonly property bool dirty:
-        root.compositorDirty
-        || wallpaperSection.dirty
-        || lockSection.dirty
+        wallpaperSection.dirty
         || idleSection.dirty
 
     readonly property bool busy:
-        reloadProc.running
-        || wallpaperSection.busy
+        wallpaperSection.busy
         || idleSection.busy
 
     spacing: 10
 
     function reload() {
-        const mons = [];
-        const ms = Hyprland.monitors ? Hyprland.monitors.values : [];
-        for (let i = 0; i < ms.length; i++) {
-            if (ms[i].name) mons.push(ms[i].name);
-        }
-
-        const rawPanel = panelFileView.text();
-        const parsed = HyprPanel.parse(rawPanel);
-        root.compositorParseError = (parsed === null);
-        const model = parsed !== null ? parsed : HyprPanel.defaultModel();
-        root.compositorModel = model;
-
-        const mainTxt = mainLuaFileView.text();
-        root.missingRequireWarn = mainTxt.trim() !== ""
-            && !/require\s*\(\s*["']hyprpanel["']\s*\)/.test(mainTxt);
-
-        lookFeelSection.loadFrom(model);
-        inputSection.loadFrom(model);
-        animationsSection.loadFrom(model);
-        monitorsSection.loadFrom(model, mons);
-        autostartSection.loadFrom(model);
-
         wallpaperSection.reload();
-        lockSection.reload();
         idleSection.reload();
-
-        if (root.compositorParseError) {
-            root.status = "hyprpanel.lua could not be parsed; compositor save disabled";
-        } else if (root.missingRequireWarn) {
-            root.status = "Warning: hyprland.lua is missing require(\"hyprpanel\")";
-        } else {
-            root.status = "";
-        }
+        root.status = "";
     }
 
     function syncGalleryPicked() {
         wallpaperSection.syncGalleryPicked();
-        lockSection.syncGalleryPicked();
     }
 
     function applyGalleryPick(p) {
-        if (HyprSettings.galleryTab === 0) wallpaperSection.applyGalleryPick(p);
-        else lockSection.applyGalleryPick(p);
+        wallpaperSection.applyGalleryPick(p);
     }
 
     function saveAll() {
-        if (!root.dirty) {
-            if (root.compositorParseError) {
-                root.status = "Error: hyprpanel.lua could not be parsed; not saving";
-            }
-            return;
-        }
+        if (!root.dirty) return;
 
         const savedParts = [];
 
-        if (root.compositorDirty) {
-            if (root.compositorParseError) {
-                savedParts.push("hyprpanel.lua skipped (parse error)");
-            } else {
-                const m = root.compositorModel || HyprPanel.defaultModel();
-                lookFeelSection.writeTo(m);
-                inputSection.writeTo(m);
-                animationsSection.writeTo(m);
-                monitorsSection.writeTo(m);
-                autostartSection.writeTo(m);
-
-                panelFileView.setText(HyprPanel.render(m));
-                lookFeelSection.dirty = false;
-                inputSection.dirty = false;
-                animationsSection.dirty = false;
-                monitorsSection.dirty = false;
-                autostartSection.dirty = false;
-
-                reloadProc.command = ["sh", "-c", "sleep 0.15; hyprctl reload >/dev/null 2>&1"];
-                reloadProc.running = true;
-                savedParts.push("hyprpanel.lua (reloading)");
-            }
-        }
-
         if (wallpaperSection.dirty) {
-            wallpaperSection.save(root.applyWallpaperAfterSave);
-            savedParts.push(root.applyWallpaperAfterSave ? "wallpaper.conf (applying)" : "wallpaper.conf");
-        }
-
-        if (lockSection.dirty) {
-            lockSection.save();
-            savedParts.push("hyprlock.conf");
+            const parts = wallpaperSection.save(root.applyWallpaperAfterSave);
+            if (parts !== "") savedParts.push(parts);
         }
 
         if (idleSection.dirty) {
@@ -135,22 +57,6 @@ ColumnLayout {
         root.status = savedParts.length ? "Saved " + savedParts.join(", ") : "";
     }
 
-    FileView {
-        id: panelFileView
-        path: HyprSettings.confDir + "/hyprpanel.lua"
-        blockAllReads: true
-        preload: true
-    }
-
-    FileView {
-        id: mainLuaFileView
-        path: HyprSettings.confDir + "/hyprland.lua"
-        blockAllReads: true
-        preload: true
-    }
-
-    Process { id: reloadProc }
-
     ScrollView {
         id: scroll
         Layout.fillWidth: true
@@ -160,53 +66,16 @@ ColumnLayout {
             width: scroll.availableWidth
             spacing: 12
 
-            // 1. Look & Feel
-            LookFeelSection {
-                id: lookFeelSection
-                Layout.fillWidth: true
-            }
-
-            // 2. Input
-            InputSection {
-                id: inputSection
-                Layout.fillWidth: true
-            }
-
-            // 3. Animations
-            AnimationsSection {
-                id: animationsSection
-                Layout.fillWidth: true
-            }
-
-            // 4. Wallpaper
+            // 1. Wallpaper (monitors + lock screen)
             WallpaperSection {
                 id: wallpaperSection
                 Layout.fillWidth: true
                 panel: root.panel
             }
 
-            // 5. Lock Screen
-            LockSection {
-                id: lockSection
-                Layout.fillWidth: true
-                panel: root.panel
-            }
-
-            // 6. Idle
+            // 2. Idle
             IdleSection {
                 id: idleSection
-                Layout.fillWidth: true
-            }
-
-            // 7. Monitors
-            MonitorsSection {
-                id: monitorsSection
-                Layout.fillWidth: true
-            }
-
-            // 8. Autostart
-            AutostartSection {
-                id: autostartSection
                 Layout.fillWidth: true
             }
         }
