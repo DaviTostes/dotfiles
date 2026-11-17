@@ -262,8 +262,8 @@ PopupWindow {
         visible: galleryWin.open || gHideTimer.running
         color: "transparent"
 
-        implicitWidth: Math.min(560, Math.max(320, root.screenW - 16))
-        implicitHeight: Math.min(520, Math.max(240, root.screenH - 16))
+        implicitWidth: Math.min(900, Math.max(320, root.screenW - 16))
+        implicitHeight: Math.min(780, Math.max(240, root.screenH - 16))
 
         Timer { id: gHideTimer; interval: 220 }
 

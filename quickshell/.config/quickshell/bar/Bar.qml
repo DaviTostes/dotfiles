@@ -8,7 +8,7 @@ import "../hyprconf"
 // rounded outer corners and concave inner corners so it reads as a single
 // rounded border:
 //
-//   top     workspaces · clock + notifications · github · tray · Arch logo
+//   top     workspaces · clock + notifications · tray · github · Arch logo
 //   right   media wave · intelligence dock + auror + volume + settings
 //   left    (empty)
 //   bottom  (empty)
@@ -72,8 +72,8 @@ Scope {
       anchors.verticalCenter: parent.verticalCenter
       spacing: 7
 
-      GithubPill { id: githubPill; color: "transparent" }
       Tray { id: trayPill; color: "transparent" }
+      GithubPill { id: githubPill; color: "transparent" }
       Battery { color: "transparent" }
     }
 

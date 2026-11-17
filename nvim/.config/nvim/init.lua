@@ -1,7 +1,12 @@
 vim.filetype.add({
   extension = {
     bru = "bru",
-  }
+    fga = "fga",
+  },
+  filename = {
+    -- OpenFGA modular model manifest (YAML: schema + contents).
+    ["fga.mod"] = "yaml",
+  },
 })
 
 for _, file in ipairs(vim.fn.glob(vim.fn.stdpath("config") .. "/lua/plugins/*.lua", false, true)) do

@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls.Basic
 import Quickshell
 import Quickshell.Io
 import "Conf.js" as Conf
@@ -105,10 +106,35 @@ Rectangle {
             GridView {
                 id: view
                 anchors.fill: parent
+                // keep the last column clear of the scrollbar
+                anchors.rightMargin: 10
                 clip: true
-                cellWidth: 104
-                cellHeight: 66
+                boundsBehavior: Flickable.StopAtBounds
+                // thumbnails grow with the panel instead of leaving a dead
+                // strip on the right: aim for ~130px cells, 2..8 columns
+                readonly property int cols:
+                    Math.max(2, Math.min(8, Math.floor((width + 8) / 130)))
+                cellWidth: cols > 0 ? width / cols : 104
+                cellHeight: Math.round(cellWidth * 0.64)
                 model: items
+
+                ScrollBar.vertical: ScrollBar {
+                    id: vbar
+
+                    policy: ScrollBar.AsNeeded
+                    width: 6
+
+                    contentItem: Rectangle {
+                        implicitWidth: 6
+                        radius: 3
+                        color: vbar.pressed ? Theme.accent2 : Theme.border
+                        opacity: vbar.policy === ScrollBar.AlwaysOff ? 0
+                               : (vbar.active ? 0.9 : 0.55)
+                        Behavior on color { ColorAnimation { duration: 150 } }
+                    }
+
+                    background: Item { }
+                }
 
                 delegate: Item {
                     id: cell
@@ -177,6 +203,9 @@ Rectangle {
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: root.chosen(cell.p)
+                            // a MouseArea swallows wheel events, which killed
+                            // scrolling over the thumbnails: hand them back
+                            onWheel: wheel => { wheel.accepted = false; }
                         }
                     }
                 }

@@ -2,7 +2,7 @@ import Quickshell
 import QtQuick
 import "../hyprconf"
 
-// GitHub status pill for the top bar, left of the tray. Reads the shared
+// GitHub status pill for the top bar, right of the tray. Reads the shared
 // Github singleton (one poller for every monitor) and opens a click panel
 // with open PRs, running Actions and unread notifications.
 Pill {

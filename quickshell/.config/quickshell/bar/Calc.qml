@@ -118,6 +118,7 @@ Item {
         error: "unbalanced expression — close the ( [ { or quote first",
         running: false, note: false
       });
+      root.trimTranscript();
       root.draft = "";
       root.scrollTail();
       return;

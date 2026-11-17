@@ -492,7 +492,7 @@ PanelWindow {
             anchors.right: rowSub.left
             anchors.rightMargin: 8
             anchors.verticalCenter: parent.verticalCenter
-            text: modelData.entry.name
+            text: modelData && modelData.entry ? modelData.entry.name : ""
             color: index === root.selected ? Theme.accent : Theme.text
             font.family: Theme.font
             font.pixelSize: 13
@@ -508,7 +508,7 @@ PanelWindow {
             anchors.rightMargin: 10
             anchors.verticalCenter: parent.verticalCenter
             width: Math.min(implicitWidth, 180)
-            text: modelData.entry.genericName
+            text: modelData && modelData.entry ? modelData.entry.genericName : ""
             color: Theme.muted
             font.family: Theme.font
             font.pixelSize: 11

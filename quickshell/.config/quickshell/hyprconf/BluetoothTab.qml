@@ -11,13 +11,21 @@ import Quickshell.Io
 // (or disconnects) it; the ✕ forgets a known device.
 //
 // Pairing: BlueZ refuses to attach the HID profile to a device that is not
-// bonded, and Quickshell 0.3.1 registers no pairing *agent*, so calling
+// bonded, and Quickshell 0.3.2 registers no pairing *agent*, so calling
 // `Device1.Connect()` on a fresh device connects nothing — bluetoothd just
 // logs "Rejected connection from !bonded device". Bonded devices keep using
 // Quickshell natively; the un-bonded case falls back to `bluetoothctl`
-// (pair → trust → connect), which registers its own agent and completes
-// Just Works pairing. Devices demanding host PIN/passkey entry still can't
-// be paired from here.
+// (pairable → pair → trust → connect → verify), which registers its own agent
+// and completes Just Works pairing. Devices demanding host PIN/passkey entry
+// still can't be paired from here.
+//
+// The adapter must be *pairable* while the SSP exchange happens: with
+// Pairable=false bluetoothd answers the request with "No Bonding", prints
+// "Pairing successful", then deletes the throwaway key on the first
+// disconnect — the device ends up Trusted but un-bonded, and every later
+// connect fails. So the sequence turns pairable on first, checks for a real
+// "Bonded: yes" at the end, and retries once after `remove` when a stale
+// transient `paired` flag makes `pair` answer AlreadyExists.
 ColumnLayout {
     id: root
 
@@ -30,9 +38,25 @@ ColumnLayout {
     property string status: ""
 
     // Un-bonded devices go through `bluetoothctl` (see the header comment);
-    // pairStep walks pair → trust → connect and is 0 when idle.
+    // pairStep walks the sequence below and is pairIdle when nothing runs.
+    readonly property int pairIdle: 0
+    readonly property int pairReset: 1
+    readonly property int pairPairable: 2
+    readonly property int pairPair: 3
+    readonly property int pairTrust: 4
+    readonly property int pairConnect: 5
+    readonly property int pairVerify: 6
+
     property string pairTarget: ""
     property int pairStep: 0
+    // set once the connect step succeeded, so the footer can say so even
+    // though the sequence ends on the bond check
+    property bool pairConnected: false
+    // a stale transient `paired` flag makes `pair` answer AlreadyExists
+    // without creating a bond, so one attempt is retried after a remove
+    property bool pairRetried: false
+    // the adapter is left pairable only for the duration of the sequence
+    property bool pairWasPairable: false
 
     readonly property bool on: root.adapter !== null && root.adapter.enabled
 
@@ -148,7 +172,7 @@ ColumnLayout {
             d.connect();
             root.status = "conectando " + root.label(d) + "…";
         } else {
-            // fresh device: Connect() alone never bonds it (no agent in 0.3.1)
+            // fresh device: Connect() alone never bonds it (no agent in 0.3.2)
             root.pair(d);
         }
     }
@@ -160,21 +184,27 @@ ColumnLayout {
             return;
         }
         root.pairTarget = mac;
-        root.pairStep = 1;
+        root.pairRetried = false;
+        root.pairConnected = false;
+        root.pairWasPairable = root.adapter !== null && root.adapter.pairable;
+        // pairable first: pairing against a non-pairable adapter yields a
+        // key bluetoothd deletes on the first disconnect
+        root.pairStep = root.pairPairable;
         root.status = "pareando " + root.label(d) + "…";
-        pairProc.command = ["bluetoothctl", "--timeout", "30", "pair", mac];
+        pairProc.command = ["bluetoothctl", "pairable", "on"];
         pairProc.running = true;
     }
 
     function finishPair(code, detail) {
-        const wasConnecting = root.pairStep === 3;
-        root.pairStep = 0;
+        root.pairStep = root.pairIdle;
         root.pairTarget = "";
+        root.pairRetried = false;
+        if (root.adapter) root.adapter.pairable = root.pairWasPairable;
         if (code !== 0) {
             root.status = detail !== "" ? "erro: " + detail
                                         : "falhou (código " + code + ")";
         } else {
-            root.status = wasConnecting ? "pareado e conectado" : "pareado";
+            root.status = root.pairConnected ? "pareado e conectado" : "pareado";
         }
         root.refresh();
     }
@@ -194,20 +224,53 @@ ColumnLayout {
             const already = /AlreadyExists/i.test(err) || /AlreadyExists/i.test(out);
             const detail = root.errorLine(err) || root.errorLine(out);
 
-            if (root.pairStep === 1 && (code === 0 || already)) {
-                // a leftover transient "paired" flag makes `pair` report
-                // AlreadyExists; trust + connect still settle a real bond
-                root.pairStep = 2;
+            if (root.pairStep === root.pairPairable) {
+                // fatal on purpose: continuing would silently produce a
+                // throwaway key and report success
+                if (code !== 0) return root.finishPair(code, detail);
+                root.pairStep = root.pairPair;
+                root.status = "pareando " + root.pairTarget + "…";
+                pairProc.command = ["bluetoothctl", "--timeout", "30",
+                                    "pair", root.pairTarget];
+                pairProc.running = true;
+            } else if (root.pairStep === root.pairReset) {
+                // the remove's exit status is irrelevant; start the sequence over
+                root.pairStep = root.pairPairable;
+                root.status = "pareando " + root.pairTarget + "…";
+                pairProc.command = ["bluetoothctl", "pairable", "on"];
+                pairProc.running = true;
+            } else if (root.pairStep === root.pairPair && already && !root.pairRetried) {
+                // stale "paired" without a bond: drop the entry and retry once
+                root.pairRetried = true;
+                root.pairStep = root.pairReset;
+                root.status = "limpando pareamento antigo…";
+                pairProc.command = ["bluetoothctl", "remove", root.pairTarget];
+                pairProc.running = true;
+            } else if (root.pairStep === root.pairPair) {
+                if (code !== 0 && !already) return root.finishPair(code, detail);
+                root.pairStep = root.pairTrust;
                 root.status = "confiando " + root.pairTarget + "…";
                 pairProc.command = ["bluetoothctl", "trust", root.pairTarget];
                 pairProc.running = true;
-            } else if (root.pairStep === 2) {
+            } else if (root.pairStep === root.pairTrust) {
                 // trust is best-effort: a failure here shouldn't stop connect
-                root.pairStep = 3;
+                root.pairStep = root.pairConnect;
                 root.status = "conectando " + root.pairTarget + "…";
                 pairProc.command = ["bluetoothctl", "--timeout", "30",
                                     "connect", root.pairTarget];
                 pairProc.running = true;
+            } else if (root.pairStep === root.pairConnect) {
+                if (code !== 0) return root.finishPair(code, detail);
+                root.pairConnected = true;
+                root.pairStep = root.pairVerify;
+                root.status = "verificando bond…";
+                pairProc.command = ["bluetoothctl", "info", root.pairTarget];
+                pairProc.running = true;
+            } else if (root.pairStep === root.pairVerify) {
+                // "Pairing successful" without "Bonded: yes" is the
+                // throwaway-key trap — report it instead of lying
+                if (/Bonded:\s*yes/.test(out)) return root.finishPair(0, "");
+                root.finishPair(1, "sem bond — esqueça o aparelho e tente de novo");
             } else {
                 root.finishPair(code, detail);
             }

@@ -10,9 +10,11 @@ vim.pack.add({
 require "mini.icons".setup({
   extension = {
     bru = { glyph = '󰖟', hl = 'MiniIconsOrange' },
+    fga = { glyph = '󰒃', hl = 'MiniIconsYellow' },
   },
   filetype = {
     bru = { glyph = '󰖟', hl = 'MiniIconsOrange' },
+    fga = { glyph = '󰒃', hl = 'MiniIconsYellow' },
   },
 })
 

@@ -20,6 +20,20 @@ Item {
     readonly property bool isGif:
         /\.gif$/i.test(String(root.source).split("?")[0].split("#")[0])
 
+    // Decode at the item's display size when the caller did not ask for a
+    // specific size. Without this an Image on an untouched `sourceSize` loads
+    // the file at NATIVE resolution: the wallpaper card's 300x120 preview of a
+    // 3840x2160 GIF cost 33 MB (72 MB for a 5824x3264 PNG), and every preview
+    // the shell had ever shown stayed resident. Thumbnails/cards pass an
+    // explicit sourceSize and keep it.
+    readonly property size effectiveSourceSize: {
+        if (root.sourceSize.width > 0 && root.sourceSize.height > 0)
+            return root.sourceSize;
+        const w = Math.round(root.width);
+        const h = Math.round(root.height);
+        return Qt.size(w > 0 ? w : 300, h > 0 ? h : 120);
+    }
+
     // file:// URL -> filesystem path
     readonly property string srcPath: {
         const s = String(root.source);
@@ -65,7 +79,7 @@ Item {
             source: root.source
             fillMode: root.fillMode
             asynchronous: root.asynchronous
-            sourceSize: root.sourceSize
+            sourceSize: root.effectiveSourceSize
         }
     }
 
@@ -76,7 +90,7 @@ Item {
         source: root.isGif ? root.frameUrl : ""
         fillMode: root.fillMode
         asynchronous: root.asynchronous
-        sourceSize: root.sourceSize
+        sourceSize: root.effectiveSourceSize
     }
 
     // extract the first frame once per file (cached by path hash)

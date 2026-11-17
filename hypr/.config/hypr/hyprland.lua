@@ -27,7 +27,8 @@ end
 --------------------
 
 hl.monitor({ output = "DP-2", mode = "1920x1080@144", position = "0x0", scale = 1 })
-hl.monitor({ output = "HDMI-A-1", mode = "1920x1080@75", position = "-1920x0", scale = 1 })
+-- HDMI-A-1 fica na vertical (transform 1 = 90°), à esquerda do DP-2.
+hl.monitor({ output = "HDMI-A-1", mode = "1920x1080@75", position = "-1080x0", scale = 1, transform = 1 })
 
 --------------------
 ---- AUTOSTART ----
@@ -52,6 +53,10 @@ hl.on("hyprland.start", function()
   -- plays casts through mpv; the right bar's Auror pill drives it over its
   -- local HTTP API. Skip the spawn if one is already running.
   hl.exec_cmd("pgrep -x auror >/dev/null 2>&1 || setsid -f auror")
+
+  -- E-ink PC stats display on the Xteink reader over USB serial. The launcher
+  -- holds a flock, so a second copy exits instead of fighting over the port.
+  hl.exec_cmd("$HOME/.local/bin/pcmon-monitor")
 end)
 
 --------------------
@@ -73,7 +78,7 @@ local fileManager = "pcmanfm"
 local menu        = "qs ipc call launcher toggle"
 local clipHistory = "qs ipc call clipboard toggle"
 local browser     = "helium-browser"
-local discord     = "vesktop"
+local discord     = "discord"
 local btManager   = "qs ipc call settings open bluetooth"
 local wifiManager = "qs ipc call settings open wifi"
 local vpnManager  = "qs ipc call settings open vpn"
@@ -123,9 +128,9 @@ hl.config({
 
   input = {
     kb_layout    = "us",
-    kb_variant   = "",
+    kb_variant   = "altgr-intl",
     kb_model     = "",
-    kb_options   = "",
+    kb_options   = "lv3:caps_switch",
     kb_rules     = "",
     follow_mouse = 1,
     sensitivity  = 0,
@@ -302,7 +307,7 @@ hl.bind(mod("T"), hl.dsp.layout("togglesplit"))
 
 hl.bind(mod("B"), exec(browser))
 hl.bind(mod("D"), exec(discord))
-hl.bind(mod("Z"), exec("zapfast"))
+hl.bind(mod("Z"), exec("zapgo"))
 hl.bind(shift("Z"), exec("Telegram"))
 hl.bind(shift("T"), exec("qs ipc call typetest toggle"))  -- desktop typing test on/off
 hl.bind(shift("B"), exec(btManager))
@@ -326,6 +331,7 @@ hl.bind(shift("L"), exec("hyprlock"))
 hl.bind(shift("C"), exec(termRun("calc")))
 
 hl.bind(shift("R"), exec("fish -c record"))
+hl.bind(shift("O"), exec("fish -c mousecircle"))
 
 local directions = { H = "l", L = "r", K = "u", J = "d" }
 for key, dir in pairs(directions) do

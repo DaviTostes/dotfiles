@@ -66,7 +66,9 @@ Small sequential steps that can be verified independently. Use checkboxes, all p
 
 For each stage list: objective, files touched, and how to verify it. Never mark a stage done before it is implemented and verified.
 
-State explicitly in the document that execution is strictly one stage at a time: after finishing a stage, stop, report what changed and the verification result, and wait for my explicit go-ahead before starting the next one. Never continue on your own or batch several stages into one pass.
+State explicitly in the document that the checklist is updated in place as the work happens: the moment a stage is implemented and its verification passes, its `- [ ]` must be edited to `- [x]` in this same document, in the same turn and before reporting. A finished stage must never be left unticked, and a stage that was not implemented and verified must never be ticked.
+
+State explicitly in the document that execution is strictly one stage at a time: after finishing a stage, tick its checkbox, stop, report what changed and the verification result, and wait for my explicit go-ahead before starting the next one. Never continue on your own or batch several stages into one pass.
 
 ### Risks and edge cases
 Only the ones that are real for this change (regressions, compatibility, data integrity). Skip the boilerplate.
@@ -95,7 +97,7 @@ Investigate the repository and implement the task at the end of this prompt, end
 ## 1. Setup
 
 1. Identify the repository root.
-2. Do not create or modify anything under `tasks/` and do not touch `.gitignore`; this is not a planning run.
+2. Do not create planning documents and do not touch `.gitignore`; this is not a planning run. The one exception is a document that already exists: if the task is a stage tracked in `tasks/*.md`, edit that stage's `- [ ]` to `- [x]` as soon as it is implemented and verified, in the same turn and before reporting. Never tick a stage you did not implement and verify.
 
 ## 2. Investigation
 

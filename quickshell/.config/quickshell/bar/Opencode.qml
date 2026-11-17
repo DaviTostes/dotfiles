@@ -169,16 +169,14 @@ Pill {
   //
   // Qt's QML XMLHttpRequest does not reliably deliver chunked/SSE bodies
   // incrementally (it can stay silent until DONE), so the stream is
-  // consumed through a long-running `curl` process instead. SplitParser's
-  // segments aren't newline-aligned and it swallows the blank-line
-  // terminators, so raw chunks are re-framed into SSE lines here; a data
-  // payload is dispatched when the next line (not a blank line) arrives.
-  // The watchdog restarts the stream if no bytes (not even the
-  // ": heartbeat") arrive for 30s.
+  // consumed through a long-running `curl` process instead. SplitParser is
+  // set to split on the event terminator ("\n\n"), so every read is one
+  // complete SSE event. Dispatching on that terminator — instead of waiting
+  // for the next `data:` line — keeps the token stream one event fresher
+  // (the first token used to appear ~200ms late). The watchdog restarts the
+  // stream if no bytes (not even the ": heartbeat") arrive for 30s.
   property bool streamLive: false
   property int streamFails: 0     // consecutive failed connects while closed
-  property string sseBuf: ""
-  property string rawBuf: ""
 
   // keep plain XMLHttpRequest objects alive while a request is in flight
   property var inflight: []
@@ -238,8 +236,6 @@ Pill {
   // ---------- SSE stream ----------
   function connectStream() {
     if (root.svcUrl === "" || !root.svcUp || sseProc.running) return;
-    root.sseBuf = "";
-    root.rawBuf = "";
     sseProc.command = [
       "curl", "-sN",
       "-u", "opencode:" + root.svcPw,
@@ -262,39 +258,21 @@ Pill {
     connectStream();
   }
 
-  function streamLine(chunk) {
+  // one complete SSE event (the SplitParser already stripped the "\n\n"
+  // terminator and re-frames every block, including a trailing one on exit)
+  function streamBlock(block) {
     watchdog.restart();
-    // SplitParser's segments are not reliably newline-aligned (chunks can
-    // contain or start mid-line), so re-frame lines here from raw chunks.
-    // One split instead of repeated indexOf+slice keeps this cheap under the
-    // token-rate delta stream.
-    root.rawBuf += chunk;
-    const parts = root.rawBuf.split("\n");
-    root.rawBuf = parts.pop();          // trailing partial line, if any
-    for (let i = 0; i < parts.length; i++) {
-      const line = parts[i];
-      root.sseLine(line.endsWith("\r") ? line.slice(0, -1) : line);
+    const lines = block.split("\n");
+    let payload = "";
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i];
+      if (line.endsWith("\r")) line = line.slice(0, -1);
+      if (!line.startsWith("data:")) continue;   // comments/heartbeats
+      // multiple data: lines in one event are joined by a newline (SSE spec)
+      if (payload !== "") payload += "\n";
+      payload += line.slice(5).replace(/^ /, "");
     }
-  }
-
-  // one complete SSE line
-  function sseLine(line) {
-    if (line.startsWith("data:")) {
-      // previous payload is complete once another line shows up
-      // (the event stream's blank-line terminators don't survive
-      // SplitParser, so this — not the blank line — is the dispatch
-      // trigger; a following blank/comment line flushes the last one)
-      if (root.sseBuf !== "") root.dispatchSse();
-      root.sseBuf += line.slice(5).replace(/^ /, "");
-      return;
-    }
-    root.dispatchSse();
-  }
-
-  function dispatchSse() {
-    if (root.sseBuf === "") return;
-    const payload = root.sseBuf;
-    root.sseBuf = "";
+    if (payload === "") return;
     try { root.handleEvent(JSON.parse(payload)); } catch (e) {}
   }
 
@@ -302,12 +280,13 @@ Pill {
     id: sseProc
 
     stdout: SplitParser {
-      onRead: line => root.streamLine(line)
+      splitMarker: "\n\n"
+      onRead: block => root.streamBlock(block)
     }
 
     onExited: {
-      // flush a final event that arrived without a trailing line
-      root.dispatchSse();
+      // SplitParser itself flushes a final block that arrived without a
+      // trailing terminator, so only the connection state is left to fix.
       root.streamLive = false;
       if (!root.svcUp) return;
       // the stream is no longer tied to panel visibility (it feeds background
@@ -2331,6 +2310,11 @@ Pill {
     root.error = "";
     root.sending = true;
     root.menu = "";
+    // a turn is starting: drop the "panel (re)opened" flag. On a new chat
+    // panelShown() sets it and loadMessages() bails (no session), so the first
+    // reconcile after send would clear `busy` — the panel then showed no live
+    // dot/robot/stop for the whole time-to-first-token and felt dead.
+    root.clearBusyNextLoad = false;
 
     // slash command?
     if (text[0] === "/") {

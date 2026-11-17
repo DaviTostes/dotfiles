@@ -17,7 +17,25 @@ lands at `~/.config/quickshell/shell.qml`.
 - `gtk/` — `Quickshell-Dark` GTK 3/4 theme mirroring the quickshell palette
   (installed via symlink at `~/.local/share/themes/`, plus the libadwaita
   override symlinked at `~/.config/gtk-4.0/gtk.css`)
-- `backgrounds/` — wallpapers
+- `backgrounds/` — **not in this repo any more.** The wallpaper library is
+  local-only at `~/.config/backgrounds/` (untracked and gitignored: it is
+  several GB and GitHub rejects the push). `wallpaper.conf`, the quickshell
+  gallery and `hyprlock.conf` all point there directly, so nothing else needs
+  to change; do not `git add` wallpapers back into the tree.
+
+## Neovim (`nvim/.config/nvim/`)
+
+- Plugins are installed with `vim.pack.add` from `lua/plugins/*.lua` (each file
+  is auto-required by `init.lua`); LSP servers are enabled in
+  `lua/plugins/lsp-snippets.lua`.
+- Filetypes with no upstream support get hand-written files instead of a
+  plugin: `.bru` (Bruno, plus `bruno_ls`) and `.fga` (OpenFGA authorization
+  model DSL) are registered in `init.lua`'s `vim.filetype.add` and backed by
+  `syntax/<ft>.vim`, `ftplugin/<ft>.vim` and `indent/<ft>.vim`.
+  Nothing in nvim-treesitter nor any LSP covers `fga`, so `syntax/fga.vim` is
+  the only highlighter — keep it complete (keywords, type/relation names,
+  `[user:*]` / `[group#member]` restrictions, CEL condition bodies).
+  Syntax patterns have no `\zs`: use a `\%(...\)\@<=` look-behind instead.
 
 ## Quickshell (`quickshell/.config/quickshell/`)
 
@@ -54,10 +72,17 @@ lands at `~/.config/quickshell/shell.qml`.
   bonded devices connect/disconnect/forget natively. Device *icons* are mapped
   from BlueZ icon names to Nerd Font glyphs — `Quickshell.iconPath()` does not
   reliably resolve names like `audio-headset` here. BlueZ refuses the HID
-  profile to a non-bonded device and Quickshell 0.3.1 registers no pairing
+  profile to a non-bonded device and Quickshell 0.3.2 registers no pairing
   agent, so a fresh device is paired by shelling out to `bluetoothctl`
-  (pair → trust → connect via `Process`), which brings its own Just Works
-  agent; devices demanding host PIN/passkey entry still can't be paired here.
+  (pairable → pair → trust → connect → verify via `Process`), which brings its
+  own Just Works agent; devices demanding host PIN/passkey entry still can't be
+  paired here. `pairable on` is not optional: with Pairable=false bluetoothd
+  answers with "No Bonding", prints "Pairing successful" and deletes the
+  throwaway key on the first disconnect (device stays Trusted but un-bonded,
+  every later connect fails). The sequence restores the previous pairable flag,
+  retries once after `remove` when a stale transient `paired` makes `pair`
+  answer AlreadyExists, and only reports success when `info` shows
+  `Bonded: yes`.
 - `WifiTab.qml` drives **iwd** through `iwctl` (`Process`), *not*
   `Quickshell.Networking` — that module only supports NetworkManager (enum
   `None`/`NetworkManager`) and this machine runs iwd with NetworkManager
@@ -298,7 +323,7 @@ lands at `~/.config/quickshell/shell.qml`.
   are applied optimistically (`pendingVol`/`pendingMute`/`pendingSeek`) and held
   until `/status` agrees (or 3s), so a stale poll can't yank a slider back.
 - `bar/Github.qml` (singleton) + `bar/GithubPill.qml` are the GitHub pill in the
-  **top bar, immediately left of the tray**. The singleton polls `gh` (argv
+  **top bar, immediately right of the tray**. The singleton polls `gh` (argv
   only) every 60 s and on panel open: `gh api graphql` for the viewer's open
   PRs + check rollup, `gh api notifications?per_page=50` for unread
   `PullRequest`/`CheckSuite` threads, and
